@@ -48,3 +48,17 @@ begin
   limit match_count;
 end;
 $$;
+
+-- truncate_sops: clear the sops table for full re-ingest. Exists so v0 reingest
+-- stays fast during tuning (one DDL op vs deleting thousands of rows via REST).
+-- Restricted to service_role; anon and authenticated must never wipe the corpus.
+
+create or replace function truncate_sops()
+returns void
+language sql
+as $$
+  truncate table sops;
+$$;
+
+revoke execute on function truncate_sops() from public, anon, authenticated;
+grant execute on function truncate_sops() to service_role;

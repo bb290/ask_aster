@@ -8,7 +8,7 @@ This repo holds:
 
 - `sops/` — 628 markdown SOPs across 22 service lines (source of truth for operational procedures)
 - `docs/` — 121 reference docs (role profiles, templates, section indexes) — **not indexed in v0**
-- `server/` — the MCP server (Supabase Edge Function, Deno + Hono)
+- `supabase/functions/ask-aster/` — the MCP server (Supabase Edge Function, Deno + Hono)
 - `scripts/` — local ingestion script
 - `sql/` — Supabase schema and RPC
 
