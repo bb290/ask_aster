@@ -1,0 +1,38 @@
+---
+title: "Registration & License // Lakewood // Setup"
+service_line: utilities
+sop_owner: brittany@sagareus.com
+status: active
+last_reviewed: 2026-05-01
+visibility_tier: ic
+version: 1
+tags: [rental-registration, business-license, municipal, lakewood, registration-setup]
+created_but_never_updated: false
+---
+
+:::warning
+This document is scaffolded but not yet executed. Procedures and email templates will be filled in on first execution.
+
+:::
+
+## Trigger
+
+Onboarding Asana template step `REGISTER | Rental Registration with City` when onboarding a Lakewood property. Owner: [Customer Service Specialist](../../docs/role-profiles/customer-service-specialist.md).
+
+## Prerequisites
+
+* Confirm Lakewood jurisdiction
+* Portal credentials in 1Password
+* Buildium access for bill entry
+
+## Procedure
+
+TBD — document on first execution. Reference `Registration & License // Seattle // Setup` for structural pattern.
+
+## Email templates
+
+TBD — inline on first execution.
+
+## Next
+
+* [Registration & License // Lakewood](../../docs/section-indexes/sops-2-registration-license-lakewood.md)
