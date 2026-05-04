@@ -99,6 +99,9 @@ function chunkByH2(body: string): Chunk[] {
 // --- Embedding ---
 
 async function embed(text: string, attempt = 1): Promise<number[]> {
+  if (text.length > 30000) {
+    console.warn(`  ⚠ chunk is ${text.length} chars (~${Math.round(text.length / 4)} tokens) — may exceed embedding context window`);
+  }
   const r = await fetch(`${OPENROUTER_BASE}/embeddings`, {
     method: "POST",
     headers: {
@@ -110,6 +113,7 @@ async function embed(text: string, attempt = 1): Promise<number[]> {
       input: text,
     }),
   });
+  const bodyText = await r.text();
   if (!r.ok) {
     if (attempt < 3 && (r.status === 429 || r.status >= 500)) {
       const wait = attempt * 2000;
@@ -117,10 +121,17 @@ async function embed(text: string, attempt = 1): Promise<number[]> {
       await new Promise((res) => setTimeout(res, wait));
       return embed(text, attempt + 1);
     }
-    const msg = await r.text().catch(() => "");
-    throw new Error(`OpenRouter embeddings failed: ${r.status} ${msg}`);
+    throw new Error(`OpenRouter embeddings failed: ${r.status} ${bodyText.slice(0, 300)}`);
   }
-  const d = await r.json();
+  let d: { data?: Array<{ embedding?: number[] }> };
+  try {
+    d = JSON.parse(bodyText);
+  } catch {
+    throw new Error(`OpenRouter returned non-JSON body (status ${r.status}): ${bodyText.slice(0, 300)}`);
+  }
+  if (!d?.data?.[0]?.embedding) {
+    throw new Error(`OpenRouter response missing data[0].embedding (status ${r.status}): ${bodyText.slice(0, 500)}`);
+  }
   return d.data[0].embedding;
 }
 

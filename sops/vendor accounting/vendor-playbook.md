@@ -11,9 +11,12 @@ created_but_never_updated: false
 ---
 # Vendor Playbook
 
-| Bill  Payment Directory |     |     |
-|-------------------------|-----|-----|
-|  ![image](https://lh7-rt.googleusercontent.com/docsz/AD_4nXfjdx9K3B6BLMhr3jBtxdxd9ToBJzZEzKtbUDnEGYg7yuHP0oLnMi8FaxXGHExCEo1MBoWotfuoZzRsAG-pF58stU3Bn6wTwfUq9oYb2ZDc14-ThJV2YBCywGmdPogjPHfeqZC1aAoyMoN63dV4JcmMw_U8?key=nnhKEmcP1_mvGVmGiinqRQ) Vendor Name | Payment Method | Notes |
+Reference directory of vendor payment methods and notes. Vendors are organized alphabetically across four sections (A–D, E–K, L–R, S–Z), followed by special-case payment procedures for Zillow and American Home Shield. Use the section that matches the vendor's first letter to look up the payment link, account login, or special instructions.
+
+## Bill Payment Directory — A through D
+
+| Vendor Name | Payment Method | Notes |
+|-------------|----------------|-------|
 | 3DRE                    |     |     |
 | 5 Men & A Mower         |     |     |
 | 5 Microns               |     | Link in .pdf of bill on BD or in email |
@@ -151,6 +154,11 @@ created_but_never_updated: false
 | Dos Amigos Gardening    |     |     |
 | Douglas Herrmann        |     |     |
 | Dryer Vent Solutions    |     |     |
+
+## Bill Payment Directory — E through K
+
+| Vendor Name | Payment Method | Notes |
+|-------------|----------------|-------|
 | Elev8ed LLC             |     |     |
 | Elite Resurfacing       |     |     |
 | Emerald Management & Consulting // Redwoods Condominium Association |     | [Link to pay](https://emerald-mc.com/) |
@@ -219,6 +227,11 @@ created_but_never_updated: false
 | King's Mobile Lock      |     |     |
 | Kings III Emergency Communications |     |     |
 | Kirkland Rooter         |     |     |
+
+## Bill Payment Directory — L through R
+
+| Vendor Name | Payment Method | Notes |
+|-------------|----------------|-------|
 | Lakehaven Water & Sewer (UTILITY) |     | [Link to pay](https://bill.paystation.com/lakehaven/Payment/AnonPaymentKicker) |
 | Lake Meridian Water District (UTILITY) |     | [Link to pay](https://www.paystation.com/pay/lake-meridian) |
 | Lake Stevens Sewer (UTILITY) |     | [Link to pay](https://guest.xpressbillpay.com/refer/lakestevens10392) |
@@ -323,6 +336,11 @@ created_but_never_updated: false
 | Rodgers Garage Door     |     |     |
 | Roxie Glass Inc         |     | Roxy Glass LLC |
 | Rubatino Refuse Removal (UTILITY) |     | [Link to pay](https://rubatino.onlineportal.us.com/User/Login?ReturnUrl=%2f) |
+
+## Bill Payment Directory — S through Z
+
+| Vendor Name | Payment Method | Notes |
+|-------------|----------------|-------|
 | Safeco Insurance        |     | [Link to pay](https://customer.safeco.com/accountmanager/billing/guest-payment?view=customerSearch) |
 | Safety Team             |     |     |
 | Sammamish Plateau Water (UTILITY) |     | (855) 976-5830 |
