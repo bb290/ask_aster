@@ -107,6 +107,12 @@ Sagareus Management has assumed full control of the remediation process to ensur
 
 Christian is authorized with "any means necessary" to drive this issue to completion.
 
+## Update — May 5, 2026
+
+The tenant has since relocated from Unit 102 to 13337 30th Ave NE. The relocation surfaced a separate incident (move-in unit confusion — see [`incidents/2026-04-29-unit-confusion-13337-30th-ave-ne.md`](../incidents/2026-04-29-unit-confusion-13337-30th-ave-ne.md)), but the tenant is no longer occupying Unit 102.
+
+The infestation at 2301 NE 125th remains unresolved at the property level — owner approval for exclusion + remediation work was still outstanding as of the relocation.
+
 ## Follow-Up & Process Improvement
 
 > *These items represent decisions and SOP changes triggered by this incident. They should be moved to `decisions/` once finalized, and the affected SOPs in `sops/` should be updated.*
