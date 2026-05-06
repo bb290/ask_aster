@@ -69,7 +69,9 @@ Source of truth flow: markdown files in `sops/` are the canonical SOPs. The Post
 
 ## Re-ingestion
 
-Currently every ingest re-embeds every chunk. That's fine for v0 (~$0.04, ~15 min). If this becomes annoying, the v0.5 add is a content-fingerprint column to skip unchanged chunks — but that's an enhancement, not a v0 requirement.
+As of v0.5, ingest is incremental. Each chunk's embed input is SHA-256 hashed; the hash is stored alongside the row in the `content_hash` column. On subsequent runs, files whose chunk hashes all match existing rows are skipped entirely. Re-embedding only happens for files that actually changed (or whose chunks did). Files removed from the repo are cleaned up at the end of each run.
+
+First-time setup requires `sql/03_content_hash.sql` to be run against the project. The first ingest after that migration re-embeds everything (existing rows have null hash), but subsequent runs are fast (~10 sec for zero changes, ~30 sec for a few new captures).
 
 ## Out of scope right now
 

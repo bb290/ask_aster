@@ -16,9 +16,12 @@
 //   SUPABASE_SERVICE_ROLE_KEY      — service role key (NOT anon)
 //   OPENROUTER_API_KEY             — OpenRouter API key
 //
-// v0 strategy: every run re-embeds every chunk (truncate + insert). Cheap
-// (~$0.04, ~15 min) for ~750 files. v0.5 will add content-fingerprinting to
-// skip unchanged chunks if this becomes annoying.
+// v0.5 strategy: incremental ingest using a content_hash column. Each chunk's
+// embed input is SHA-256 hashed; if the hash matches an existing row's hash
+// at the same (file_path, chunk_index), we skip the embed/insert entirely.
+// First run after the v0.5 migration re-embeds everything (existing rows
+// have null hash); subsequent runs re-embed only files with actual changes.
+// Files that disappear from the repo are cleaned up at the end of each run.
 
 import { createClient } from "npm:@supabase/supabase-js@2.47.10";
 import { walk } from "jsr:@std/fs@1.0.6/walk";
@@ -183,28 +186,31 @@ function inferTypeFromPath(relPath: string): string {
   return "unknown";
 }
 
+// --- Content hashing for incremental ingest ---
+// Each chunk's embed input is hashed; we store the hash alongside the row
+// and skip the embed/insert if the hash matches what's already in the DB.
+
+async function hashContent(text: string): Promise<string> {
+  const buf = new TextEncoder().encode(text);
+  const hashBuffer = await crypto.subtle.digest("SHA-256", buf);
+  return Array.from(new Uint8Array(hashBuffer))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 async function main() {
-  // Confirm target table is reachable
-  const { error: pingErr } = await supabase.from("sops").select("id").limit(1);
+  // Confirm target table is reachable (and content_hash column exists)
+  const { error: pingErr } = await supabase.from("sops").select("id, content_hash").limit(1);
   if (pingErr) {
-    console.error(`Cannot read sops table: ${pingErr.message}`);
-    console.error("Have you run sql/01_schema.sql and sql/02_match_sops.sql against the project?");
+    console.error(`Cannot read sops table or content_hash column: ${pingErr.message}`);
+    console.error("Have you run sql/01_schema.sql, sql/02_match_sops.sql, and sql/03_content_hash.sql?");
     Deno.exit(1);
   }
 
-  // Truncate before reingest (v0 strategy)
-  console.log("Truncating sops table…");
-  const { error: truncErr } = await supabase.rpc("truncate_sops");
-  if (truncErr) {
-    // Fall back to delete-all if RPC not present
-    const { error: delErr } = await supabase.from("sops").delete().neq("id", "00000000-0000-0000-0000-000000000000");
-    if (delErr) {
-      console.error(`Truncate failed: ${delErr.message}`);
-      Deno.exit(1);
-    }
-  }
-
-  let fileCount = 0;
+  console.log("Incremental ingest — re-embeds only files whose chunks changed");
+  const seenPaths = new Set<string>();
+  let updatedFileCount = 0;
+  let unchangedFileCount = 0;
   let chunkCount = 0;
   let skipCount = 0;
   const start = Date.now();
@@ -251,9 +257,8 @@ async function main() {
         continue;
       }
 
-      fileCount++;
-
-      for (const chunk of chunks) {
+      // Build new chunk descriptors with content hashes
+      const candidates = await Promise.all(chunks.map(async (chunk) => {
         // Prepend title, type, and (if present) section heading to the chunk
         // text before embedding. Including type in the embed prompt biases
         // retrieval toward type-specific queries ("show me incidents at X").
@@ -265,7 +270,50 @@ async function main() {
           "",
           chunk.content,
         ].filter((x) => x !== null).join("\n");
+        const content_hash = await hashContent(embedInput);
+        return { chunk, embedInput, content_hash };
+      }));
 
+      seenPaths.add(relPath);
+
+      // Compare candidate hashes against existing rows for this file_path.
+      // If counts and hashes all match, skip the file entirely.
+      const { data: existing, error: existingErr } = await supabase
+        .from("sops")
+        .select("chunk_index, content_hash")
+        .eq("file_path", relPath);
+
+      if (existingErr) {
+        console.error(`  ✗ ${relPath} compare: ${existingErr.message}`);
+        continue;
+      }
+
+      const existingMap = new Map(
+        (existing ?? []).map((r) => [r.chunk_index as number, r.content_hash as string | null]),
+      );
+
+      const allMatch = candidates.length === existingMap.size &&
+        candidates.every((c) => existingMap.get(c.chunk.index) === c.content_hash);
+
+      if (allMatch) {
+        unchangedFileCount++;
+        if ((updatedFileCount + unchangedFileCount) % 100 === 0) {
+          const elapsed = ((Date.now() - start) / 1000).toFixed(0);
+          console.log(`  scanned ${updatedFileCount + unchangedFileCount} files (${updatedFileCount} updated, ${unchangedFileCount} unchanged), ${chunkCount} chunks embedded, ${elapsed}s`);
+        }
+        continue;
+      }
+
+      // File changed — delete existing chunks, then re-embed and re-insert.
+      const { error: delErr } = await supabase.from("sops").delete().eq("file_path", relPath);
+      if (delErr) {
+        console.error(`  ✗ ${relPath} delete: ${delErr.message}`);
+        continue;
+      }
+
+      updatedFileCount++;
+
+      for (const { chunk, embedInput, content_hash } of candidates) {
         const embedding = await embed(embedInput);
 
         const { error } = await supabase.from("sops").insert({
@@ -274,6 +322,7 @@ async function main() {
           chunk_heading: chunk.heading,
           content: chunk.content,
           embedding,
+          content_hash,
           title,
           service_line: serviceLine,
           sop_owner: owner,
@@ -294,16 +343,39 @@ async function main() {
         }
       }
 
-      if (fileCount % 25 === 0) {
+      if ((updatedFileCount + unchangedFileCount) % 25 === 0) {
         const elapsed = ((Date.now() - start) / 1000).toFixed(0);
-        console.log(`  ${fileCount} files, ${chunkCount} chunks (${elapsed}s elapsed)`);
+        console.log(`  scanned ${updatedFileCount + unchangedFileCount} files (${updatedFileCount} updated, ${unchangedFileCount} unchanged), ${chunkCount} chunks embedded, ${elapsed}s`);
       }
+    }
+  }
+
+  // Cleanup: remove rows for files no longer present in repo (renamed,
+  // deleted, or moved). file_path comparison is the only signal we use.
+  console.log("Cleanup: scanning for orphan files in DB…");
+  const { data: dbRows } = await supabase.from("sops").select("file_path").limit(20000);
+  const dbPathSet = new Set((dbRows ?? []).map((r) => r.file_path as string));
+  const orphanPaths = [...dbPathSet].filter((p) => !seenPaths.has(p));
+  let orphanCount = 0;
+  for (const p of orphanPaths) {
+    const { error } = await supabase.from("sops").delete().eq("file_path", p);
+    if (!error) {
+      console.log(`  removed orphan: ${p}`);
+      orphanCount++;
+    } else {
+      console.error(`  ✗ failed to remove orphan ${p}: ${error.message}`);
     }
   }
 
   const elapsed = ((Date.now() - start) / 1000).toFixed(0);
   console.log("");
-  console.log(`Done. ${fileCount} files → ${chunkCount} chunks in ${elapsed}s. ${skipCount} skipped.`);
+  console.log(
+    `Done in ${elapsed}s. ` +
+      `${updatedFileCount} files updated → ${chunkCount} chunks embedded. ` +
+      `${unchangedFileCount} unchanged. ` +
+      `${skipCount} invalid. ` +
+      `${orphanCount} orphans removed.`,
+  );
 }
 
 await main();
