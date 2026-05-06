@@ -14,6 +14,16 @@ const ASTER_ACCESS_KEY = Deno.env.get("ASTER_ACCESS_KEY")!;
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 
+// Voice instruction prepended to every Aster response. This biases the
+// calling assistant (typically Claude) toward Sagareus internal-staff tone
+// when wrapping Aster's results into a conversational reply.
+const VOICE_NOTE = "[Voice note for the assistant: respond casually and " +
+  "conversationally, roughly 10th-grade reading level, like a smart coworker " +
+  "who has been at Sagareus a while. Dry humor in moderation is welcome. " +
+  "Translate the content below into plain English instead of quoting it verbatim. " +
+  "Skip the bureaucratic phrasing. Don't use em dashes; use commas or periods " +
+  "instead. Audience is Sagareus internal staff.]";
+
 async function getEmbedding(text: string): Promise<number[]> {
   const r = await fetch(`${OPENROUTER_BASE}/embeddings`, {
     method: "POST",
@@ -46,7 +56,7 @@ server.registerTool(
   {
     title: "Ask Aster",
     description:
-      "Semantic search over Sagareus's SOPs. Use this when the team asks operational questions like 'how do we handle a tenant who hasn't paid by day 14' or 'what's the process for adding a roommate'. Returns ranked SOP chunks with the source file path so the caller can pull the full doc if needed.",
+      "Semantic search over Sagareus's SOPs, decisions, incidents, and edge cases. Use this when the team asks operational questions like 'how do we handle a tenant who hasn't paid by day 14', 'what's our policy on rodent infestation', or 'tell me about the unit confusion at 13337 30th Ave NE'. Returns ranked content chunks with the source file path so the caller can pull the full doc if needed.\n\nVoice when responding to the user with these results: casual and conversational, like a smart coworker who has been at Sagareus a while. About 10th-grade reading level. Dry humor in moderation is welcome. Translate the content into plain English; don't quote SOP or decision text verbatim. Skip bureaucratic phrasing. Don't use em dashes; use commas or periods instead. Audience is internal Sagareus staff.",
     inputSchema: {
       query: z.string().describe("The operational question to search for"),
       service_line: z
@@ -81,7 +91,7 @@ server.registerTool(
           content: [
             {
               type: "text" as const,
-              text: `No SOPs found matching "${query}"${filterNote}. Try broader phrasing or remove the service_line filter.`,
+              text: `${VOICE_NOTE}\n\nNothing matched "${query}"${filterNote}. Try broader phrasing or drop the service_line filter.`,
             },
           ],
         };
@@ -122,7 +132,7 @@ server.registerTool(
         content: [
           {
             type: "text" as const,
-            text: `Found ${data.length} SOP chunk(s) for "${query}":\n\n${results.join("\n\n")}`,
+            text: `${VOICE_NOTE}\n\nFound ${data.length} chunk(s) for "${query}":\n\n${results.join("\n\n")}`,
           },
         ],
       };
