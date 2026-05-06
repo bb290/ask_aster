@@ -1,0 +1,13 @@
+# Ask Aster — Supabase per-project config
+#
+# This file controls Supabase CLI behavior for the ask-aster project.
+# Currently used to declare per-function flags so `supabase functions deploy`
+# does the right thing without needing CLI flags every time.
+
+[functions.ask-aster]
+# Aster handles its own auth via x-aster-key header (or ?key= query param).
+# Disable Supabase's default JWT verification at the gateway so the request
+# reaches our function and our auth check runs. Without this, the gateway
+# rejects requests with UNAUTHORIZED_NO_AUTH_HEADER before the function is
+# even invoked.
+verify_jwt = false
