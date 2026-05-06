@@ -232,6 +232,11 @@ async function main() {
       const docType = fm.type ?? inferTypeFromPath(relPath);
       const owner = fm.sop_owner ?? fm.decision_owner ?? fm.prepared_by ?? null;
       const reviewedDate = fm.last_reviewed ?? fm.date ?? fm.recorded_date ?? fm.incident_date ?? null;
+      // Schema status CHECK only allows active|draft|deprecated (SOP-shaped).
+      // Capture types use ongoing|resolved|open|etc. — preserve the real value
+      // in the markdown body but coerce the DB column to a permitted value.
+      const ALLOWED_DB_STATUSES = new Set(["active", "draft", "deprecated"]);
+      const dbStatus = ALLOWED_DB_STATUSES.has(fm.status ?? "") ? fm.status! : "active";
 
       if (!title) {
         console.warn(`SKIP ${relPath} — no title in frontmatter and no H1 in body`);
@@ -272,7 +277,7 @@ async function main() {
           title,
           service_line: serviceLine,
           sop_owner: owner,
-          status: fm.status ?? "active",
+          status: dbStatus,
           last_reviewed: reviewedDate,
           visibility_tier: visTier,
           version: fm.version ?? 1,
