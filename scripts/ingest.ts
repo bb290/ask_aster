@@ -1,7 +1,12 @@
 // Ask Aster v0 — ingest script
 //
-// Walks ../sops/, parses YAML frontmatter, chunks bodies by H2 (## headings),
-// embeds each chunk via OpenRouter, and upserts into the Supabase `sops` table.
+// Walks ../sops/, ../incidents/, ../decisions/, ../edge-cases/, parses YAML
+// frontmatter, chunks bodies by H2 (## headings), embeds each chunk via
+// OpenRouter, and upserts into the Supabase `sops` table.
+//
+// All four content types share one table for v0.5. Document type is recorded
+// in the `tags` column and inferred from the top-level folder if not in
+// frontmatter. file_path is preserved verbatim so retrieval can show provenance.
 //
 // Run from repo root:
 //   deno run --allow-read --allow-env --allow-net scripts/ingest.ts
@@ -34,15 +39,32 @@ const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 // --- Frontmatter parsing ---
 
 type Frontmatter = {
-  title: string;
-  service_line: string;
-  sop_owner?: string;
+  // Common — title required for SOPs but derivable from H1 for captures
+  title?: string;
+  type?: string;                                // incident | decision | edge_case | sop (else inferred from path)
+  service_line?: string;                        // optional for captures; defaults to "general"
+  visibility_tier?: "ic" | "director";          // defaults to "ic"
   status?: string;
-  last_reviewed?: string;
-  visibility_tier: "ic" | "director";
-  version?: number;
   tags?: string[];
+  // SOP-shaped
+  sop_owner?: string;
+  last_reviewed?: string;
+  version?: number;
   created_but_never_updated?: boolean;
+  // Capture-shaped (decisions / incidents / edge cases). Accepted but most
+  // are not indexed as columns — they live in the markdown body or in
+  // the schema's tags column when useful.
+  decision_owner?: string;
+  date?: string;
+  incident_date?: string;
+  recorded_date?: string;
+  prepared_by?: string;
+  property?: string;
+  severity?: string;
+  involves?: string[];
+  triggered_by?: string[];
+  related_decisions?: string[];
+  sops_to_update?: string[];
 };
 
 function parseFrontmatter(raw: string): { fm: Frontmatter | null; body: string } {
@@ -58,6 +80,19 @@ function parseFrontmatter(raw: string): { fm: Frontmatter | null; body: string }
     console.warn(`  ⚠ frontmatter parse error: ${(e as Error).message}`);
     return { fm: null, body };
   }
+}
+
+// --- Title fallback ---
+// Capture files (incidents / decisions / edge cases) typically have an H1
+// like "# Decision — ..." instead of a frontmatter title. Use that as a
+// fallback so they don't get skipped.
+
+function extractH1Title(body: string): string | null {
+  for (const line of body.split("\n")) {
+    const m = line.match(/^#\s+(.+?)\s*$/);
+    if (m) return m[1].trim();
+  }
+  return null;
 }
 
 // --- H2 chunking ---
@@ -138,7 +173,15 @@ async function embed(text: string, attempt = 1): Promise<number[]> {
 // --- Main ---
 
 const REPO_ROOT = new URL("../", import.meta.url).pathname;
-const SOPS_DIR = `${REPO_ROOT}sops`;
+const ROOTS = ["sops", "incidents", "decisions", "edge-cases"];
+
+function inferTypeFromPath(relPath: string): string {
+  if (relPath.startsWith("sops/")) return "sop";
+  if (relPath.startsWith("incidents/")) return "incident";
+  if (relPath.startsWith("decisions/")) return "decision";
+  if (relPath.startsWith("edge-cases/")) return "edge_case";
+  return "unknown";
+}
 
 async function main() {
   // Confirm target table is reachable
@@ -166,66 +209,90 @@ async function main() {
   let skipCount = 0;
   const start = Date.now();
 
-  for await (const entry of walk(SOPS_DIR, { exts: [".md"], includeDirs: false })) {
-    const relPath = entry.path.replace(REPO_ROOT, "");
-    const raw = await Deno.readTextFile(entry.path);
-    const { fm, body } = parseFrontmatter(raw);
-
-    if (!fm || !fm.title || !fm.service_line || !fm.visibility_tier) {
-      console.warn(`SKIP ${relPath} — missing required frontmatter`);
-      skipCount++;
+  for (const rootName of ROOTS) {
+    const rootPath = `${REPO_ROOT}${rootName}`;
+    try {
+      const stat = await Deno.stat(rootPath);
+      if (!stat.isDirectory) continue;
+    } catch {
+      console.log(`Skipping ${rootName}/ — not present yet`);
       continue;
     }
 
-    const chunks = chunkByH2(body);
-    if (chunks.length === 0) {
-      console.warn(`SKIP ${relPath} — empty body`);
-      skipCount++;
-      continue;
-    }
+    for await (const entry of walk(rootPath, { exts: [".md"], includeDirs: false })) {
+      const relPath = entry.path.replace(REPO_ROOT, "");
+      const raw = await Deno.readTextFile(entry.path);
+      const { fm: rawFm, body } = parseFrontmatter(raw);
+      const fm: Frontmatter = rawFm ?? {};
 
-    fileCount++;
+      // Resolve fields with fallbacks tolerant of capture frontmatter shapes
+      const title = fm.title ?? extractH1Title(body);
+      const serviceLine = fm.service_line ?? "general";
+      const visTier = fm.visibility_tier ?? "ic";
+      const docType = fm.type ?? inferTypeFromPath(relPath);
+      const owner = fm.sop_owner ?? fm.decision_owner ?? fm.prepared_by ?? null;
+      const reviewedDate = fm.last_reviewed ?? fm.date ?? fm.recorded_date ?? fm.incident_date ?? null;
 
-    for (const chunk of chunks) {
-      // Prepend the title and (if present) heading to the chunk text before embedding.
-      // This gives the embedding model topical context that titles/headings provide.
-      const embedInput = [
-        `Title: ${fm.title}`,
-        fm.service_line ? `Service line: ${fm.service_line}` : null,
-        chunk.heading ? `Section: ${chunk.heading}` : null,
-        "",
-        chunk.content,
-      ].filter((x) => x !== null).join("\n");
-
-      const embedding = await embed(embedInput);
-
-      const { error } = await supabase.from("sops").insert({
-        file_path: relPath,
-        chunk_index: chunk.index,
-        chunk_heading: chunk.heading,
-        content: chunk.content,
-        embedding,
-        title: fm.title,
-        service_line: fm.service_line,
-        sop_owner: fm.sop_owner ?? null,
-        status: fm.status ?? "active",
-        last_reviewed: fm.last_reviewed ?? null,
-        visibility_tier: fm.visibility_tier,
-        version: fm.version ?? 1,
-        tags: fm.tags ?? [],
-        created_but_never_updated: fm.created_but_never_updated ?? false,
-      });
-
-      if (error) {
-        console.error(`  ✗ ${relPath} chunk ${chunk.index}: ${error.message}`);
-      } else {
-        chunkCount++;
+      if (!title) {
+        console.warn(`SKIP ${relPath} — no title in frontmatter and no H1 in body`);
+        skipCount++;
+        continue;
       }
-    }
 
-    if (fileCount % 25 === 0) {
-      const elapsed = ((Date.now() - start) / 1000).toFixed(0);
-      console.log(`  ${fileCount} files, ${chunkCount} chunks (${elapsed}s elapsed)`);
+      const chunks = chunkByH2(body);
+      if (chunks.length === 0) {
+        console.warn(`SKIP ${relPath} — empty body`);
+        skipCount++;
+        continue;
+      }
+
+      fileCount++;
+
+      for (const chunk of chunks) {
+        // Prepend title, type, and (if present) section heading to the chunk
+        // text before embedding. Including type in the embed prompt biases
+        // retrieval toward type-specific queries ("show me incidents at X").
+        const embedInput = [
+          `Title: ${title}`,
+          `Type: ${docType}`,
+          `Service line: ${serviceLine}`,
+          chunk.heading ? `Section: ${chunk.heading}` : null,
+          "",
+          chunk.content,
+        ].filter((x) => x !== null).join("\n");
+
+        const embedding = await embed(embedInput);
+
+        const { error } = await supabase.from("sops").insert({
+          file_path: relPath,
+          chunk_index: chunk.index,
+          chunk_heading: chunk.heading,
+          content: chunk.content,
+          embedding,
+          title,
+          service_line: serviceLine,
+          sop_owner: owner,
+          status: fm.status ?? "active",
+          last_reviewed: reviewedDate,
+          visibility_tier: visTier,
+          version: fm.version ?? 1,
+          // Inject docType into tags so retrieval can filter by type without
+          // a schema migration. Existing tags preserved.
+          tags: Array.from(new Set([...(fm.tags ?? []), docType])),
+          created_but_never_updated: fm.created_but_never_updated ?? false,
+        });
+
+        if (error) {
+          console.error(`  ✗ ${relPath} chunk ${chunk.index}: ${error.message}`);
+        } else {
+          chunkCount++;
+        }
+      }
+
+      if (fileCount % 25 === 0) {
+        const elapsed = ((Date.now() - start) / 1000).toFixed(0);
+        console.log(`  ${fileCount} files, ${chunkCount} chunks (${elapsed}s elapsed)`);
+      }
     }
   }
 
