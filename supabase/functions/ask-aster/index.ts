@@ -5,6 +5,7 @@ import { StreamableHTTPTransport } from "@hono/mcp";
 import { Hono } from "hono";
 import { z } from "zod";
 import { createClient } from "@supabase/supabase-js";
+import { ALL_PROMPTS } from "./prompts/index.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
@@ -17,12 +18,48 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 // Voice instruction prepended to every Aster response. This biases the
 // calling assistant (typically Claude) toward Sagareus internal-staff tone
 // when wrapping Aster's results into a conversational reply.
-const VOICE_NOTE = "[Voice note for the assistant: respond casually and " +
-  "conversationally, roughly 10th-grade reading level, like a smart coworker " +
-  "who has been at Sagareus a while. Dry humor in moderation is welcome. " +
-  "Translate the content below into plain English instead of quoting it verbatim. " +
-  "Skip the bureaucratic phrasing. Don't use em dashes; use commas or periods " +
-  "instead. Audience is Sagareus internal staff.]";
+//
+// v0.7 (May 9 2026): bakes in the leasing-team-pilot assumption. Every
+// caller is treated as a leasing team member by default, since v0 is
+// scoped to that team only. Out-of-scope questions get routed via the
+// matrix in decisions/2026-05-09-leasing-team-scope-and-routing.md
+// rather than answered substantively.
+const VOICE_NOTE = [
+  "[Voice note for the assistant: respond casually and conversationally,",
+  "roughly 10th-grade reading level, like a smart coworker who has been at",
+  "Sagareus a while. Dry humor in moderation is welcome. Translate the content",
+  "below into plain English instead of quoting it verbatim. Skip the",
+  "bureaucratic phrasing. Don't use em dashes; use commas or periods instead.",
+  "",
+  "Audience: Sagareus internal staff, specifically the LEASING team. Assume",
+  "every caller is on the leasing team unless they say otherwise.",
+  "",
+  "Leasing's lane covers 8 service lines: applicant screening, tenant",
+  "placement, lease up, move in, premove out, move out, inspections, and",
+  "turn over (shared with operations). Anything else is out of scope for",
+  "leasing.",
+  "",
+  "If the question is in-scope, answer normally using the search results below.",
+  "",
+  "If the question is out-of-scope (maintenance, accounting, customer service,",
+  "business development, etc.), do NOT try to answer the substantive question.",
+  "Instead, tell the leasing person:",
+  "  1. The question is outside leasing's lane and which department owns it",
+  "  2. The inbox to route the tenant or owner to:",
+  "       maintenance@sagareus.com  -> broken stuff, work orders",
+  "       accounting@sagareus.com   -> rent, utilities, deposit returns,",
+  "                                    owner financials",
+  "       MGMT@sagareus.com         -> everything else, and as the catch-all",
+  "                                    when unsure",
+  "  3. A short handoff script they can paste to the tenant or owner, in",
+  "     Sagareus voice (casual, no em dashes).",
+  "",
+  "The full routing matrix and handoff scripts live in",
+  "decisions/2026-05-09-leasing-team-scope-and-routing.md if you need detail.",
+  "",
+  "The point is to de-load the leasing person, not give them a half-right",
+  "answer to something that isn't theirs to handle.]",
+].join("\n");
 
 async function getEmbedding(text: string): Promise<number[]> {
   const r = await fetch(`${OPENROUTER_BASE}/embeddings`, {
@@ -144,6 +181,30 @@ server.registerTool(
     }
   },
 );
+
+// --- MCP Prompts (slash commands surfaced to clients) ---
+//
+// Each prompt is generated from a SKILL.md file under skills/<name>/SKILL.md
+// by scripts/sync-prompts.ts. The SKILL.md is the source of truth; the TS
+// modules under prompts/ are deployment artifacts.
+
+for (const p of ALL_PROMPTS) {
+  server.registerPrompt(
+    p.name,
+    {
+      title: p.name,
+      description: p.description,
+    },
+    () => ({
+      messages: [
+        {
+          role: "user",
+          content: { type: "text", text: p.content },
+        },
+      ],
+    }),
+  );
+}
 
 // --- Hono App with Auth + CORS ---
 
