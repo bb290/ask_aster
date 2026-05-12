@@ -206,6 +206,61 @@ for (const p of ALL_PROMPTS) {
   );
 }
 
+// --- MCP Tools for skills (workaround for claude.ai web) ---
+//
+// claude.ai web doesn't surface MCP prompts in the chat slash menu (as of
+// May 2026). To make the skill catalog usable for claude.ai users, each
+// skill is also registered as a tool. The model can call the tool when an
+// agent invokes the skill via natural language. The tool returns the
+// SKILL.md body wrapped in an instruction note so the model interprets it
+// as directives to follow, not text to paste back.
+//
+// Tool names convert kebab-case (prompt names) to snake_case (MCP tool
+// convention). E.g. /meet-aster prompt -> meet_aster tool.
+
+function wrapSkillBodyAsToolResult(skillName: string, body: string): string {
+  return [
+    `[Skill invoked: ${skillName}.`,
+    `The text below is your instruction set for handling this conversation.`,
+    `Read it as directives, not as text to paste back to the user. Begin`,
+    `executing the skill immediately, following the voice and flow it`,
+    `describes. Maintain the Sagareus voice rules (no em dashes, plain English,`,
+    `casual coworker tone). If the skill says to render markdown (like an`,
+    `image), render it directly to the user. If it says to ask a question,`,
+    `ask it. If it says to wait for a connector check, run that check first.]`,
+    ``,
+    body,
+  ].join("\n");
+}
+
+for (const p of ALL_PROMPTS) {
+  const toolName = p.name.replace(/-/g, "_");
+  server.registerTool(
+    toolName,
+    {
+      title: p.name,
+      description: p.description,
+      inputSchema: {
+        context: z
+          .string()
+          .optional()
+          .describe(
+            "Optional context the user has already provided in their request (e.g., a property address, an incident summary). The skill should acknowledge this context and not re-ask for it.",
+          ),
+      },
+    },
+    ({ context }) => ({
+      content: [
+        {
+          type: "text" as const,
+          text: wrapSkillBodyAsToolResult(p.name, p.content) +
+            (context ? `\n\n[User-provided context: ${context}]` : ""),
+        },
+      ],
+    }),
+  );
+}
+
 // --- Hono App with Auth + CORS ---
 
 const corsHeaders = {
