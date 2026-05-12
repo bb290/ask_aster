@@ -237,10 +237,12 @@ If they want to try it, invoke the skill in the same chat. The agent will work t
 
 #### /listing-prep
 
-- **What:** Walks you through prepping a new rental listing. Helps with listing copy, market rent recommendation, and the prelisting email to the owner.
-- **When:** When a property comes on board and you're getting it ready to go live.
-- **Invoke:** `/listing-prep` or "let's prep [property]."
-- *(Status: design phase. May 2026.)*
+- **What:** Walks you through prepping a new rental listing end-to-end. Calls two sub-skills: `/listing-copywriter` writes the 5-paragraph Zillow listing, `/market-rent-analysis` runs the 3-comp comp report. Assembles the PreListing email, drafts it in Gmail, posts a copy on the matching Asana subtask.
+- **When:** A property is onboarded and going live. The single-stop prep before publishing.
+- **Invoke:** `/listing-prep` or "let's prep [property]" or "prelisting package for [address]."
+- **Sub-skills (also invocable standalone):**
+  - `/listing-copywriter` if you only need the listing copy rewritten.
+  - `/market-rent-analysis` if you only need comp analysis.
 
 #### /applicant-screening
 
