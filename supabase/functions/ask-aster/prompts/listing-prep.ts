@@ -168,68 +168,84 @@ If the sub-skill says it needs a property visit to verify a detail, surface that
 
 ### Step 7: assemble the PreListing email
 
-Use the EXACT template below. Fill placeholders from the Asana lookup, the comp report, the pricing decisions, and the listing copy. Do not paraphrase template language.
+The email is created as a Gmail draft via \`mcp__claude_ai_Gmail__create_draft\`, which supports \`htmlBody\`. **Use the HTML template below** so headers render as bold + underlined and lists render as bullet points. The plain-text \`body\` field should be a downgraded version for clients that don't render HTML (legacy mail readers).
+
+Do not paraphrase template language. Fill placeholders from the Asana lookup, the comp report, the pricing decisions, and the listing copy.
+
+**Subject line (same for HTML and plain):**
 
 \`\`\`
-Subject: PreListing | <<PROPERTY ADDRESS>>
-
-Hi <<Owner First Name from Asana>>,
-
-Please review the proposed listing strategy below to confirm its accuracy
-and your alignment with the pricing approach. Unless I hear otherwise, I
-will proceed with publishing the listing as presented.
-
-Proposed Listing Strategy
-
-Starting Rent: $<<starting rent>>
-We begin slightly above market to test demand and adjust quickly.
-
-Adjustment Plan
-If 6 to 10 inquiries in reporting week, rent will be reduced by $100.
-If 1 to 5 inquiries in reporting week, rent will be reduced by $200.
-Minimum Rent Floor: $<<minimum floor>>
-We will not drop rent below this amount without prior approval.
-
-Move-In Costs & Incentive
-Prorated first month's rent (due within 48 hours of lease signing)
-Security Deposit: $<<security deposit>>
-Last month's rent: $<<last month>>
-Estimated Total: $<<total move-in>>
-Rent Credit: <<rent credit selection>>, applied at lease signing.
-
-Market Rent Analysis
-
-<<Comp 1 Rent>>, <<Comp 1 Days on Market>>
-Total Move-In Cost: <<Comp 1>>
-Concessions: <<Comp 1>>
-<<Comp 1 Zillow Link>>
-
-<<Comp 2 Rent>>, <<Comp 2 Days on Market>>
-Total Move-In Cost: <<Comp 2>>
-Concessions: <<Comp 2>>
-<<Comp 2 Zillow Link>>
-
-<<Comp 3 Rent>>, <<Comp 3 Days on Market>>
-Total Move-In Cost: <<Comp 3>>
-Concessions: <<Comp 3>>
-<<Comp 3 Zillow Link>>
-
-Draft Listing
-
-Below is the current draft for your review:
-
-<<Paste listing copy from Step 6, verbatim, including the sources line>>
-
-Thanks,
+PreListing | <<PROPERTY ADDRESS>>
 \`\`\`
 
-End with single "Thanks," no agent name (Gmail signature handles that).
+**HTML body template:**
+
+\`\`\`html
+<p>Hi <<Owner First Name>>,</p>
+
+<p>Please review the proposed listing strategy below to confirm its accuracy and your alignment with the pricing approach. Unless I hear otherwise, I will proceed with publishing the listing as presented.</p>
+
+<p><b><u>Proposed Listing Strategy</u></b></p>
+
+<p><b>Starting Rent:</b> $<<starting rent>><br>
+We begin slightly above market to test demand and adjust quickly.</p>
+
+<p><b><u>Adjustment Plan</u></b></p>
+<ul>
+  <li>If 6 to 10 inquiries in reporting week, rent will be reduced by $100.</li>
+  <li>If 1 to 5 inquiries in reporting week, rent will be reduced by $200.</li>
+</ul>
+
+<p><b>Minimum Rent Floor:</b> $<<minimum floor>><br>
+We will not drop rent below this amount without prior approval.</p>
+
+<p><b><u>Move-In Costs & Incentive</u></b></p>
+<ul>
+  <li>Prorated first month's rent (due within 48 hours of lease signing)</li>
+  <li>Security Deposit: $<<security deposit>></li>
+  <li>Last month's rent: $<<last month>></li>
+  <li>Estimated Total: $<<total move-in>></li>
+  <li>Rent Credit: <<rent credit selection>>, applied at lease signing</li>
+</ul>
+
+<p><b><u>Market Rent Analysis</u></b></p>
+
+<p><b>Comp 1:</b> $<<Comp 1 Rent>>, <<Comp 1 Days on Market>> days on market<br>
+Total Move-In Cost: $<<Comp 1 move-in cost>><br>
+Concessions: <<Comp 1 concessions>><br>
+<a href="<<Comp 1 Zillow Link>>"><<Comp 1 Zillow Link>></a></p>
+
+<p><b>Comp 2:</b> $<<Comp 2 Rent>>, <<Comp 2 Days on Market>> days on market<br>
+Total Move-In Cost: $<<Comp 2 move-in cost>><br>
+Concessions: <<Comp 2 concessions>><br>
+<a href="<<Comp 2 Zillow Link>>"><<Comp 2 Zillow Link>></a></p>
+
+<p><b>Comp 3:</b> $<<Comp 3 Rent>>, <<Comp 3 Days on Market>> days on market<br>
+Total Move-In Cost: $<<Comp 3 move-in cost>><br>
+Concessions: <<Comp 3 concessions>><br>
+<a href="<<Comp 3 Zillow Link>>"><<Comp 3 Zillow Link>></a></p>
+
+<p><b><u>Draft Listing</u></b></p>
+
+<p>Below is the current draft for your review:</p>
+
+<<Paste listing copy from Step 6, each paragraph wrapped in <p>...</p>, including the sources line as a final <p>>>
+
+<p>Thanks,</p>
+\`\`\`
+
+**Plain text body** (downgraded for the \`body\` field): the same content but with \`<b><u>HEADER</u></b>\` replaced by \`HEADER\` on its own line, lists rendered as \`• item\`, and \`<p>\` wrappers stripped. Keeps the structure for clients that don't render HTML.
 
 **Notes on the template:**
 
-- Inquiry counts and showing activity are NOT publicly visible on Zillow. The original template had a "# of contacts" field that's intentionally dropped.
-- Listing copy is pasted verbatim from Step 6.
+- Headers (Proposed Listing Strategy / Adjustment Plan / Move-In Costs & Incentive / Market Rent Analysis / Draft Listing) are **bold AND underlined** via \`<b><u>...</u></b>\`.
+- Lists use \`<ul><li>...</li></ul>\` for proper bullet rendering.
+- Comp data is grouped per-comp (Comp 1, Comp 2, Comp 3) as labeled blocks, not just rent + DOM as flat lines.
+- Listing copy paragraphs each wrap in \`<p>\` tags so they render with normal paragraph spacing.
 - All dollar amounts come from the agent's Phase 3 Step 5 inputs.
+- Inquiry counts and showing activity are NOT publicly visible on Zillow. The original template's "# of contacts" field is intentionally dropped.
+
+End with \`<p>Thanks,</p>\` (or "Best,") and stop. No agent name, no "Sagareus" footer. The agent's Gmail signature appends below.
 
 ### Step 8: show the assembled email for review
 
@@ -241,14 +257,15 @@ Wait for explicit confirmation before writing anything.
 
 After the agent confirms:
 
-1. Check Gmail MCP is connected.
-2. Create a Gmail **draft** (not send) with:
-   - To: owner email (from Asana custom field, or override the agent provided)
-   - Subject: "PreListing | [Property Address]"
-   - Body: the approved email text
-3. Capture the draft creation timestamp and link if returned.
+1. Check Gmail MCP is connected (look for \`mcp__claude_ai_Gmail__create_draft\` or equivalent).
+2. Call \`mcp__claude_ai_Gmail__create_draft\` with:
+   - \`to\`: [owner email] (single-element array)
+   - \`subject\`: "PreListing | [Property Address]"
+   - \`htmlBody\`: the HTML template from Step 7, filled in
+   - \`body\`: the plain-text downgrade of the same content
+3. Capture the draft creation timestamp and the draft GID returned.
 
-If Gmail MCP isn't connected, output the email body in a copy-paste block and tell the agent to paste manually.
+If Gmail MCP isn't connected, output the email body in a copy-paste block (plain-text version is fine) and tell the agent to paste manually into Gmail.
 
 ### Step 10: post the email body as a comment on the Asana subtask
 
