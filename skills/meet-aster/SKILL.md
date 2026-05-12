@@ -90,26 +90,27 @@ If the agent says "yes" or "go" or anything affirmative, proceed to Section 2. I
 
 ## Section 2: connector check and setup
 
-### Step 2a: self-check first
+### Step 2a: ask the user directly
 
-Before asking the agent anything, the calling assistant should introspect its own available tools to see which connectors are already active. Check for the presence of:
+**Do NOT try to auto-detect which connectors are active.** Models in claude.ai don't have a reliable way to enumerate their connected MCPs, and guessing leads to false-positive answers ("Gmail is connected") that hurt trust. Always ask the user.
 
-- **Asana** — tools with prefix `mcp__asana__` (e.g. `mcp__asana__asana_search_tasks`)
-- **Gmail** — tools with prefix `mcp__claude_ai_Gmail__` (or equivalent like `mcp__gmail__`)
-- **Google Calendar** — tools with prefix `mcp__claude_ai_Google_Calendar__` (or equivalent)
-
-Report back to the agent based on what's present:
+Phrase it like this:
 
 ```
-Quick scan of your Claude:
-  • Asana            [✓ connected]   or   [✗ not connected]
-  • Gmail            [✓ connected]   or   [✗ not connected]
-  • Google Calendar  [✓ connected]   or   [✗ not connected]
+To get the most out of me, you'll want three connectors in claude.ai:
+
+  • Asana
+  • Gmail
+  • Google Calendar
+
+Which of these do you already have set up? Tell me which are missing
+and I'll walk you through the setup. If you're not sure, open Settings
+then Connectors in claude.ai and check, it lists them right there.
 ```
 
-If all three are connected, say so and move to Section 3.
+Wait for the user to tell you what's connected. Believe what they say. If they say "all three" or "I'm good," move to Section 3.
 
-If any are missing, walk through the setup for the missing ones only (Step 2b).
+If they say one or more are missing, walk through the setup for the missing ones only (Step 2b).
 
 ### Step 2b: connector setup walkthrough
 
@@ -137,7 +138,7 @@ Then list **only the missing ones** with a quick why-it-matters note:
 - **Gmail** — lets Aster read incoming Zillow leads and draft replies. Required for the Speed to Lead skill. Aster never sends without your review.
 - **Google Calendar** — lets Aster propose showing times and add showings to your calendar. Required when scheduling showings out of Speed to Lead.
 
-After each connection, ask the agent to confirm. Then re-run the self-check to verify the tools are now present. If the tool list didn't update, ask them to start a new chat (sometimes claude.ai needs that for connectors to register).
+After each connection, ask the agent to confirm. Take their word for it. Do not pretend to verify by claiming to "scan" the tool list, because that gives false positives. If something doesn't work later when they invoke a skill, the skill itself will surface that the MCP isn't actually available.
 
 Once everything is connected, move to Section 3.
 
