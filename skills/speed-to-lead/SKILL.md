@@ -74,11 +74,11 @@ The "About <name>" block (move-in, credit, pets, lease, occupants) only appears 
 
 For each parsed lead, use `mcp__asana__asana_search_tasks` to find the property's parent task by the address from the subject line. From the LU or TP sub-task, pull these custom fields:
 
-- **Zillow Link** (or fall back to Sagareus Link or Redfin Link if Zillow Link is empty)
-- **Video Walkthrough Link** (optional, omit from template if empty)
-- **Preferred Showing Slot 1** + **Preferred Showing Slot 2** (used when offering showing times)
+- **Buildium Link** (this is the canonical "Listing Link" that goes in the prospect-facing email, Sagareus-owned listing page)
+- **Video Walkthrough Link** (optional, write "Pending" if empty per template rules)
+- **Preferred Showing Slot 1** + **Preferred Showing Slot 2** (used to determine the next upcoming slot to offer)
 
-If the property isn't found in Asana, surface to the agent: "Couldn't find [address] in Asana. The reply will go out without a listing link, do you want to proceed?" Let them say yes/no.
+If the property isn't found in Asana, surface to the agent: "Couldn't find [address] in Asana. The reply will go out with the listing link as 'Pending', do you want to proceed?" Let them say yes/no.
 
 ### Step 4: draft the reply per the Speed to Lead SOP
 
@@ -182,14 +182,14 @@ On the LU or TP sub-task (or the parent task if the field structure shifts durin
 
 | Field | Type | Used for |
 |---|---|---|
-| Zillow Link | URL | Primary listing link in the reply |
-| Redfin Link | URL | Fallback if Zillow Link is empty |
-| Sagareus Link | URL | Second fallback, or always-included if owner prefers |
-| Video Walkthrough Link | URL | Optional, included if present |
-| Preferred Showing Slot 1 | Text | First slot offered when prospect requests a tour |
-| Preferred Showing Slot 2 | Text | Second slot offered when prospect requests a tour |
+| Buildium Link | URL | The 📄 "Listing Link" in the prospect-facing email. Sagareus-owned listing page, source of truth. |
+| Video Walkthrough Link | URL | The 🎥 link. Write "Pending" if empty. |
+| Preferred Showing Slot 1 | Text | First preferred recurring window (e.g., "Tuesdays 12-2pm") |
+| Preferred Showing Slot 2 | Text | Second preferred recurring window (e.g., "Saturdays 3-5pm") |
 
-If a showing-slot field is empty, omit that slot from the offer. If both are empty, the draft falls back to "what days and times work for you, and I can match my availability."
+The skill calculates the next upcoming concrete date and time from the two preferred slots and offers ONE in the template's DATE/TIME placeholder.
+
+If a showing-slot field is empty, fall back to the other. If both are empty, the draft becomes "Do you have any questions about the property? What days and times work for you, and I'll match my availability."
 
 ## Edge cases
 
