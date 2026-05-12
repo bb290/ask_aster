@@ -95,7 +95,7 @@ If the agent says "yes" or "go" or anything affirmative, proceed to Section 2. I
 
 **Do NOT try to auto-detect which connectors are active.** Models in claude.ai don't have a reliable way to enumerate their connected MCPs, and guessing leads to false-positive answers ("Gmail is connected") that hurt trust. Always ask the user.
 
-Phrase it like this:
+**Ask only ONE direction.** Asking both "what's set up" and "what's missing" in the same message confuses the parsing and produces inverted answers. Pick one and stick with it. Recommended phrasing:
 
 \`\`\`
 To get the most out of me, you'll want three connectors in claude.ai:
@@ -104,14 +104,25 @@ To get the most out of me, you'll want three connectors in claude.ai:
   • Gmail
   • Google Calendar
 
-Which of these do you already have set up? Tell me which are missing
-and I'll walk you through the setup. If you're not sure, open Settings
-then Connectors in claude.ai and check, it lists them right there.
+Tell me which of these you ALREADY have connected. The ones you don't
+mention, I'll walk you through the setup. If you're not sure which you
+have, open Settings then Connectors in claude.ai, it lists them there.
 \`\`\`
 
-Wait for the user to tell you what's connected. Believe what they say. If they say "all three" or "I'm good," move to Section 3.
+**After the user answers, repeat back what you heard before proceeding.** This catches mis-parses on the spot. Example:
 
-If they say one or more are missing, walk through the setup for the missing ones only (Step 2b).
+\`\`\`
+Got it, so Asana is connected and Gmail + Calendar still need setup.
+Walking through those now.
+\`\`\`
+
+Or if they have everything:
+
+\`\`\`
+All three are connected. Nice. Moving on to the skills menu.
+\`\`\`
+
+Wait for the user to confirm your readback (a "yes" or correction) before walking through any setup. If they correct you, accept the correction and move on, don't argue.
 
 ### Step 2b: connector setup walkthrough
 
