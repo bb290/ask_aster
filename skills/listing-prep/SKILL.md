@@ -1,98 +1,178 @@
 ---
 name: listing-prep
-description: Coordinates the full prelisting workflow for a Sagareus rental property. Collects property inputs, delegates to listing-copywriter for the Zillow listing copy and market-rent-analysis for comp-based rent recommendation, assembles the PreListing email in Sagareus voice, creates a Gmail draft to the owner, finds the matching Asana subtask, and posts a timestamped copy of the email as a comment for the record. Use when a leasing agent says "prelisting package for [address]," "let's prep [property]," "market rent and listing for [address]," "draft prelisting email," or invokes /listing-prep. If the user only wants listing copy, route to /listing-copywriter directly. If they only want comp analysis, route to /market-rent-analysis directly. Requires Gmail and Asana MCPs connected.
+description: Coordinates the full prelisting workflow for a Sagareus rental property. Pulls owner info from Asana custom fields, asks for property details and three Zillow comps, runs comp analysis first to surface a market rent recommendation, then guides the agent through the pricing decisions using that number as the anchor. Generates the listing copy, assembles the PreListing email in Sagareus voice, drafts in Gmail, and posts a timestamped copy on the matching Asana subtask. Use when a leasing agent says "prelisting package for [address]," "let's prep [property]," "market rent and listing for [address]," "draft prelisting email," or invokes /listing-prep. Requires Gmail and Asana MCPs connected.
 ---
 
 # Listing Prep — orchestrator skill
 
 ## What this is
 
-The leasing agent's full prelisting workflow in one skill. Gathers inputs, delegates to two sub-skills, assembles the owner-facing PreListing email, drafts it in Gmail, and posts a copy on the matching Asana subtask for the record. The agent reviews and sends.
+The leasing agent's full prelisting workflow in one skill. Pulls owner info and property metadata from Asana custom fields, runs the comp analysis to determine market rent first, walks the agent through pricing decisions using that number, generates the listing copy, drafts the PreListing email in Gmail, and posts a copy on the matching Asana subtask for the record.
 
-The point: turn a 30-to-45-minute manual prep into a 5-minute guided one. No copy-pasting between docs, no forgetting the comp links, no Asana subtask hunting.
+The point: turn a 30-to-45-minute manual prep into 5 minutes of guided conversation. **The skill exists to help the agent determine market rent, not to ask them for it.**
 
 ## When to use
 
 - Agent invokes `/listing-prep`
 - Agent says "prelisting package for [property]," "let's prep [property]," "market rent and listing for [property]," "draft prelisting email," or similar
-- A new property has been onboarded and is about to go live, and the agent needs the full prelisting bundle
+- A new property has been onboarded and is about to go live
 
 ## When NOT to use
 
 - Agent only wants listing copy rewritten → use `/listing-copywriter` directly
-- Agent only wants comp analysis → use `/market-rent-analysis` directly
-- Property is already listed and live → use `/weekly-leasing-report` for the ongoing weekly update flow
+- Agent only wants comp analysis without the rest → use `/market-rent-analysis` directly
+- Property is already listed and live → use `/weekly-leasing-report` for ongoing updates
 
 ## Voice — Aster speaking to the agent
 
 - Plain English. Casual coworker tone.
 - **Never use em dashes.** Commas, periods, or semicolons.
-- No marketing filler. No "this skill will help you..." preambles.
-- Don't ask one question at a time across 8 turns. Consolidate missing inputs into a single batched message.
-- Acknowledge what the agent already provided in their opener. Don't re-ask.
+- No marketing filler.
+- Don't ask one question at a time across 8 turns. Consolidate.
+- Acknowledge what the agent already provided in their opener.
 
-## Required inputs
+## Workflow shape
 
-Ask for any missing inputs in **one consolidated message**. Pull what you can from the agent's opening message first, then ask only for what's not there.
+The skill runs in three phases. Each phase ends with the agent confirming before moving on.
 
-**Property:**
-1. Property address
-2. Unit details: beds, baths, sqft, key verified amenities, condition notes (parking, laundry, AC, pet policy, etc.)
+```
+Phase 1: Gather minimum inputs (property, comps)
+  ↓ Asana lookup pulls owner info auto
+Phase 2: Run comp analysis, present market rent
+  ↓ Agent sees the number
+Phase 3: Get pricing decisions, assemble email, draft + Asana post
+```
 
-**Comps:**
-3. Three Zillow comparable listing URLs
+Pricing decisions only get asked AFTER the agent has seen the market rent recommendation. The agent picks starting rent, minimum floor, deposit, last month, total move-in cost, and rent credit with the comp report in front of them.
 
-**Owner:**
-4. Owner first name (for email greeting)
-5. Owner email address
+---
 
-**User-supplied pricing inputs (the skill does NOT compute these, the agent picks them):**
-6. Starting rent (typically $100 to $200 above the market rent recommendation from market-rent-analysis, but the agent decides)
-7. Minimum rent floor (the lowest the agent is willing to drop without owner re-approval)
-8. Security deposit
-9. Last month's rent
-10. Estimated total move-in cost (~50% of first month's rent is a common benchmark, agent decides)
-11. Rent credit selection: None / $500 / $1,000 / 1 month free rent
+## Phase 1: gather property + comps
 
-If the agent says "you tell me what to pick" for the pricing inputs, push back gently: "Those are decisions you make based on the comp report and the owner's situation. I'll pull comps first, then you decide. Want to start with the comp pull?"
+### Step 1: Asana lookup (auto, no agent input needed)
 
-## Workflow
+Search Asana for the property's parent task. Pattern is typically `Leasing | [address]` or close variant. Use `mcp__asana__asana_search_tasks` with the property address as the query, scoped to the Leasing project.
 
-### Step 1: gather all inputs
+Once the parent task is found, drill into the LU or TP sub-task and pull these custom fields:
 
-Pull what's in the opener. Then ask for the rest in one batched message. Wait for the agent's response. If anything is still missing after their reply, ask again briefly.
+- **Owner First Name** (custom field on LU/TP)
+- **Owner Email** (custom field on LU/TP)
+- **Zillow Link**, **Redfin Link**, **Sagareus Link** (already used by weekly-leasing-report, may already exist)
+- **List Date** (if set)
 
-### Step 2: invoke listing-copywriter
+If any custom field is missing, surface it inline in the batched ask (Step 2) so the agent can fill it.
 
-Call the `listing_copywriter` tool with:
-- Property address
-- Verified features (from input #2 above)
+If the parent task or LU/TP sub-task doesn't exist yet, tell the agent:
 
-It will return a 5-paragraph listing (120 to 250 words) plus a sources line. Do not modify the output, the formatting and word count rules are authoritative there.
+```
+Couldn't find the parent task for [property] in the Leasing project.
+Either the property hasn't been onboarded yet, or the task name doesn't
+include the address. Please check Asana and confirm the task exists.
+```
 
-If the sub-skill returns a clarifying question (e.g., "needs property visit to verify X"), surface it to the agent and pause.
+Don't auto-create. Pause until the agent confirms or fixes.
+
+### Step 2: ask for property details + comps in one batched message
+
+After the Asana lookup, present what you found and ask for the rest. Format:
+
+```
+Got it. Looking at Asana for 12042 14th Ave NE, Seattle:
+  • Owner: [first name] <[email]>
+  • Listing URLs in Asana: Zillow [yes/no], Redfin [yes/no], Sagareus [yes/no]
+  • [Note any custom fields that were empty]
+
+To run the prelisting prep, I need:
+
+PROPERTY
+  • Beds / baths / sqft
+  • Key verified amenities (parking, laundry, AC, heat, appliances, pet policy)
+  • Condition notes (recent upgrades, anything worth highlighting)
+
+COMPS
+  • Three Zillow comparable listing URLs
+
+If the owner first name or email looks wrong above, paste corrections too.
+```
+
+Wait for the agent to reply with property details and comp URLs. If they only give partials, ask for the missing pieces in one batched follow-up.
+
+---
+
+## Phase 2: run comp analysis, present market rent
 
 ### Step 3: invoke market-rent-analysis
 
 Call the `market_rent_analysis` tool with:
-- The three Zillow URLs (from input #3)
+- The three Zillow URLs
 - Subject property: address, beds, baths, sqft, condition, key amenities
 
-It will return:
+It returns:
 - Per-comp data (rent, days on market, total move-in cost, concessions, URL)
 - Recommended market rent (single number, rounded to nearest $25)
-- Quality flags if any (long DOM on comps, heavy concessions, size mismatches)
+- Quality flags if any (long DOM, heavy concessions, size mismatches)
 
-If a Zillow fetch fails, the sub-skill will tell you which URL(s) failed and ask the agent to paste the relevant details manually. Pass that ask through to the agent.
+If a Zillow fetch fails, the sub-skill will tell you which URLs failed and ask the agent to paste the relevant details. Pass through.
 
-### Step 4: assemble the PreListing email
+### Step 4: present the recommendation to the agent
 
-Use the EXACT template below. Fill placeholders from Steps 1, 2, 3, and the user inputs. Do not paraphrase template language. The template is the result of legal and operational decisions, not a draft to wordsmith.
+Show the full comp report, then highlight the market rent number clearly. Phrase it so the agent knows this is the anchor, not the final list price.
+
+```
+Comp report for 12042 14th Ave NE, Seattle:
+
+[Per-comp summary from market-rent-analysis]
+
+Market rent recommendation: $X,XXX
+
+[Any quality flags]
+
+Standard play is to list $100 to $200 above this to test demand, then
+drop based on inquiry volume per the adjustment plan. Your call on the
+exact starting rent.
+```
+
+This is the moment the agent has the most information. Pricing decisions come next.
+
+---
+
+## Phase 3: pricing, copy, email, drafts
+
+### Step 5: ask for pricing decisions (now that they have the comp report)
+
+Single batched ask:
+
+```
+Now that you've seen the comps, pricing decisions for the listing:
+
+  • Starting rent (recommend $X,XXX to $X,XXX based on the +$100/+$200 rule above market)
+  • Minimum rent floor (lowest you'll drop without re-approving with owner)
+  • Security deposit
+  • Last month's rent
+  • Estimated total move-in cost (~50% of first month is a common benchmark)
+  • Rent credit: None / $500 / $1,000 / 1 month free
+```
+
+Wait for the agent's reply. If any pricing input is missing, ask for it specifically.
+
+### Step 6: invoke listing-copywriter
+
+Call the `listing_copywriter` tool with:
+- Property address
+- Verified features (from Phase 1 Step 2)
+
+It returns a 5-paragraph listing (120 to 250 words) plus a sources line. Do not modify the output.
+
+If the sub-skill says it needs a property visit to verify a detail, surface that to the agent and pause the workflow.
+
+### Step 7: assemble the PreListing email
+
+Use the EXACT template below. Fill placeholders from the Asana lookup, the comp report, the pricing decisions, and the listing copy. Do not paraphrase template language.
 
 ```
 Subject: PreListing | <<PROPERTY ADDRESS>>
 
-Hi <<Owner First Name>>,
+Hi <<Owner First Name from Asana>>,
 
 Please review the proposed listing strategy below to confirm its accuracy
 and your alignment with the pricing approach. Unless I hear otherwise, I
@@ -100,21 +180,21 @@ will proceed with publishing the listing as presented.
 
 Proposed Listing Strategy
 
-Starting Rent: $<<user-supplied>>
+Starting Rent: $<<starting rent>>
 We begin slightly above market to test demand and adjust quickly.
 
 Adjustment Plan
 If 6 to 10 inquiries in reporting week, rent will be reduced by $100.
 If 1 to 5 inquiries in reporting week, rent will be reduced by $200.
-Minimum Rent Floor: $<<user-supplied>>
+Minimum Rent Floor: $<<minimum floor>>
 We will not drop rent below this amount without prior approval.
 
 Move-In Costs & Incentive
 Prorated first month's rent (due within 48 hours of lease signing)
-Security Deposit: $<<user-supplied>>
-Last month's rent: $<<user-supplied>>
-Estimated Total: $<<user-supplied>>
-Rent Credit: <<user-supplied selection>>, applied at lease signing.
+Security Deposit: $<<security deposit>>
+Last month's rent: $<<last month>>
+Estimated Total: $<<total move-in>>
+Rent Credit: <<rent credit selection>>, applied at lease signing.
 
 Market Rent Analysis
 
@@ -137,120 +217,111 @@ Draft Listing
 
 Below is the current draft for your review:
 
-<<Paste listing copy from Step 2, verbatim, including the sources line>>
+<<Paste listing copy from Step 6, verbatim, including the sources line>>
 
 Thanks,
 ```
 
-End with a single "Thanks," no agent name (the agent's Gmail signature handles that).
+End with single "Thanks," no agent name (Gmail signature handles that).
 
 **Notes on the template:**
 
-- Inquiry counts and showing activity are NOT publicly visible on Zillow. The "# of contacts" field from the original template is intentionally dropped. Do not invent numbers.
-- Listing copy is pasted verbatim from Step 2. Don't reformat or trim.
-- All dollar amounts use the agent's supplied figures. If a figure is missing, stop and ask.
+- Inquiry counts and showing activity are NOT publicly visible on Zillow. The original template had a "# of contacts" field that's intentionally dropped.
+- Listing copy is pasted verbatim from Step 6.
+- All dollar amounts come from the agent's Phase 3 Step 5 inputs.
 
-### Step 5: show the assembled email to the agent for review
+### Step 8: show the assembled email for review
 
 Display the full draft. Ask: "Look good? If yes, I'll create the Gmail draft and post a copy on the Asana subtask. Tell me what to change otherwise."
 
-Wait for confirmation. Do not proceed to writes until the agent confirms.
+Wait for explicit confirmation before writing anything.
 
-### Step 6: create the Gmail draft
+### Step 9: create the Gmail draft
 
 After the agent confirms:
 
-1. Check that Gmail MCP is connected (look for `mcp__claude_ai_Gmail__*` tools or equivalent).
+1. Check Gmail MCP is connected.
 2. Create a Gmail **draft** (not send) with:
-   - To: owner email
+   - To: owner email (from Asana custom field, or override the agent provided)
    - Subject: "PreListing | [Property Address]"
    - Body: the approved email text
-3. Capture the draft creation timestamp.
-4. Capture the Gmail draft link if the MCP returns one.
+3. Capture the draft creation timestamp and link if returned.
 
-If Gmail MCP isn't connected, output the email body in a copy-paste block and tell the agent to paste it manually. Continue to Step 7 regardless.
+If Gmail MCP isn't connected, output the email body in a copy-paste block and tell the agent to paste manually.
 
-### Step 7: find the Asana subtask
+### Step 10: post the email body as a comment on the Asana subtask
 
-Search Asana for the right subtask to post the email copy on. Look for:
+Find the right subtask:
+1. Parent task containing the property address.
+2. Under that, the LU or TP sub-task.
+3. Under that, the sub-sub-task named `Email | Owner - Market Rent & PreListing` (or close variant).
 
-1. **Parent task** containing the property address. The pattern is typically `Leasing | [address] - [stage]` or similar. Use `mcp__asana__asana_search_tasks` with the property address as the query, scoped to the Leasing project if you know the GID.
-2. **Sub-task** under that parent: either an `LU` or `TP` (tenant placement) sub-task.
-3. **Sub-sub-task** under LU/TP labeled exactly: `Email | Owner - Market Rent & PreListing` (or close variant matching the lease-up workflow numbering convention).
-
-If you can't find the exact subtask, surface a clear error:
+Use `mcp__asana__asana_create_task_story` with:
+- `task_id`: the sub-sub-task GID
+- `text`: a comment formatted as:
 
 ```
-Couldn't find the "Email | Owner - Market Rent & PreListing" subtask
-for [property address] in Asana. Here's what I searched:
-  • Parent task containing "[address]"
-  • LU or TP sub-task
-  • Sub-task named "Email | Owner - Market Rent & PreListing"
+PreListing email drafted [timestamp in user's local TZ if known, else UTC]
+Gmail draft: [link if available, else "see Gmail drafts"]
 
-Either the property isn't onboarded yet, the subtask is named
-differently, or it lives in a different parent task. Please check
-Asana and tell me the right subtask GID, or paste the email body
-into the right subtask manually.
+---
+
+[Full email body, subject + body, verbatim]
 ```
 
-Do NOT create the subtask. The Asana structure is owned by the team's onboarding process; if the subtask doesn't exist, that's a signal worth surfacing, not auto-fixing.
+If the sub-sub-task isn't found, surface a clear error with what was searched and what's missing. Don't auto-create.
 
-### Step 8: post the email body as a comment on the subtask
-
-After the subtask is found:
-
-1. Use `mcp__asana__asana_create_task_story` with:
-   - `task_id`: the subtask GID
-   - `text`: a comment formatted as:
-     ```
-     PreListing email drafted [timestamp in user's local TZ if known, else UTC]
-     Gmail draft: [link if available, else "see Gmail drafts"]
-
-     ---
-
-     [Full email body, subject + body, verbatim]
-     ```
-
-2. Capture the Asana story GID.
-
-### Step 9: confirm to the agent
+### Step 11: confirm and close
 
 ```
 Done. Two writes:
 
   • Gmail draft created (recipient: [owner email]). Review and send when ready.
-  • Asana comment posted to [property] → [LU or TP] → "Email | Owner - Market Rent & PreListing". The email body is on the subtask for the record.
+  • Asana comment posted to [property] → [LU/TP] → "Email | Owner - Market Rent & PreListing".
 
 [Gmail link if available]
 [Asana subtask link if available]
 ```
 
-Don't be cloying, one sentence of warmth max.
+One sentence of warmth max. Don't be cloying.
 
-## Asana project GID
+---
 
-> ⚠ TODO: paste the Leasing project GID here once provided. Until then, the orchestrator searches by property address across all accessible projects in the Sagareus Property Management workspace and filters by parent-task name containing "Leasing" or the property address.
+## Asana custom fields used by this skill
+
+On the **LU or TP sub-task**, this skill expects:
+
+| Field | Type | Notes |
+|---|---|---|
+| Owner First Name | Text | Used in the email greeting. If missing, ask the agent inline. |
+| Owner Email | Email | Used as the Gmail draft recipient. If missing, the draft goes out with no recipient and the agent fills in. |
+| Zillow Link | URL | Already used by weekly-leasing-report. |
+| Redfin Link | URL | Already used by weekly-leasing-report. |
+| Sagareus Link | URL | Already used by weekly-leasing-report. |
+| List Date | Date | Optional for listing-prep, used by weekly-leasing-report. |
+
+If any are missing, the batched ask in Phase 1 Step 2 surfaces them inline so the agent can fill them. Remind the agent to backfill the Asana custom field so the next run is cleaner.
 
 ## Edge cases
 
-- **Agent skips multiple pricing inputs.** Push back once: "I need [list of missing]. Want to pull the comp report first so you have a market rent to anchor on?" If they pull comps first, run market-rent-analysis early (Step 3 before Step 2). After they see the recommendation, re-ask for the pricing inputs.
-- **Comp URLs are dead or 404.** market-rent-analysis surfaces this. Pass through to the agent: "Comp 2's URL didn't fetch. Either paste the comp details (rent, beds/baths, sqft, DOM, concessions) or send a different URL."
-- **Owner email unknown.** Create the draft with no recipient, tell the agent to add it before sending. The Asana comment still posts.
-- **Gmail MCP missing.** Output the body for manual paste, continue to Asana step.
-- **Asana MCP missing.** Output a formatted "post this on the subtask manually" block.
-- **Property not yet in Asana.** Surface the error from Step 7. Don't auto-create.
-- **Listing copy needs property visit to verify a detail.** listing-copywriter will say so. Stop the workflow, tell the agent: "Copy can't be drafted yet, [reason]. Visit the property, then re-run."
+- **Comps come back with quality flags.** Surface them to the agent before showing the recommendation: "Heads up, two of the three comps have 45+ DOM, the recommendation may be slightly high. Worth re-pulling comps?" Let them decide.
+- **Owner email pulled from Asana is wrong.** The Phase 1 batched-ask invites corrections. Use the override for this run, remind the agent to update the custom field.
+- **Owner first name missing.** Ask inline, accept the answer, remind them to add to Asana.
+- **All three comps fail to fetch.** market-rent-analysis surfaces this. Pause the workflow, ask the agent to paste the comp details directly or send different URLs.
+- **Gmail MCP missing.** Skip Step 9 mechanically, output the body for manual paste. Still run Step 10.
+- **Asana subtask "Email | Owner - Market Rent & PreListing" not found.** Surface error. Don't auto-create. The Asana structure is owned by the team's onboarding process.
+- **Agent wants to skip the listing copy.** Allowed. The email will say "Listing copy in progress, will follow separately." Note in the Asana comment.
 
 ## Out of scope
 
 - Sending the Gmail draft. Always draft, never send.
-- Modifying the listing copy returned by listing-copywriter. The voice and rules there are authoritative.
-- Computing the starting rent. The agent decides above-market positioning.
-- Creating the Asana subtask if it doesn't exist. Surfacing the gap is the right move.
-- Setting up the listing in Buildium or Zillow. That's a separate downstream step.
+- Modifying listing-copywriter's output.
+- Computing the starting rent. The agent picks it after seeing the comp report.
+- Auto-creating Asana subtasks if they're missing.
+- Setting up the listing in Buildium or Zillow.
 
 ## Limitations to flag if asked
 
-- v0. Doesn't pull from Buildium or Zillow APIs directly, doesn't auto-populate property details. Agent provides what's verified.
+- v0. Doesn't pull from Buildium or Zillow APIs directly.
 - Email is drafted, never auto-sent.
-- Listing-copywriter and market-rent-analysis are called as sub-skills, but each can also be invoked standalone if the agent only needs one of them.
+- Sub-skills (listing-copywriter, market-rent-analysis) can be invoked standalone if the agent only needs one of them.
