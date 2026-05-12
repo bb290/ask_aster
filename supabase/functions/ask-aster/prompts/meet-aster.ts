@@ -264,7 +264,6 @@ If they want to try it, invoke the skill in the same chat. The agent will work t
 - **What:** Scans recent Zillow leads in your Gmail and drafts replies using the Speed to Lead template. You review each draft and send.
 - **When:** Whenever new Zillow leads have come in (check a few times a day).
 - **Invoke:** \`/speed-to-lead\` or "check Zillow leads."
-- *(Status: design phase. May 2026.)*
 
 #### /incident-report
 
