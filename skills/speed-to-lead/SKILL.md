@@ -82,34 +82,36 @@ If the property isn't found in Asana, surface to the agent: "Couldn't find [addr
 
 ### Step 4: draft the reply per the Speed to Lead SOP
 
-The SOP template is in `sops/lease up/11-respond-speed-to-lead.md`. Base structure:
+**Authoritative template (use verbatim, fill placeholders only):**
 
-> Hi [First Name], thank you for your interest in [Address]!
->
-> Here is a link to the listing to review details and a video walkthrough to confirm it feels like a good fit: [Video Walkthrough Link] [Listing Link]
->
-> Do you have any questions about the property, or would you like to schedule a showing?
+```
+Hi there, thank you for your interest in <<ADDRESS>>!
+Here is a link to the Listing to review details & a video walkthrough of the property to confirm it feels like a good fit:
+ 🎥 <<Video Walkthrough Link>>
+ 📄 <<Listing Link>>
+Do you have any questions about the property? I have available time at <<DATE/TIME>> if you would like to see it in person. Or is there another time that works better?
+```
+
+**Template rules:**
+
+- Greeting is always **"Hi there,"** never "Hi [First Name]". The Sagareus convention is generic, not personalized. Don't override.
+- Emojis 🎥 and 📄 are **required** in this template, overriding the general no-emoji rule. They're functional icons, not decoration.
+- If the **Video Walkthrough Link is missing** in Asana, omit the entire 🎥 line and adjust the intro to: `Here is a link to the Listing to review details:` (drop "& a video walkthrough of the property to confirm it feels like a good fit").
+- **DATE/TIME** is the **next upcoming Preferred Showing Slot** from Asana, calculated from now. If today is Tuesday before noon, that's today's 12-2pm slot. If Tuesday afternoon is past, the next slot is the upcoming Saturday 3-5pm. Skip ahead to the next future occurrence either way.
+- Use a concrete date and time, not a recurring description. "Saturday May 16, 3-5pm" beats "Saturdays 3-5pm" because the prospect needs a specific moment to confirm against their schedule.
+- End with single "Thanks," or "Best," — no agent name (Gmail signature handles that).
+- Subject line for the reply: keep the original subject prefixed with "Re:" (set manually since we're creating a fresh draft, not replying inline).
 
 **Adapt the template based on what the prospect said in their message:**
 
-- **Prospect explicitly asked for a tour** (e.g., "I would like to schedule a tour"): skip the "or would you like to schedule a showing" close. Instead offer the two preferred slots:
-
-  > I'd love to set that up. I have [Slot 1] or [Slot 2] open this week, either works for me. Let me know which fits and I'll send the showing details. I can also offer a FaceTime or Google Meet tour if that's more convenient.
-
-- **Prospect asked a specific question** (e.g., "Is it pet friendly?", "What's the parking?"): flag for the agent to answer manually. Draft a stub like:
-
-  > Hi [First Name], thanks for your interest in [Address]. [Agent to answer the specific question here, then offer to schedule a showing.]
-
-  Surface the question to the agent: "Mariah asked about pet policy, I left a stub for you to fill in before sending."
-
-- **Prospect just asked for general info** (most common): use the base template verbatim.
+- **Prospect just asked for general info or a tour** (most common): use the template verbatim with the next slot filled in.
+- **Prospect asked a specific question** (e.g., "Is it pet friendly?", "What's the parking?"): flag for the agent to answer manually. Draft the standard template but ALSO surface the question to the agent: "Mariah asked about pet policy, you'll want to answer that before sending."
 
 **Important formatting rules for the draft:**
 
-- No em dashes.
-- The links are inline, not labeled. The template above shows them as `[Video Walkthrough Link] [Listing Link]` because that's how the SOP writes them. In the HTML version, render them as proper `<a>` tags with the URL itself as both href and visible text. In plain text, just paste the URLs.
-- End with single "Thanks," or "Best," — no agent name (Gmail signature handles that).
-- Subject line for the reply: keep the original subject prefixed with "Re:" (Gmail does this automatically when replying, but we're creating a fresh draft, so set the subject manually).
+- No em dashes (except where unavoidable inside the template's own punctuation, which uses "&" instead).
+- In the HTML version, render the URLs as proper `<a>` tags with the URL itself as both href and visible text. Keep the emoji prefix inline.
+- In plain text, the emojis render natively in Gmail.
 
 ### Step 5: show all drafts to the agent for review
 
