@@ -189,21 +189,20 @@ PreListing | <<PROPERTY ADDRESS>>
 <p><b>Starting Rent:</b> $<<starting rent>><br>
 We begin slightly above market to test demand and adjust quickly.</p>
 
-<p><b><u>Adjustment Plan</u></b></p>
+<p><b>Minimum Rent Floor:</b> $<<minimum floor>><br>
+We will not drop rent below this amount without prior approval.</p>
+
+<p><b>Adjustment Plan</b></p>
 <ul>
   <li>If 6 to 10 inquiries in reporting week, rent will be reduced by $100.</li>
   <li>If 1 to 5 inquiries in reporting week, rent will be reduced by $200.</li>
 </ul>
 
-<p><b>Minimum Rent Floor:</b> $<<minimum floor>><br>
-We will not drop rent below this amount without prior approval.</p>
-
-<p><b><u>Move-In Costs & Incentive</u></b></p>
+<p><b>Move-In Costs:</b> $<<total move-in>></p>
 <ul>
   <li>Prorated first month's rent (due within 48 hours of lease signing)</li>
   <li>Security Deposit: $<<security deposit>></li>
   <li>Last month's rent: $<<last month>></li>
-  <li>Estimated Total: $<<total move-in>></li>
   <li>Rent Credit: <<rent credit selection>>, applied at lease signing</li>
 </ul>
 
