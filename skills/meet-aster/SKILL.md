@@ -294,7 +294,6 @@ If they want to try it, invoke the skill in the same chat. The agent will work t
 - **When:** Whenever a coworker did something worth calling out. Above-and-beyond effort, a clutch save with a tenant or owner, going the extra mile on a turnover, picking up someone's slack without being asked. If your gut says "that was awesome," capture it.
 - **Invoke:** `/shout-out` or "shout out to [name]" or "I want to recognize [name]."
 - **Why it matters:** Two payoffs. First, I learn what a job well done looks like, not just what failure looks like. That makes me better at recognizing and reinforcing patterns of good work. Second, leadership uses shout-outs in the weekly company email so the recognition is public. Your teammate gets seen. The team gets to see what excellence actually looks like in practice, not just in theory.
-- *(Status: design phase. May 2026.)*
 
 #### Just ask Aster
 

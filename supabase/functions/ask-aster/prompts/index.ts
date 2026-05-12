@@ -5,12 +5,14 @@ import { weeklyLeasingReportPrompt } from "./weekly-leasing-report.ts";
 import { meetAsterPrompt } from "./meet-aster.ts";
 import { incidentReportPrompt } from "./incident-report.ts";
 import { decisionToRolloutPrompt } from "./decision-to-rollout.ts";
+import { shoutOutPrompt } from "./shout-out.ts";
 
 export { edgeCasePrompt };
 export { weeklyLeasingReportPrompt };
 export { meetAsterPrompt };
 export { incidentReportPrompt };
 export { decisionToRolloutPrompt };
+export { shoutOutPrompt };
 
 export const ALL_PROMPTS = [
   edgeCasePrompt,
@@ -18,4 +20,5 @@ export const ALL_PROMPTS = [
   meetAsterPrompt,
   incidentReportPrompt,
   decisionToRolloutPrompt,
+  shoutOutPrompt,
 ];
