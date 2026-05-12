@@ -208,20 +208,26 @@ We will not drop rent below this amount without prior approval.</p>
 
 <p><b><u>Market Rent Analysis</u></b></p>
 
-<p><b>Comp 1:</b> $<<Comp 1 Rent>>, <<Comp 1 Days on Market>> days on market<br>
-Total Move-In Cost: $<<Comp 1 move-in cost>><br>
-Concessions: <<Comp 1 concessions>><br>
-<a href="<<Comp 1 Zillow Link>>"><<Comp 1 Zillow Link>></a></p>
+<p><b>Comp 1:</b> $<<Comp 1 Rent>>, <<Comp 1 Days on Market>> days on market</p>
+<ul>
+  <li>Total Move-In Cost: $<<Comp 1 move-in cost>></li>
+  <li>Concessions: <<Comp 1 concessions>></li>
+  <li><a href="<<Comp 1 Zillow Link>>"><<Comp 1 Zillow Link>></a></li>
+</ul>
 
-<p><b>Comp 2:</b> $<<Comp 2 Rent>>, <<Comp 2 Days on Market>> days on market<br>
-Total Move-In Cost: $<<Comp 2 move-in cost>><br>
-Concessions: <<Comp 2 concessions>><br>
-<a href="<<Comp 2 Zillow Link>>"><<Comp 2 Zillow Link>></a></p>
+<p><b>Comp 2:</b> $<<Comp 2 Rent>>, <<Comp 2 Days on Market>> days on market</p>
+<ul>
+  <li>Total Move-In Cost: $<<Comp 2 move-in cost>></li>
+  <li>Concessions: <<Comp 2 concessions>></li>
+  <li><a href="<<Comp 2 Zillow Link>>"><<Comp 2 Zillow Link>></a></li>
+</ul>
 
-<p><b>Comp 3:</b> $<<Comp 3 Rent>>, <<Comp 3 Days on Market>> days on market<br>
-Total Move-In Cost: $<<Comp 3 move-in cost>><br>
-Concessions: <<Comp 3 concessions>><br>
-<a href="<<Comp 3 Zillow Link>>"><<Comp 3 Zillow Link>></a></p>
+<p><b>Comp 3:</b> $<<Comp 3 Rent>>, <<Comp 3 Days on Market>> days on market</p>
+<ul>
+  <li>Total Move-In Cost: $<<Comp 3 move-in cost>></li>
+  <li>Concessions: <<Comp 3 concessions>></li>
+  <li><a href="<<Comp 3 Zillow Link>>"><<Comp 3 Zillow Link>></a></li>
+</ul>
 
 <p><b><u>Draft Listing</u></b></p>
 
