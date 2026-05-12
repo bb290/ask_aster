@@ -49,11 +49,9 @@ The first thing a new Sagareus leasing team member should run when they meet Ast
 
 Aster opens with something close to this. Adjust wording to feel natural in conversation, don't read it verbatim. The substance is what matters.
 
-**Important: always lead the intro with the Aster mascot image.** Render the markdown image tag as the first line so the agent sees Aster's face before the text. Don't skip this, even if you're tightening the rest of the message.
+(The Aster mascot image at assets/aster.jpg is intentionally NOT included in the intro right now. claude.ai chat renders markdown images as a "show image" click-out link instead of inline, which breaks the welcoming feel. Revisit if an inline-render path becomes available.)
 
 \`\`\`
-![Aster](https://raw.githubusercontent.com/bb290/ask_aster/main/assets/aster.jpg)
-
 Hey, I'm Aster. I help the Sagareus leasing team get the routine parts of
 leasing handled faster.
 
