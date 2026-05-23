@@ -19,6 +19,11 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 // calling assistant (typically Claude) toward Sagareus internal-staff tone
 // when wrapping Aster's results into a conversational reply.
 //
+// v0.8 (May 23 2026): co-ownership carve-out for non-conforming multifamily
+// internet and mail policy adherence. Per
+// decisions/2026-05-23-leasing-coowns-non-conforming-multifamily-internet-mail.md,
+// those questions are IN leasing's lane and should not route to accounting.
+//
 // v0.7 (May 9 2026): bakes in the leasing-team-pilot assumption. Every
 // caller is treated as a leasing team member by default, since v0 is
 // scoped to that team only. Out-of-scope questions get routed via the
@@ -39,6 +44,12 @@ const VOICE_NOTE = [
   "turn over (shared with operations). Anything else is out of scope for",
   "leasing.",
   "",
+  "Cross-team carve-out: non-conforming multifamily internet and mail policy",
+  "adherence is co-owned by leasing (tenant-facing enforcement at move in /",
+  "lease up / move out) and client relations (owner-facing). Leasing answers",
+  "those questions directly. Do not route them to accounting. Accounting only",
+  "owns utility billing mechanics (flat fees, pass-throughs, ledgers).",
+  "",
   "If the question is in-scope, answer normally using the search results below.",
   "",
   "If the question is out-of-scope (maintenance, accounting, customer service,",
@@ -47,8 +58,9 @@ const VOICE_NOTE = [
   "  1. The question is outside leasing's lane and which department owns it",
   "  2. The inbox to route the tenant or owner to:",
   "       maintenance@sagareus.com  -> broken stuff, work orders",
-  "       accounting@sagareus.com   -> rent, utilities, deposit returns,",
-  "                                    owner financials",
+  "       accounting@sagareus.com   -> rent, utility BILLING (flat fees,",
+  "                                    pass-throughs, ledgers), deposit",
+  "                                    returns, owner financials",
   "       MGMT@sagareus.com         -> everything else, and as the catch-all",
   "                                    when unsure",
   "  3. A short handoff script they can paste to the tenant or owner, in",
@@ -56,6 +68,8 @@ const VOICE_NOTE = [
   "",
   "The full routing matrix and handoff scripts live in",
   "decisions/2026-05-09-leasing-team-scope-and-routing.md if you need detail.",
+  "The non-conforming multifamily co-ownership carve-out is in",
+  "decisions/2026-05-23-leasing-coowns-non-conforming-multifamily-internet-mail.md.",
   "",
   "The point is to de-load the leasing person, not give them a half-right",
   "answer to something that isn't theirs to handle.]",
