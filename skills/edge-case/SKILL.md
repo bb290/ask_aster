@@ -1,0 +1,175 @@
+---
+name: edge-case
+description: Capture an edge case from a Sagareus staff member — a situation the playbook didn't cover cleanly. Aster asks a short set of questions, confirms the summary, and files an Asana task in the Roll Out project under "New captures" for Brittany's review. Use when a staff member says "I have an edge case," "this isn't covered in the playbook," or invokes /edge-case. Requires the Asana MCP connected.
+---
+
+# Edge Case — staff capture skill
+
+## What this is
+
+This is the staff-facing capture skill for edge cases. A staff member tells Aster about a situation that didn't fit the playbook — the SOP didn't cover it, was unclear, or felt off. Aster asks the questions a manager would ask, files an Asana task in **Roll Out → New captures**, and Brittany reviews from there.
+
+## When to use
+
+Trigger this skill when a staff member:
+- Says "I have an edge case"
+- Says "this isn't covered in the playbook" / "the SOP doesn't say what to do here"
+- Says "hey Aster, what do I do when…" and the answer isn't in the SOPs
+- Types `/edge-case`
+- Describes a situation where they had to make a judgment call (or are about to) because the playbook didn't fit
+
+## When NOT to use
+
+- A real event already happened with consequences → use `/incident-report` instead
+- It's a routine question whose answer IS in the SOPs — Aster can just answer (run a search)
+- They're documenting a decision after the fact when no real edge existed — use `/decision-to-rollout` (manager-only) downstream
+
+If unsure, ask: "Did something already happen, or are you working through a situation that the playbook doesn't cleanly cover?" Their answer routes.
+
+## Voice — Aster speaking to staff
+
+- Plain English. No em dashes (Sagareus rule). No corporate buzzwords.
+- Dry-with-warmth. Edge cases often happen mid-task; staff are time-pressed.
+- One question at a time.
+- Acknowledge what they've already told you. If they led with "owner is asking me to skip the application fee," don't ask "what's the situation?" again. Move forward.
+- "Skip" or "not sure" is a fine answer. Move on.
+
+## How it works (high level)
+
+1. Greet briefly: 6-7 quick questions, then I'll file it.
+2. Parse the opening message — fill in any field they already provided.
+3. Walk through missing fields one at a time.
+4. Show summary. Ask: "Anything to fix or add before I file this?"
+5. Once confirmed, look up Roll Out → "New captures" section, create the Asana task, return the URL.
+
+## Required information
+
+| # | Field | What Aster asks |
+|---|---|---|
+| 1 | Reporter name | "Last thing first — what's your name? (so Brittany knows who to follow up with)" |
+| 2 | The situation | "What's the situation that didn't fit the playbook?" |
+| 3 | Where you looked | "What part of the playbook did you go to first? An SOP, a manager, somewhere else?" |
+| 4 | What was unclear or missing | "What part didn't quite fit, or wasn't there at all?" |
+| 5 | Your call | "What did you decide to do? Or what are you thinking, if you haven't acted yet?" |
+| 6 | Property + unit + who's involved | "Property and unit, and who's involved? Resident, owner, vendor, staff." |
+| 7 | Service line | "Which area does this fall under? Maintenance, leasing, resident relations, accounting, something else?" |
+| 8 | Decision-needed-now or for-the-record | "Do you need a manager call before you proceed, or are you logging this so we close the gap later?" |
+| 9 | Anything else | "Anything else worth capturing? Documents, related Asana tasks, prior cases that felt similar?" — only if it feels like more is there. |
+
+If the staff member skips a question, record "not provided." Don't grill.
+
+## Confirmation step
+
+Show a clean summary and ask for sign-off:
+
+```
+Here's what I'll file:
+
+EDGE CASE
+Reported by: Nicole
+Situation: Owner asking us to waive the application fee for a relative they want to move in. Standard policy says no, but this is a non-arms-length situation and feels different.
+Where you looked: Cs-Application Process SOP
+What was missing: SOP doesn't address owner relatives or non-arms-length applicants
+Your call (or thinking): Was about to apply standard screening but wanted to check first
+Property: 5410 NE 78th Ave, Unit B
+Involved: Owner (Mr. Kim), prospective applicant (his daughter)
+Service line: Leasing
+Decision needed: Yes, before I respond to the owner today
+
+Anything to fix or add before I file this?
+```
+
+Wait for confirmation. Edit if requested. Then file.
+
+## Filing the Asana task
+
+### Step 1 — Resolve the section GID
+
+Call `mcp__asana__asana_get_project_sections` with `project_id: "1214554387439282"` (Roll Out).
+
+Find the section named **"New captures"** (case-insensitive). Capture its GID.
+
+If the section doesn't exist:
+> "Brittany hasn't set up the 'New captures' section in the Roll Out project yet. Send her this message: *'Need a `New captures` section in the Roll Out project before edge case captures can be filed.'* Once she adds it, we can try again."
+Stop. Do not file anywhere else.
+
+### Step 2 — Create the task
+
+Call `mcp__asana__asana_create_task` with:
+- `name`: `Edge case: <short description, ~60 chars trimmed from Q2>`
+- `project_id`: `1214554387439282`
+- `section_id`: `<New captures section GID>`
+- `assignee`: `1203784854198936` (B French — manager of rollout)
+- `notes`: see template below
+
+**Task description template** (plain text in `notes`):
+
+```
+EDGE CASE
+Captured: <today's date> via /edge-case skill
+Reported by: <Q1>
+Status in this queue: Awaiting manager review
+Decision needed before staff proceeds: <Q8 — yes / no, for the record>
+
+== Situation ==
+<Q2>
+
+== Where staff looked first ==
+<Q3>
+
+== What was unclear or missing ==
+<Q4>
+
+== Staff's call (or current thinking) ==
+<Q5>
+
+== Property + unit + who's involved ==
+<Q6>
+
+== Service line ==
+<Q7>
+
+== Notes ==
+<Q9 or "—">
+
+---
+Manager next steps (one or more):
+- If decision-needed: respond to staff today with guidance
+- Capture the call as a decision (markdown + ingest)
+- Update the SOP that didn't cover this
+- Schedule training if the gap will recur
+- Add to Aster corpus
+- Close as one-off (no SOP impact)
+```
+
+### Step 3 — Reply to staff
+
+Once the task is filed:
+
+> "Filed. <task URL> — Brittany will pick this up. <If Q8 was 'decision needed': 'Since you said you need a call before proceeding, I'd flag it to her directly too — don't just rely on the queue.'> Anything else?"
+
+Use the permalink from the API response.
+
+## Edge cases (in the skill itself — meta)
+
+- **Asana MCP not connected:** "Asana isn't connected here. Connect it via /mcp and re-run. Your capture is in this conversation, you won't have to redo it."
+- **Staff bails mid-skill:** "No problem, nothing filed." Do not file partial captures.
+- **Staff says it's actually an incident:** "Sounds like an incident rather than an edge case. Want me to switch to `/incident-report`?" Confirm before switching.
+- **Q8 = "decision needed today":** Strongly encourage the staff member to also message Brittany directly — Asana is async, urgent decisions need a direct ping.
+- **Multiple edge cases in one description:** "Are these one situation or several? Easier to file separately if they're really separate."
+- **Staff isn't sure if it's an edge case:** Default to capture. "Better to log it and have Brittany decide it's not an edge than miss a real gap." File it.
+
+## What this skill INTENTIONALLY does NOT do
+
+- Does not write to Supabase / the Aster corpus. Captures land in Asana for manager review first.
+- Does not give the staff member a decision. Even if Aster knows the SOP cold, the point of capture is to surface the gap, not paper over it. If the staff needs an immediate answer, Aster can suggest they ping Brittany while the capture goes through the queue.
+- Does not file in any project other than Roll Out → New captures.
+- Does not @-mention the staff member. Brittany can on review.
+
+## Reference
+
+- Roll Out project GID: `1214554387439282`
+- "New captures" section: resolved at runtime by name
+- Default assignee (manager): B French, GID `1203784854198936`
+- Companion skill: `/incident-report` — for events that already happened
+- Downstream skill: Brittany uses `/decision-to-rollout` (or its successor) on a reviewed-and-approved edge case to spawn SOP updates and training.
