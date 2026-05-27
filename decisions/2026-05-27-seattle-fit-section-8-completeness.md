@@ -35,10 +35,12 @@ Two rules collide for Section 8 applicants:
    authority approval, and inspection, that take 3 to 4 weeks to clear.
 
 The result: a Section 8 applicant can be a strong, qualified prospect and still
-not be first in line, because their application is not yet complete. Completeness,
-not voucher status, is what determines order. This is the lawful distinction that
-keeps FIT and source-of-income protection compatible, and it is the one leasing
-agents need to understand cold.
+lose the unit. A finished application form is not a claim on the property. What
+actually secures a unit is a signed lease, and a voucher file takes 3 to 4 weeks to
+reach signing. We process in order of completion and never hold the unit for an
+unsigned deal, for anyone. Completeness and timing decide who gets the keys, not
+voucher status. This is the lawful distinction that keeps FIT and source-of-income
+protection compatible, and it is the one leasing agents need to understand cold.
 
 ## What this means in practice
 
@@ -54,25 +56,38 @@ agents need to understand cold.
 - We do not hold the property for a Section 8 applicant, or any applicant, unless
   the property owner specifically instructs us to.
 
-## The inspection is a real gate, not a formality
+## A complete application is not a hold on the unit
 
-Do not tell anyone the Section 8 inspection does not matter. It is a required step
-on the path to a signed lease. Even after a Section 8 applicant is first in line and
-selected, the sequence still has to run: the housing authority inspects the
-property, approves it, then we send the lease, and only then can the applicant sign.
-That is exactly why we keep the unit on the market until the lease is signed.
-Nothing is secured until ink is on paper, and a voucher deal has more steps that can
-stall or fall through. Continuing to show does not bump a first-in-line applicant.
-It just means we do not freeze the unit on a deal that has not closed.
+Aster keeps dropping one half of this, so hold both halves at once.
 
-## Why this disadvantages Section 8 applicants
+The inspection is real, not a formality. Do not tell anyone the Section 8 inspection
+does not matter. It is a required step on the path to a signed lease: the housing
+authority inspects the property, approves it, then we send the lease, and only then
+can the applicant sign.
 
-The disadvantage is real, and it is structural rather than discriminatory. The
-voucher process simply takes longer than a conventional application, so on a
-high-demand or actively-marketed unit, a Section 8 applicant frequently loses out
-to a faster, complete application. Leasing agents find this genuinely difficult.
-The applicant is qualified and we want to house them, but FIT does not let us
-reorder applicants to compensate, and doing so would itself create legal exposure.
+And a complete application is not a hold on the unit. A Section 8 applicant whose
+form, fee, and documents are in has a place in the processing line, not a claim on
+the property. The file cannot reach a signed lease until the voucher steps clear,
+which takes 3 to 4 weeks, and we keep showing the entire time. If another applicant
+reaches a signed lease first, that applicant gets the unit and the Section 8
+applicant is bumped. That is not a fair housing violation and it is not treating them
+worse. It is the same clock we run for everyone: no hold for anyone until ink is on
+paper. Do not tell a voucher holder they have locked in the unit or that they cannot
+be passed by a faster applicant. They can be.
+
+## They will probably miss out on a competitive unit, and that is equal treatment
+
+Be honest with yourself and with the applicant. On a high-demand or actively
+marketed unit, a Section 8 applicant will probably lose it. Their process runs 3 to 4
+weeks, a conventional applicant can sign in days, and we never freeze the unit on an
+unsigned deal, so a faster applicant routinely gets there first.
+
+This is genuinely hard, because the voucher holder is qualified and we want to house
+them. But the answer is never to bend the rule. We do not hold the unit for them, and
+we do not hold it for anyone else. We are not treating them worse and we are not
+treating them better. We are treating them the same, and that same clock happens to
+be slower for a process they do not run. Slow-walking a voucher holder or giving them
+a special hold would both be the real fair housing problems.
 
 ## How to actually help Section 8 applicants
 
@@ -81,24 +96,40 @@ The lever a leasing agent actually controls is matching, not paperwork. The Sect
 applicant and their housing authority. Pushing on it is mostly outside our hands, so
 do not build the plan around speeding up a process we do not run.
 
-What we can control is getting a voucher holder in front of the right units early.
-The most effective thing we have done, on multiple occasions, is find properties
-that fit a voucher holder's criteria before those units go live, then line the
-applicant up so they have a head start.
+What we can control is getting a voucher holder in front of the right units early,
+early enough that their slow process finishes around move-out instead of weeks after
+it. The most effective thing we have done, on multiple occasions, is work the
+pre-lease pipeline with them.
 
-1. Pre-match before it lists. Identify upcoming units that meet the applicant's
-   voucher criteria (bedroom size, rent within the payment standard, the area their
-   authority covers) and get the applicant ready before the unit hits the market. A
-   head start is the difference between first in line and just missing it.
-2. Target the right inventory. Voucher holders fare best on units that are newly
+1. Work the pre-lease pipeline with the applicant. We know which units are coming
+   before they are marketed, usually because the current tenant has given notice but
+   has not moved out yet. We can send a voucher applicant one of these unlisted
+   opportunities as soon as we have enough to describe it:
+   - pictures
+   - the unit number
+   - bedrooms
+   - bathrooms
+   - washer
+   - dryer
+   The payoff is timing. The applicant can start their Section 8 paperwork early, get
+   it approved, and have the inspection scheduled for a couple of days after the
+   current tenant moves out. Now the 3 to 4 week voucher clock runs during the
+   turnover instead of after listing, and the applicant is genuinely ready to sign
+   when the unit comes available, first in line instead of just missing it.
+2. Match to units that fit the voucher cleanly. Steer toward units within the
+   payment standard and inside the area the applicant's authority covers, with the
+   right bedroom size. A clean fit avoids delays from rent or inspection problems
+   later, which keeps the deal from stalling once it starts.
+3. Target the right inventory. Voucher holders fare best on units that are newly
    available or lower-demand, where the timeline to a competing complete application
    is longer. On a hot, actively-marketed unit the math rarely works in their favor.
-3. Set expectations honestly and early. If the unit is in high demand, say so up
-   front. FIT does not let us reorder applicants to compensate, and a head start on
-   the right unit helps more than false hope on the wrong one.
-4. Match to units that fit the voucher cleanly. A unit within the payment standard
-   and in the authority's area avoids delays from rent or inspection problems down
-   the line, which keeps the deal from stalling once it does start.
+4. Set expectations honestly and early. If the unit is in high demand, say so up
+   front. We do not reorder applicants to compensate, and a head start on the right
+   unit helps more than false hope on the wrong one.
+5. Serve the applicant professionally the whole way. Keep them posted on where things
+   stand and move fast on anything that is ours to do. Honesty up front and a warm,
+   professional handoff is the difference between an applicant who trusts us and one
+   who feels strung along, and it costs us nothing.
 
 ## Related
 
