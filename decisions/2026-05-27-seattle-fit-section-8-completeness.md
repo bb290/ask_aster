@@ -54,6 +54,17 @@ agents need to understand cold.
 - We do not hold the property for a Section 8 applicant, or any applicant, unless
   the property owner specifically instructs us to.
 
+## The inspection is a real gate, not a formality
+
+Do not tell anyone the Section 8 inspection does not matter. It is a required step
+on the path to a signed lease. Even after a Section 8 applicant is first in line and
+selected, the sequence still has to run: the housing authority inspects the
+property, approves it, then we send the lease, and only then can the applicant sign.
+That is exactly why we keep the unit on the market until the lease is signed.
+Nothing is secured until ink is on paper, and a voucher deal has more steps that can
+stall or fall through. Continuing to show does not bump a first-in-line applicant.
+It just means we do not freeze the unit on a deal that has not closed.
+
 ## Why this disadvantages Section 8 applicants
 
 The disadvantage is real, and it is structural rather than discriminatory. The
@@ -65,26 +76,29 @@ reorder applicants to compensate, and doing so would itself create legal exposur
 
 ## How to actually help Section 8 applicants
 
-We cannot bend the FIT rule, but we can change the timeline so the applicant's
-file is complete sooner, ideally complete first. This works, and we have done it
-successfully on multiple occasions.
+The lever a leasing agent actually controls is matching, not paperwork. The Section
+8 application, inspection, and housing authority approval timeline sits between the
+applicant and their housing authority. Pushing on it is mostly outside our hands, so
+do not build the plan around speeding up a process we do not run.
 
-1. Start the process early. The moment a Section 8 prospect expresses interest,
-   begin moving on the steps that take time. Do not wait for the rest of the file.
-2. Match them to the right properties. Steer applicants toward units that meet
-   their voucher criteria (bedroom size, rent within the payment standard, areas
-   where their authority operates). A unit that fits avoids delays from RFTA or
-   inspection problems down the line.
-3. Target the right inventory. Section 8 applicants fare best on units that are
-   newly available or lower-demand, where the timeline to a complete competing
-   application is longer. On a hot unit, the math rarely works in their favor, so
-   set expectations honestly and early.
-4. Get them first in line. The goal of starting early is simple: complete their
-   application, RFTA submitted and paperwork in, before competing complete
-   applications arrive. If their file is the first complete one, FIT works for them.
-5. Keep the file moving. Treat every Section 8 step as time-sensitive. Be the
-   squeaky wheel with the housing authority so RFTA approval and inspection
-   scheduling do not stall.
+What we can control is getting a voucher holder in front of the right units early.
+The most effective thing we have done, on multiple occasions, is find properties
+that fit a voucher holder's criteria before those units go live, then line the
+applicant up so they have a head start.
+
+1. Pre-match before it lists. Identify upcoming units that meet the applicant's
+   voucher criteria (bedroom size, rent within the payment standard, the area their
+   authority covers) and get the applicant ready before the unit hits the market. A
+   head start is the difference between first in line and just missing it.
+2. Target the right inventory. Voucher holders fare best on units that are newly
+   available or lower-demand, where the timeline to a competing complete application
+   is longer. On a hot, actively-marketed unit the math rarely works in their favor.
+3. Set expectations honestly and early. If the unit is in high demand, say so up
+   front. FIT does not let us reorder applicants to compensate, and a head start on
+   the right unit helps more than false hope on the wrong one.
+4. Match to units that fit the voucher cleanly. A unit within the payment standard
+   and in the authority's area avoids delays from rent or inspection problems down
+   the line, which keeps the deal from stalling once it does start.
 
 ## Related
 
