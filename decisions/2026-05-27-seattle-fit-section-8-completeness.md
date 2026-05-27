@@ -89,44 +89,50 @@ treating them better. We are treating them the same, and that same clock happens
 be slower for a process they do not run. Slow-walking a voucher holder or giving them
 a special hold would both be the real fair housing problems.
 
-## How to actually help Section 8 applicants
+## How to help a Section 8 applicant secure a unit
 
-The lever a leasing agent actually controls is matching, not paperwork. The Section
-8 application, inspection, and housing authority approval timeline sits between the
-applicant and their housing authority. Pushing on it is mostly outside our hands, so
-do not build the plan around speeding up a process we do not run.
+The lever a leasing agent actually controls is matching, not paperwork. The Section 8
+application, inspection, and housing authority approval timeline sits between the
+applicant and their housing authority. The RFTA and inspection SOPs tell you how to
+run a deal that is already in motion. They do not win a competitive unit for a voucher
+holder. What wins is getting the applicant moving on the right unit before anyone else
+is in line. So when someone asks how to help a Section 8 applicant get a unit, the
+answer below is the answer, not "sprint the paperwork."
 
-What we can control is getting a voucher holder in front of the right units early,
-early enough that their slow process finishes around move-out instead of weeks after
-it. The most effective thing we have done, on multiple occasions, is work the
-pre-lease pipeline with them.
+## Work the pre-lease pipeline with the applicant
 
-1. Work the pre-lease pipeline with the applicant. We know which units are coming
-   before they are marketed, usually because the current tenant has given notice but
-   has not moved out yet. We can send a voucher applicant one of these unlisted
-   opportunities as soon as we have enough to describe it:
-   - pictures
-   - the unit number
-   - bedrooms
-   - bathrooms
-   - washer
-   - dryer
-   The payoff is timing. The applicant can start their Section 8 paperwork early, get
-   it approved, and have the inspection scheduled for a couple of days after the
-   current tenant moves out. Now the 3 to 4 week voucher clock runs during the
-   turnover instead of after listing, and the applicant is genuinely ready to sign
-   when the unit comes available, first in line instead of just missing it.
-2. Match to units that fit the voucher cleanly. Steer toward units within the
-   payment standard and inside the area the applicant's authority covers, with the
-   right bedroom size. A clean fit avoids delays from rent or inspection problems
-   later, which keeps the deal from stalling once it starts.
-3. Target the right inventory. Voucher holders fare best on units that are newly
+This is the single most effective thing we do, and we have done it successfully many
+times. Do not wait for a unit to list. Actively work the pipeline with the applicant:
+
+- Look at what is coming. We know which units are coming before they are marketed,
+  usually because the current tenant has given notice but has not moved out yet.
+- Match those upcoming units to the applicant's voucher criteria: bedroom size, rent
+  within the payment standard, and the area the applicant's authority covers.
+- Send the applicant the unlisted opportunity directly, the moment we have enough to
+  describe it. Enough means:
+  - pictures
+  - the unit number
+  - bedrooms
+  - bathrooms
+  - washer
+  - dryer
+- Start the Section 8 paperwork early off that unit, get it approved, and have the
+  inspection scheduled for a couple of days after the current tenant moves out.
+
+The payoff is timing. The 3 to 4 week voucher clock runs during the turnover instead
+of after listing, so the applicant is genuinely ready to sign the moment the unit
+comes available. That is how a voucher holder ends up first in line instead of just
+missing out. Sending them a unit before it lists is the whole game.
+
+## Other ways to help, and how to serve the applicant
+
+1. Target the right inventory. Voucher holders fare best on units that are newly
    available or lower-demand, where the timeline to a competing complete application
    is longer. On a hot, actively-marketed unit the math rarely works in their favor.
-4. Set expectations honestly and early. If the unit is in high demand, say so up
+2. Set expectations honestly and early. If the unit is in high demand, say so up
    front. We do not reorder applicants to compensate, and a head start on the right
    unit helps more than false hope on the wrong one.
-5. Serve the applicant professionally the whole way. Keep them posted on where things
+3. Serve the applicant professionally the whole way. Keep them posted on where things
    stand and move fast on anything that is ours to do. Honesty up front and a warm,
    professional handoff is the difference between an applicant who trusts us and one
    who feels strung along, and it costs us nothing.
