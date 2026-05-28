@@ -242,7 +242,7 @@ Every property that's been through listing prep has a sub-task called **\`Respon
 **Per-draft sub-task fields:**
 
 - **Parent:** the Speed to Lead container GID from the lookup above.
-- **Name:** \`<Prospect Full Name> | <YYYY-MM-DD>\`. Use today's date in Pacific time. Example: \`Mariah Barlow | 2026-05-28\`. If the prospect's first name doesn't parse cleanly (greeting fell back to "Hi there"), use the raw sender header value Zillow surfaced. Never invent a name.
+- **Name:** \`<Prospect Full Name> | <YYYY-MM-DD> | <Phone>\`. Use today's date in Pacific time. Normalize phone to \`XXX-XXX-XXXX\` (digits with dashes) in the title regardless of how Zillow formatted it. Example: \`Mariah Barlow | 2026-05-28 | 720-227-7450\`. If the prospect's first name doesn't parse cleanly (greeting fell back to "Hi there"), use the raw sender header value Zillow surfaced. Never invent a name. **If no phone surfaced from the Zillow contact-info link**, drop the phone segment entirely and use \`<Prospect Full Name> | <YYYY-MM-DD>\` (do NOT pad with placeholder text).
 - **No assignee.** No due date. No custom fields. Description-only log.
 - **Description (plain text, \`notes\` field — NOT \`html_notes\`):** Asana's \`html_notes\` only allows a narrow tag list (no \`<br>\`), which makes line-broken text awkward. Use the plain-text \`notes\` field with one fact per line. Include only the lines that have values; skip any line whose value is empty/unknown:
   \`\`\`
