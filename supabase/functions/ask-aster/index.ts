@@ -289,6 +289,123 @@ for (const p of ALL_PROMPTS) {
   );
 }
 
+// --- OAuth 2.0 (for claude.ai custom connector compatibility) ---
+//
+// Aster's native auth is the shared ASTER_ACCESS_KEY (sent as x-aster-key
+// header or ?key=). claude.ai's custom connector flow requires OAuth 2.0
+// with Dynamic Client Registration (RFC 7591) and PKCE (RFC 7636). We
+// implement the minimum endpoints to satisfy that flow. Since all
+// leasing-team users have the same access level in v0, the OAuth ceremony
+// is cosmetic: any client that completes the flow gets a signed Bearer
+// token that validates against the same ASTER_ACCESS_KEY (used as HMAC
+// secret). No state is persisted; codes and tokens are self-contained.
+//
+// Grandfathered x-aster-key connections continue to work alongside the new
+// OAuth path. Both are checked in the catch-all auth middleware.
+
+const ISSUER = `${SUPABASE_URL}/functions/v1/ask-aster`;
+const TEXT_ENC = new TextEncoder();
+const TEXT_DEC = new TextDecoder();
+
+function b64uEncode(bytes: Uint8Array): string {
+  let bin = "";
+  for (const b of bytes) bin += String.fromCharCode(b);
+  return btoa(bin).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
+function b64uDecode(str: string): Uint8Array {
+  const padded = str.replaceAll("-", "+").replaceAll("_", "/") +
+    "===".slice((str.length + 3) % 4);
+  const bin = atob(padded);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+async function hmacSha256(payload: string): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    TEXT_ENC.encode(ASTER_ACCESS_KEY),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const sig = await crypto.subtle.sign("HMAC", key, TEXT_ENC.encode(payload));
+  return b64uEncode(new Uint8Array(sig));
+}
+
+async function pkceS256(verifier: string): Promise<string> {
+  const hash = await crypto.subtle.digest("SHA-256", TEXT_ENC.encode(verifier));
+  return b64uEncode(new Uint8Array(hash));
+}
+
+interface CodeData {
+  c?: string; // code_challenge
+  m?: string; // code_challenge_method (S256 or plain)
+  r: string;  // redirect_uri
+  i: string;  // client_id
+  e: number;  // expires_at (unix ts)
+}
+
+async function mintCode(data: CodeData): Promise<string> {
+  const payload = b64uEncode(TEXT_ENC.encode(JSON.stringify(data)));
+  const sig = await hmacSha256(payload);
+  return `${payload}.${sig}`;
+}
+
+async function verifyCode(code: string): Promise<CodeData | null> {
+  const parts = code.split(".");
+  if (parts.length !== 2) return null;
+  const [payload, sig] = parts;
+  const expected = await hmacSha256(payload);
+  if (expected !== sig) return null;
+  try {
+    const data = JSON.parse(TEXT_DEC.decode(b64uDecode(payload))) as CodeData;
+    if (data.e < Math.floor(Date.now() / 1000)) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+interface TokenData {
+  iss: string;
+  sub: string;
+  iat: number;
+  exp: number;
+  k: "aster-access";
+}
+
+async function mintAccessToken(client_id: string): Promise<string> {
+  const now = Math.floor(Date.now() / 1000);
+  const data: TokenData = {
+    iss: ISSUER,
+    sub: client_id || "anonymous",
+    iat: now,
+    exp: now + 60 * 60 * 24 * 365, // 1 year
+    k: "aster-access",
+  };
+  const payload = b64uEncode(TEXT_ENC.encode(JSON.stringify(data)));
+  const sig = await hmacSha256(payload);
+  return `${payload}.${sig}`;
+}
+
+async function verifyAccessToken(token: string): Promise<boolean> {
+  const parts = token.split(".");
+  if (parts.length !== 2) return false;
+  const [payload, sig] = parts;
+  const expected = await hmacSha256(payload);
+  if (expected !== sig) return false;
+  try {
+    const data = JSON.parse(TEXT_DEC.decode(b64uDecode(payload))) as TokenData;
+    if (data.k !== "aster-access") return false;
+    if (data.exp < Math.floor(Date.now() / 1000)) return false;
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // --- Hono App with Auth + CORS ---
 
 const corsHeaders = {
@@ -303,10 +420,197 @@ const app = new Hono();
 app.options("*", (c) => c.text("ok", 200, corsHeaders));
 
 app.all("*", async (c) => {
-  // Accept access key via header OR URL query parameter (?key=...)
-  const provided = c.req.header("x-aster-key") || new URL(c.req.url).searchParams.get("key");
-  if (!provided || provided !== ASTER_ACCESS_KEY) {
-    return c.json({ error: "Invalid or missing access key" }, 401, corsHeaders);
+  // Supabase Edge Functions passes the full request path (including the
+  // /functions/v1/ask-aster prefix) to Hono, so Hono's path-specific
+  // routing won't match plain "/register" etc. We dispatch OAuth flows
+  // here by inspecting the URL suffix instead.
+  const url = new URL(c.req.url);
+  const path = url.pathname;
+  const method = c.req.method;
+
+  // --- OAuth 2.0 discovery + DCR + auth code + token endpoints ---
+  // No auth check on these; the OAuth ceremony is the auth path.
+
+  if (
+    method === "GET" &&
+    path.endsWith("/.well-known/oauth-authorization-server")
+  ) {
+    return c.json(
+      {
+        issuer: ISSUER,
+        authorization_endpoint: `${ISSUER}/authorize`,
+        token_endpoint: `${ISSUER}/token`,
+        registration_endpoint: `${ISSUER}/register`,
+        response_types_supported: ["code"],
+        grant_types_supported: ["authorization_code"],
+        code_challenge_methods_supported: ["S256"],
+        token_endpoint_auth_methods_supported: ["none"],
+        scopes_supported: ["aster"],
+      },
+      200,
+      corsHeaders,
+    );
+  }
+
+  if (
+    method === "GET" &&
+    path.endsWith("/.well-known/oauth-protected-resource")
+  ) {
+    return c.json(
+      {
+        resource: ISSUER,
+        authorization_servers: [ISSUER],
+        scopes_supported: ["aster"],
+        bearer_methods_supported: ["header"],
+      },
+      200,
+      corsHeaders,
+    );
+  }
+
+  if (method === "POST" && path.endsWith("/register")) {
+    const body = await c.req.json().catch(
+      () => ({} as Record<string, unknown>),
+    );
+    const client_id = `aster-${crypto.randomUUID()}`;
+    return c.json(
+      {
+        client_id,
+        client_id_issued_at: Math.floor(Date.now() / 1000),
+        redirect_uris:
+          (body as { redirect_uris?: string[] }).redirect_uris ?? [],
+        client_name:
+          (body as { client_name?: string }).client_name ?? "anonymous",
+        grant_types: ["authorization_code"],
+        response_types: ["code"],
+        token_endpoint_auth_method: "none",
+      },
+      201,
+      corsHeaders,
+    );
+  }
+
+  if (method === "GET" && path.endsWith("/authorize")) {
+    const q = c.req.query();
+    if (q.response_type !== "code") {
+      return c.text("unsupported_response_type", 400, corsHeaders);
+    }
+    if (!q.redirect_uri) {
+      return c.text("missing redirect_uri", 400, corsHeaders);
+    }
+    // Auto-approve. Internal staff only, no consent screen needed.
+    const code = await mintCode({
+      c: q.code_challenge,
+      m: q.code_challenge_method,
+      r: q.redirect_uri,
+      i: q.client_id ?? "",
+      e: Math.floor(Date.now() / 1000) + 600, // 10 minutes
+    });
+    const redirectUrl = new URL(q.redirect_uri);
+    redirectUrl.searchParams.set("code", code);
+    if (q.state) redirectUrl.searchParams.set("state", q.state);
+    return c.redirect(redirectUrl.toString(), 302);
+  }
+
+  if (method === "POST" && path.endsWith("/token")) {
+    const form = await c.req.parseBody().catch(
+      () => ({} as Record<string, string>),
+    );
+    const grant_type = String(form.grant_type ?? "");
+    const code = String(form.code ?? "");
+    const redirect_uri = String(form.redirect_uri ?? "");
+    const code_verifier = String(form.code_verifier ?? "");
+
+    if (grant_type !== "authorization_code") {
+      return c.json({ error: "unsupported_grant_type" }, 400, corsHeaders);
+    }
+    if (!code) {
+      return c.json(
+        { error: "invalid_request", error_description: "missing code" },
+        400,
+        corsHeaders,
+      );
+    }
+
+    const codeData = await verifyCode(code);
+    if (!codeData) {
+      return c.json({ error: "invalid_grant" }, 400, corsHeaders);
+    }
+    if (codeData.r !== redirect_uri) {
+      return c.json(
+        {
+          error: "invalid_grant",
+          error_description: "redirect_uri mismatch",
+        },
+        400,
+        corsHeaders,
+      );
+    }
+    if (codeData.c) {
+      if (!code_verifier) {
+        return c.json(
+          {
+            error: "invalid_grant",
+            error_description: "missing code_verifier",
+          },
+          400,
+          corsHeaders,
+        );
+      }
+      const expected = codeData.m === "S256"
+        ? await pkceS256(code_verifier)
+        : code_verifier;
+      if (expected !== codeData.c) {
+        return c.json(
+          {
+            error: "invalid_grant",
+            error_description: "PKCE verification failed",
+          },
+          400,
+          corsHeaders,
+        );
+      }
+    }
+
+    const access_token = await mintAccessToken(codeData.i);
+    return c.json(
+      {
+        access_token,
+        token_type: "Bearer",
+        expires_in: 60 * 60 * 24 * 365,
+        scope: "aster",
+      },
+      200,
+      corsHeaders,
+    );
+  }
+
+  // --- MCP traffic: three accepted auth paths ---
+  //   1. x-aster-key header (back-compat for grandfathered connections)
+  //   2. ?key=... query param (legacy / manual testing)
+  //   3. Authorization: Bearer <token> from the OAuth DCR flow above
+  const xKey = c.req.header("x-aster-key") ||
+    new URL(c.req.url).searchParams.get("key");
+  const authHeader = c.req.header("authorization") ?? "";
+  const bearer = authHeader.toLowerCase().startsWith("bearer ")
+    ? authHeader.slice(7).trim()
+    : "";
+
+  let authed = false;
+  if (xKey && xKey === ASTER_ACCESS_KEY) {
+    authed = true;
+  } else if (bearer && (await verifyAccessToken(bearer))) {
+    authed = true;
+  }
+
+  if (!authed) {
+    // RFC 6750 + RFC 8414 / MCP spec: 401 with WWW-Authenticate so claude.ai
+    // discovers the OAuth authorization server and starts the flow.
+    return c.json({ error: "Invalid or missing access key" }, 401, {
+      ...corsHeaders,
+      "WWW-Authenticate":
+        `Bearer realm="${ISSUER}", as_uri="${ISSUER}", resource_metadata="${ISSUER}/.well-known/oauth-protected-resource"`,
+    });
   }
 
   // Fix: Claude Desktop connectors don't always send the Accept header that
