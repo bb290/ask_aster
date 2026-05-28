@@ -604,12 +604,14 @@ app.all("*", async (c) => {
   }
 
   if (!authed) {
-    // RFC 6750 + RFC 8414 / MCP spec: 401 with WWW-Authenticate so claude.ai
-    // discovers the OAuth authorization server and starts the flow.
+    // RFC 9728 / MCP authorization spec: 401 with WWW-Authenticate pointing
+    // at the protected-resource metadata so clients discover the OAuth AS.
+    // Kept minimal (just resource_metadata) so strict parsers don't choke
+    // on extra parameters.
     return c.json({ error: "Invalid or missing access key" }, 401, {
       ...corsHeaders,
       "WWW-Authenticate":
-        `Bearer realm="${ISSUER}", as_uri="${ISSUER}", resource_metadata="${ISSUER}/.well-known/oauth-protected-resource"`,
+        `Bearer resource_metadata="${ISSUER}/.well-known/oauth-protected-resource"`,
     });
   }
 
