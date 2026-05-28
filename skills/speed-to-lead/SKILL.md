@@ -50,6 +50,18 @@ If no leads come back, say so: "No unread Zillow leads in your inbox right now. 
 
 If 1 or more leads come back, proceed.
 
+### Step 1.5: identify the running agent
+
+The skill needs the running agent's Gmail address so it can attach the right signature in Step 6. Resolve it once, reuse it across all drafts in this run.
+
+How to resolve:
+
+1. Call `mcp__claude_ai_Gmail__search_threads` with query `in:sent` and `pageSize: 1`. Take the most recent sent message.
+2. Read its `sender` (or the From header) → that's the authenticated user's email.
+3. Lowercase it and remember it as `<<AGENT EMAIL>>` for the rest of the run.
+
+If the sent folder is empty (brand-new account) or the call fails, fall through to the company signature in Step 6. Don't block the rest of the flow.
+
 ### Step 2: parse each lead
 
 For each thread, use `mcp__claude_ai_Gmail__get_thread` with `messageFormat: "FULL_CONTENT"` to pull the body. Extract:
@@ -179,14 +191,40 @@ Wait for agent confirmation. If they say "skip lead 2" or similar, drop that one
 
 ### Step 6: create the Gmail drafts
 
-For each approved draft, call `mcp__claude_ai_Gmail__create_draft` with:
+For each approved draft, build the body and append the signature:
 
-- `to`: the `<hash@convo.zillow.com>` address (the Zillow relay)
-- `subject`: `Re: <original subject>`
-- `htmlBody`: HTML version of the draft
-- `body`: plain-text version
+1. **Build the HTML body** per the Step 4 template, ending with `<p>Best,</p>`.
+2. **Look up the agent's signature** using `<<AGENT EMAIL>>` from Step 1.5:
+   - Read `skills/speed-to-lead/signatures/<<AGENT EMAIL>>.html` (lowercase, full email including the @ and domain).
+   - If the file exists, append its contents to the HTML body after `<p>Best,</p>`.
+   - If the file does NOT exist (or Step 1.5 couldn't resolve the agent), read `skills/speed-to-lead/signatures/_company.html` and append that instead.
+3. **Build the plain-text body** the same way: render the email per the Step 4 template ending with `Best,`, then append a plain-text version of the signature. Plain-text signature format mirrors the HTML content, line-by-line, no styling:
+   ```
+   <Name>
+   <Title>
+   <Phone> | <Email>
+   ```
+   For the company fallback, plain-text signature is:
+   ```
+   Sagareus Property Management
+   Real Estate Sales + Management
+   (425) 553-0239 | sagareus.com
+   2265 116th Ave NE #200-8, Bellevue, WA 98004
+   ```
+4. **Call `mcp__claude_ai_Gmail__create_draft`** with:
+   - `to`: the `<hash@convo.zillow.com>` address (the Zillow relay)
+   - `subject`: `Re: <original subject>`
+   - `htmlBody`: HTML version with signature appended
+   - `body`: plain-text version with signature appended
 
 **Do NOT auto-send.** Always draft.
+
+**Signature notes for the agent:**
+
+- Signatures are HTML snippets in `skills/speed-to-lead/signatures/`, one per agent keyed by lowercase email.
+- The fallback `_company.html` lands when no per-agent file matches. That's the right behavior for shared inboxes or new agents who haven't been added to the folder yet.
+- To update a signature (new phone, role change, etc.), edit the matching `<email>.html`, commit and push. No deploy required — the skill reads from the repo at runtime.
+- Notify the agent in Step 7's close-out if the company fallback was used: "Drafts went out with the Sagareus company signature, not your personal one. To get your personal signature on future drafts, add `<your-email>.html` to `signatures/`."
 
 ### Step 6.5: log each draft as a sub-task under Speed to Lead in Asana
 
@@ -205,13 +243,13 @@ Every property that's been through listing prep has a sub-task called **`Respond
 - **Parent:** the Speed to Lead container GID from the lookup above.
 - **Name:** `<Prospect Full Name> | <YYYY-MM-DD>`. Use today's date in Pacific time. Example: `Mariah Barlow | 2026-05-28`. If the prospect's first name doesn't parse cleanly (greeting fell back to "Hi there"), use the raw sender header value Zillow surfaced. Never invent a name.
 - **No assignee.** No due date. No custom fields. Description-only log.
-- **Description (HTML body):** include only the lines that have values. Skip any line whose value is empty/unknown. Render as a simple `<p>` block with line breaks, no list markup:
+- **Description (plain text, `notes` field — NOT `html_notes`):** Asana's `html_notes` only allows a narrow tag list (no `<br>`), which makes line-broken text awkward. Use the plain-text `notes` field with one fact per line. Include only the lines that have values; skip any line whose value is empty/unknown:
   ```
-  Prospect: <Mariah Barlow>
-  Zillow relay: <hash@convo.zillow.com>
-  Phone: <720-227-7450>
-  Specific question: <pet policy>
-  Renter profile: <move-in May 22, credit 660–719, no pets, 12mo, 3 occupants>
+  Prospect: Mariah Barlow
+  Zillow relay: hash@convo.zillow.com
+  Phone: 720-227-7450
+  Specific question: pet policy
+  Renter profile: move-in May 22, credit 660–719, no pets, 12mo, 3 occupants
   ```
   - `Prospect` and `Zillow relay` are always included (one or the other is always present, usually both).
   - `Phone` only if Zillow surfaced it in the contact-info URL.
