@@ -82,30 +82,39 @@ If the property isn't found in Asana, surface to the agent: "Couldn't find [addr
 
 ### Step 4: draft the reply per the Speed to Lead SOP
 
-**Authoritative template (use verbatim, fill placeholders only). Blank lines between sections are intentional, preserve them:**
+**Authoritative template (use verbatim, fill placeholders only). The structure is: greeting, intro paragraph, bulleted links list, bold section header, openings line, bulleted slots list, fallback line, "Best,". Blank lines between blocks are required, preserve them:**
 
 ```
-Hi there, thank you for your interest in <<ADDRESS>>!
+Hi <<GREETING>>,
 
-Here is a link to the Listing to review details & a video walkthrough of the property to confirm it feels like a good fit:
- 🎥 <<Video Walkthrough or "Pending">>
- 📄 <<Listing Link>>
+Thanks for your interest in <<ADDRESS>>! Let me know if you have any questions about the property.
 
-Do you have any questions about the property? I have available times <<SLOT A>> or <<SLOT B>> if you would like to see it in person. Either of those work, or is there another time that works better?
+   - Listing & Application       (hyperlink: <<LISTING LINK>>)
+   - Video Walkthrough           (hyperlink: <<VIDEO WALKTHROUGH>>, or plain text "Video Walkthrough (Pending)" if the Asana field is empty)
 
-Thanks,
+In-Person Showing                (rendered bold)
+
+If you're ready to see it in person, I have openings:
+
+   - <<SLOT A>>
+   - <<SLOT B>>
+
+If neither works, send a few times that do and I'll do my best to accommodate.
+
+Best,
 ```
 
 **Template rules:**
 
-- Greeting is always **"Hi there,"** never "Hi [First Name]". The Sagareus convention is generic, not personalized. Don't override.
-- Emojis 🎥 and 📄 are **required** in this template, overriding the general no-emoji rule. They're functional icons, not decoration.
-- **Blank lines** between the intro, the links block, the questions/showing line, and "Thanks," are required for readability. Don't collapse them.
-- If the **Video Walkthrough field is missing** in Asana, write `Pending` as the value after 🎥 (do not omit the line). Keeps the structure consistent and visually flags the missing asset.
-- **SLOT A and SLOT B** are the next upcoming occurrences of **Preferred Showing Slot 1** and **Preferred Showing Slot 2** from Asana, both calculated from now and rendered in chronological order (the sooner one is SLOT A, the later one is SLOT B). Example: if today is Thursday and Slot 1 is "Tuesday 2-4pm" and Slot 2 is "Saturday 10am-12pm", SLOT A is this Saturday and SLOT B is next Tuesday. Always offer both so the prospect gets a real either/or choice.
-- Use a concrete date and time for each, not a recurring description. "Saturday May 30, 10am-12pm" beats "Saturdays 10am-12pm" because the prospect needs a specific moment to confirm against their schedule.
-- End with single "Thanks," or "Best," — no agent name (Gmail signature handles that).
-- Subject line for the reply: keep the original subject prefixed with "Re:" (set manually since we're creating a fresh draft, not replying inline).
+- **Greeting:** use `Hi <First Name>,` when the prospect's first name parses cleanly from the Zillow subject (starts with a capital letter, alphabetic, recognizable name). Otherwise fall back to `Hi there,`. The `<<GREETING>>` placeholder resolves to whichever applies.
+- **No emojis.** This template intentionally drops the old 🎥/📄 icons. Clean bullets only.
+- **Links list** is a bulleted list with two items: `Listing & Application` (hyperlinked to the 🤖 Sagareus Listing Link value) and `Video Walkthrough` (hyperlinked to the Video Walkthrough value). The visible text is exactly `Listing & Application` or `Video Walkthrough`, never the raw URL.
+- **Video Walkthrough fallback:** if the Asana Video Walkthrough field is empty, render the second bullet as plain text `Video Walkthrough (Pending)` with no hyperlink. Keeps the structure consistent and visually flags the missing asset.
+- **In-Person Showing** is its own paragraph between the links block and the openings line, rendered **bold** (HTML `<strong>`). In plain text, render as `*In-Person Showing*` so Gmail bolds it.
+- **SLOT A and SLOT B** are the next upcoming occurrences of **Preferred Showing Slot 1** and **Preferred Showing Slot 2** from Asana, both calculated from now and rendered in chronological order (sooner is SLOT A). Example: if today is Thursday and Slot 1 is "Tuesday 2-4pm" and Slot 2 is "Saturday 10am-12pm", SLOT A is this Saturday and SLOT B is next Tuesday.
+- **Date/time format per slot:** `Day, Month Date, time–time` with an **en dash** (U+2013) between the times and no spaces around it. Examples: `Saturday, May 30, 10am–12pm`, `Tuesday, June 2, 2pm–4pm`. Use a concrete date, never a recurring description ("Saturdays 10am-12pm" is wrong).
+- **Closing word is `Best,`** No agent name (Gmail signature handles that).
+- **Subject line for the reply:** keep the original subject prefixed with `Re:` (set manually since we're creating a fresh draft, not replying inline).
 
 **Adapt the template based on what the prospect said in their message:**
 
@@ -114,9 +123,26 @@ Thanks,
 
 **Important formatting rules for the draft:**
 
-- No em dashes (except where unavoidable inside the template's own punctuation, which uses "&" instead).
-- In the HTML version, render the URLs as proper `<a>` tags with the URL itself as both href and visible text. Keep the emoji prefix inline.
-- In plain text, the emojis render natively in Gmail.
+- **No em dashes** (U+2014). En dashes (U+2013) ARE allowed and required inside time ranges (`10am–12pm`).
+- **HTML body is the canonical wire format.** Use this exact structure:
+  ```html
+  <p>Hi <<GREETING>>,</p>
+  <p>Thanks for your interest in <<ADDRESS>>! Let me know if you have any questions about the property.</p>
+  <ul>
+    <li><a href="<<LISTING LINK>>">Listing &amp; Application</a></li>
+    <li><a href="<<VIDEO WALKTHROUGH>>">Video Walkthrough</a></li>
+  </ul>
+  <p><strong>In-Person Showing</strong></p>
+  <p>If you're ready to see it in person, I have openings:</p>
+  <ul>
+    <li><<SLOT A>></li>
+    <li><<SLOT B>></li>
+  </ul>
+  <p>If neither works, send a few times that do and I'll do my best to accommodate.</p>
+  <p>Best,</p>
+  ```
+- **Plain text body** mirrors the HTML: paragraphs separated by blank lines, bulleted lists indented with three spaces and a `-`, the section header rendered as `*In-Person Showing*` so Gmail bolds it. Gmail handles both renderings.
+- When Video Walkthrough is empty, that bullet is plain text "Video Walkthrough (Pending)" with no anchor tag.
 
 ### Step 5: show all drafts to the agent for review
 
@@ -205,10 +231,10 @@ If only one showing-slot field is populated, drop back to a single-slot version 
 
 ## Voice rules for the prospect-facing draft
 
-- No em dashes.
+- No em dashes (U+2014). En dashes (U+2013) are allowed only inside time ranges (`10am–12pm`).
 - Plain English, warm but not gushy.
 - One sentence per concept, no run-ons.
-- End with "Thanks," or "Best," and stop. No agent name, no "Sagareus" footer. Gmail signature handles that.
+- End with `Best,` and stop. No agent name, no "Sagareus" footer. Gmail signature handles that.
 - Keep replies under 100 words. Speed-to-lead is about momentum, not a wall of text.
 
 ## Out of scope
