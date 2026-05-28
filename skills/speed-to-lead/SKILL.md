@@ -188,10 +188,43 @@ For each approved draft, call `mcp__claude_ai_Gmail__create_draft` with:
 
 **Do NOT auto-send.** Always draft.
 
+### Step 6.5: log each draft as a sub-task under Speed to Lead in Asana
+
+Every property that's been through listing prep has a sub-task called **`Respond | ⚡ Speed to Lead`** sitting under its LU sub-task (and sometimes under TP for older properties). That's the container. We log one new sub-task under it per draft so the team has a running record of every lead we've replied to, and the weekly report can pull straight from it.
+
+**Lookup logic — for each lead's property:**
+
+1. We already have the LU sub-task GID from Step 3.
+2. List LU's sub-tasks (use `mcp__asana__asana_get_tasks` with `parent` set to LU's GID, or `asana_search_tasks` filtered by parent — whichever is reliably available). Find the one whose name contains the phrase `Speed to Lead` (case-insensitive match; the emoji and `Respond |` prefix may vary slightly).
+3. If LU has a Speed to Lead container, use its GID as the parent for the per-draft sub-task.
+4. **Fallback:** if LU has no Speed to Lead container (rare, legacy properties), look under the property's TP sub-task. Use the same name match.
+5. **If neither has one:** still create the Gmail draft, but surface to the agent: "Couldn't find a Speed to Lead container on this property's LU or TP. Drafted the email, but didn't log it. Please add a `Respond | ⚡ Speed to Lead` sub-task to LU on this property so future drafts log automatically."
+
+**Per-draft sub-task fields:**
+
+- **Parent:** the Speed to Lead container GID from the lookup above.
+- **Name:** `<Prospect Full Name> | <YYYY-MM-DD>`. Use today's date in Pacific time. Example: `Mariah Barlow | 2026-05-28`. If the prospect's first name doesn't parse cleanly (greeting fell back to "Hi there"), use the raw sender header value Zillow surfaced. Never invent a name.
+- **No assignee.** No due date. No custom fields. Description-only log.
+- **Description (HTML body):** include only the lines that have values. Skip any line whose value is empty/unknown. Render as a simple `<p>` block with line breaks, no list markup:
+  ```
+  Prospect: <Mariah Barlow>
+  Zillow relay: <hash@convo.zillow.com>
+  Phone: <720-227-7450>
+  Specific question: <pet policy>
+  Renter profile: <move-in May 22, credit 660–719, no pets, 12mo, 3 occupants>
+  ```
+  - `Prospect` and `Zillow relay` are always included (one or the other is always present, usually both).
+  - `Phone` only if Zillow surfaced it in the contact-info URL.
+  - `Specific question` only if the prospect's message flagged one in Step 4. Use a short phrase, not the full quote.
+  - `Renter profile` only if the "About <name>" block populated. Format as one line: move-in, credit, pets, lease, occupants — comma-separated, en dash inside credit ranges.
+
+**Failure handling:** if the Asana sub-task call fails (network, permission, parent not found), don't block the Gmail draft. Surface the error to the agent in Step 7's close-out: "Drafted N replies in Gmail. Couldn't log K of them to Asana, see error: <message>. Drafts still went out fine."
+
 ### Step 7: confirm and close
 
 ```
 Created N drafts in your Gmail. Review and send when ready.
+Logged N entries under Speed to Lead in Asana.
 
 Heads up on any leads that needed a stub (specific questions
 asked, missing Asana property, etc.):
@@ -200,6 +233,8 @@ asked, missing Asana property, etc.):
 Anything that didn't draft cleanly:
   • Lead 3 property not found in Asana, sent the reply without
     a listing link.
+  • Lead 4 had no Speed to Lead container on LU or TP, draft went
+    out but wasn't logged. Please add the container sub-task.
 ```
 
 ## Asana custom fields used
