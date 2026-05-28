@@ -92,7 +92,7 @@ Here is a link to the Listing to review details & a video walkthrough of the pro
  🎥 <<Video Walkthrough or "Pending">>
  📄 <<Listing Link>>
 
-Do you have any questions about the property? I have available time at <<DATE/TIME>> if you would like to see it in person. Or is there another time that works better?
+Do you have any questions about the property? I have available times <<SLOT A>> or <<SLOT B>> if you would like to see it in person. Either of those work, or is there another time that works better?
 
 Thanks,
 \`\`\`
@@ -103,8 +103,8 @@ Thanks,
 - Emojis 🎥 and 📄 are **required** in this template, overriding the general no-emoji rule. They're functional icons, not decoration.
 - **Blank lines** between the intro, the links block, the questions/showing line, and "Thanks," are required for readability. Don't collapse them.
 - If the **Video Walkthrough field is missing** in Asana, write \`Pending\` as the value after 🎥 (do not omit the line). Keeps the structure consistent and visually flags the missing asset.
-- **DATE/TIME** is the **next upcoming Preferred Showing Slot** from Asana, calculated from now. If today is Tuesday before noon, that's today's 12-2pm slot. If Tuesday afternoon is past, the next slot is the upcoming Saturday 3-5pm. Skip ahead to the next future occurrence either way.
-- Use a concrete date and time, not a recurring description. "Saturday May 16, 3-5pm" beats "Saturdays 3-5pm" because the prospect needs a specific moment to confirm against their schedule.
+- **SLOT A and SLOT B** are the next upcoming occurrences of **Preferred Showing Slot 1** and **Preferred Showing Slot 2** from Asana, both calculated from now and rendered in chronological order (the sooner one is SLOT A, the later one is SLOT B). Example: if today is Thursday and Slot 1 is "Tuesday 2-4pm" and Slot 2 is "Saturday 10am-12pm", SLOT A is this Saturday and SLOT B is next Tuesday. Always offer both so the prospect gets a real either/or choice.
+- Use a concrete date and time for each, not a recurring description. "Saturday May 30, 10am-12pm" beats "Saturdays 10am-12pm" because the prospect needs a specific moment to confirm against their schedule.
 - End with single "Thanks," or "Best," — no agent name (Gmail signature handles that).
 - Subject line for the reply: keep the original subject prefixed with "Re:" (set manually since we're creating a fresh draft, not replying inline).
 
@@ -190,7 +190,7 @@ On the LU sub-task within \`Leasing 3.0 // LU\` (search by address returns it di
 
 The skill calculates the next upcoming concrete date and time from the two preferred slots and offers ONE in the template's DATE/TIME placeholder.
 
-If a showing-slot field is empty, fall back to the other. If both are empty, the draft becomes "Do you have any questions about the property? What days and times work for you, and I'll match my availability."
+If only one showing-slot field is populated, drop back to a single-slot version of the line: "Do you have any questions about the property? I have available time <<SLOT>> if you would like to see it in person. Or is there another time that works better?" If both slots are empty, the draft becomes: "Do you have any questions about the property? What days and times work for you, and I'll match my availability."
 
 ## Edge cases
 
