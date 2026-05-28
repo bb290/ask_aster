@@ -73,6 +73,7 @@ For each thread, use `mcp__claude_ai_Gmail__get_thread` with `messageFormat: "FU
 | Prospect first name | First word of subject, before "is requesting" |
 | Prospect full name | Sender line (e.g., "Mariah Barlow <hash@convo.zillow.com>") |
 | Convo email (Zillow relay) | The `<hash@convo.zillow.com>` address. Reply lands here, Zillow forwards to the prospect. |
+| **Message ID** | **The `id` of the most recent message in the thread (from `get_thread`). Needed in Step 6 to file the draft as a reply IN the same Gmail thread so the agent sees inquiry + response together.** |
 | Property address | Subject line, after "is requesting information about " |
 | Prospect message | Body line(s) right after "<Full Name> says:" up to the "Send Application" or "Reply directly" marker |
 | Phone (if shown) | Inside the "See [name]'s phone contact info" link, look for `&phone=...` URL param, URL-decode it |
@@ -208,6 +209,9 @@ For each approved draft, build the body and append the signature:
    - `subject`: `Re: <original subject>`
    - `htmlBody`: HTML version with signature appended
    - `body`: plain-text version with signature appended
+   - **`replyToMessageId`: the parsed `Message ID` from Step 2**
+
+The `replyToMessageId` is what makes the draft land IN the original Gmail thread. When the agent opens Gmail, they see the prospect's original inquiry and our reply stitched together as one conversation, not as two separate messages. This is the whole point of replying in-thread: the inquiry and response live next to each other so the agent has full context when they review.
 
 **Do NOT auto-send.** Always draft.
 
