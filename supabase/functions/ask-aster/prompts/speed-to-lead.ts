@@ -86,11 +86,19 @@ For each thread, use \`mcp__claude_ai_Gmail__get_thread\` with \`messageFormat: 
 
 The "About <name>" block (move-in, credit, pets, lease, occupants) only appears when the prospect has filled in their Zillow Renter Profile. Treat it as a bonus: surface to the agent but don't require it.
 
-### Step 2.5: skip threads that already have activity
+### Step 2.5: dedup check — skip threads with prior activity or an existing draft
 
-For each thread returned in Step 1, count the messages. If the thread has **2 or more messages**, something has already happened in this conversation, either the agent replied or the prospect followed up. **Skip the draft for this lead** and surface it in Step 7's close-out under "skipped because already engaged."
+For each thread returned in Step 1, examine the message list from \`get_thread\`:
 
-Only proceed to Step 3 for leads with **exactly 1 message** in the thread (clean, untouched, no prior activity). That's where Speed to Lead delivers value.
+**Case A — exactly 1 message in the thread:** clean, untouched lead. Proceed to Step 3 and draft.
+
+**Case B — 2+ messages, at least one has the \`DRAFT\` label:** an earlier run already drafted a reply for this lead and the agent hasn't sent it yet. **Skip drafting + skip Asana sub-task creation.** Report in Step 7 under "already drafted in a prior run." This is the dedup that makes the skill safe to re-invoke during the day.
+
+**Case C — 2+ messages, none have \`DRAFT\` label:** the agent already replied or the prospect followed up. **Skip drafting + skip sub-task.** Report in Step 7 under "already engaged, review manually."
+
+Only Case A leads flow to Step 3 onward. Cases B and C are pure reporting.
+
+Implementation: from \`get_thread\`'s response, for each \`messages[i]\`, check \`labelIds\` for the literal string \`"DRAFT"\`. Presence of DRAFT anywhere in the thread (other than the very first lead message, which won't have it) means there's already a pending reply.
 
 ### Step 3: look up the property in Asana
 
@@ -264,6 +272,9 @@ Logged N entries under Speed to Lead in Asana.
 Stubs to address before sending:
   • Brittany Barlow asked about pet policy (65lb pitbull).
   • Sammy Soo asked about parking (2 spots).
+
+Skipped because a draft already exists in the thread (dedup, safe to re-run):
+  • Sammy Soo → 12345 Testing Lane (draft from earlier today, not sent yet)
 
 Skipped because the thread already has activity (review manually):
   • Julie Ryan → 5229 153rd Ct SE (2 messages, agent already replied)
