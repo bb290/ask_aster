@@ -38,13 +38,15 @@ Aster never sends. The agent reviews each draft, edits if needed, hits send.
 Use \`mcp__claude_ai_Gmail__search_threads\` with this query:
 
 \`\`\`
-is:unread from:convo.zillow.com subject:"is requesting information about"
+is:unread from:convo.zillow.com subject:"is requesting information about" newer_than:7d
 \`\`\`
+
+The \`newer_than:7d\` filter is intentional: Speed to Lead is built for fresh leads. Anything older than a week should be handled manually because momentum is gone and the prospect likely went elsewhere.
 
 Or, if the agent specified a property filter ("/speed-to-lead for 1537 Valentine"):
 
 \`\`\`
-is:unread from:convo.zillow.com subject:"is requesting information about" subject:"<address fragment>"
+is:unread from:convo.zillow.com subject:"is requesting information about" subject:"<address fragment>" newer_than:7d
 \`\`\`
 
 If no leads come back, say so: "No unread Zillow leads in your inbox right now. Try again after the next one comes in."
@@ -82,6 +84,12 @@ For each thread, use \`mcp__claude_ai_Gmail__get_thread\` with \`messageFormat: 
 | Number of occupants | "Number of Occupants" field, if present |
 
 The "About <name>" block (move-in, credit, pets, lease, occupants) only appears when the prospect has filled in their Zillow Renter Profile. Treat it as a bonus: surface to the agent but don't require it.
+
+### Step 2.5: skip threads that already have activity
+
+For each thread returned in Step 1, count the messages. If the thread has **2 or more messages**, something has already happened in this conversation, either the agent replied or the prospect followed up. **Skip the draft for this lead** and surface it in Step 7's close-out under "skipped because already engaged."
+
+Only proceed to Step 3 for leads with **exactly 1 message** in the thread (clean, untouched, no prior activity). That's where Speed to Lead delivers value.
 
 ### Step 3: look up the property in Asana
 
@@ -157,38 +165,22 @@ Best,
 - **Plain text body** mirrors the HTML: paragraphs separated by blank lines, bulleted lists indented with three spaces and a \`-\`, the section header rendered as \`*In-Person Showing*\` so Gmail bolds it. Gmail handles both renderings.
 - When Video Walkthrough is empty, that bullet is plain text "Video Walkthrough (Pending)" with no anchor tag.
 
-### Step 5: show all drafts to the agent for review
+### Step 5: print the batch summary, then proceed immediately
 
-Before creating any Gmail drafts, summarize what's about to go out. Format:
+Print a one-line summary per fresh lead so the agent can see what's about to happen, then proceed directly to Step 6 — **do not pause for confirmation**. The Gmail draft itself is the agent's review gate; they review and send each draft when they're ready. The skill's job is to get drafts in front of them as fast as possible.
+
+Format:
 
 \`\`\`
-Found N new Zillow leads. Here's the draft set:
+Found N fresh Zillow leads (≤7 days old, single-message threads).
+Drafting and logging now…
 
-──────────────────────────────────────────
-Lead 1: Mariah Barlow → 8037 Brooklyn Ave NE #2, Seattle
-  Phone: 720-227-7450
-  Their message: "I would like to schedule a tour for sometime
-  next week. What days/times do you have available?"
-
-  Draft reply:
-  [paste the drafted body]
-
-──────────────────────────────────────────
-Lead 2: Maero Matthew → 12529 14th Ave NE, Seattle
-  Phone: 716-397-2589
-  Renter profile: move-in May 22, credit 660-719, no pets,
-  12 months, 3 occupants.
-  Their message: "I would like to schedule a tour."
-
-  Draft reply:
-  [paste the drafted body]
-
-──────────────────────────────────────────
-
-Want me to create all N drafts in Gmail, or skip any?
+  • Mariah Barlow → 8037 Brooklyn Ave NE #2, Seattle (tour request)
+  • Maero Matthew → 12529 14th Ave NE, Seattle (tour request, renter profile attached)
+  • Aidan Schumacher → 1330 12th Ave S, Seattle (general inquiry)
 \`\`\`
 
-Wait for agent confirmation. If they say "skip lead 2" or similar, drop that one. If "looks good," create all.
+Then fire Step 6 and Step 6.5 for every lead. No questions, no per-lead gate.
 
 ### Step 6: create the Gmail drafts
 
@@ -259,22 +251,33 @@ Every property that's been through listing prep has a sub-task called **\`Respon
 
 **Failure handling:** if the Asana sub-task call fails (network, permission, parent not found), don't block the Gmail draft. Surface the error to the agent in Step 7's close-out: "Drafted N replies in Gmail. Couldn't log K of them to Asana, see error: <message>. Drafts still went out fine."
 
-### Step 7: confirm and close
+### Step 7: close-out report
 
 \`\`\`
-Created N drafts in your Gmail. Review and send when ready.
+Drafted N replies in Gmail. Review and send when ready.
 Logged N entries under Speed to Lead in Asana.
 
-Heads up on any leads that needed a stub (specific questions
-asked, missing Asana property, etc.):
-  • Lead 2 asked about pet policy, I left a stub for you to fill in.
+Stubs to address before sending:
+  • Brittany Barlow asked about pet policy (65lb pitbull).
+  • Sammy Soo asked about parking (2 spots).
 
-Anything that didn't draft cleanly:
-  • Lead 3 property not found in Asana, sent the reply without
-    a listing link.
-  • Lead 4 had no Speed to Lead container on LU or TP, draft went
-    out but wasn't logged. Please add the container sub-task.
+Skipped because the thread already has activity (review manually):
+  • Julie Ryan → 5229 153rd Ct SE (2 messages, agent already replied)
+  • Galyna Klymenko → 5229 153rd Ct SE (4 messages, full conversation)
+
+Skipped because property wasn't found in Asana (draft + log fell through):
+  • (none)
+
+Skipped because Speed to Lead container missing on LU/TP:
+  • (none)
+
+Also worth knowing:
+  • Searched newer_than:7d. K stale leads (older than 7 days) are
+    still sitting in unread but were not processed — handle those
+    manually if they still matter.
 \`\`\`
+
+Show every bucket, even the empty ones, so the agent has the full picture. If a bucket is empty, write \`(none)\` so they trust nothing was dropped silently.
 
 ## Asana custom fields used
 
