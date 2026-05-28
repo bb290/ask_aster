@@ -72,10 +72,10 @@ The "About <name>" block (move-in, credit, pets, lease, occupants) only appears 
 
 ### Step 3: look up the property in Asana
 
-For each parsed lead, use `mcp__asana__asana_search_tasks` to find the property's parent task by the address from the subject line. From the LU or TP sub-task, pull these custom fields:
+For each parsed lead, use `mcp__asana__asana_search_tasks` to find the listing by the address from the subject line. The search returns the LU sub-task directly (within `Leasing 3.0 // LU`). From the LU sub-task, pull these custom fields. TP exists later in the workflow for tenant placement and does not carry these listing fields:
 
-- **Buildium Link** (this is the canonical "Listing Link" that goes in the prospect-facing email, Sagareus-owned listing page)
-- **Video Walkthrough Link** (optional, write "Pending" if empty per template rules)
+- **🤖 Sagareus Listing Link** (the canonical "Listing Link" that goes in the prospect-facing email; points at the Sagareus-owned Buildium listing page)
+- **Video Walkthrough** (optional, write "Pending" if empty per template rules)
 - **Preferred Showing Slot 1** + **Preferred Showing Slot 2** (used to determine the next upcoming slot to offer)
 
 If the property isn't found in Asana, surface to the agent: "Couldn't find [address] in Asana. The reply will go out with the listing link as 'Pending', do you want to proceed?" Let them say yes/no.
@@ -88,7 +88,7 @@ If the property isn't found in Asana, surface to the agent: "Couldn't find [addr
 Hi there, thank you for your interest in <<ADDRESS>>!
 
 Here is a link to the Listing to review details & a video walkthrough of the property to confirm it feels like a good fit:
- 🎥 <<Video Walkthrough Link or "Pending">>
+ 🎥 <<Video Walkthrough or "Pending">>
  📄 <<Listing Link>>
 
 Do you have any questions about the property? I have available time at <<DATE/TIME>> if you would like to see it in person. Or is there another time that works better?
@@ -101,7 +101,7 @@ Thanks,
 - Greeting is always **"Hi there,"** never "Hi [First Name]". The Sagareus convention is generic, not personalized. Don't override.
 - Emojis 🎥 and 📄 are **required** in this template, overriding the general no-emoji rule. They're functional icons, not decoration.
 - **Blank lines** between the intro, the links block, the questions/showing line, and "Thanks," are required for readability. Don't collapse them.
-- If the **Video Walkthrough Link is missing** in Asana, write `Pending` as the value after 🎥 (do not omit the line). Keeps the structure consistent and visually flags the missing asset.
+- If the **Video Walkthrough field is missing** in Asana, write `Pending` as the value after 🎥 (do not omit the line). Keeps the structure consistent and visually flags the missing asset.
 - **DATE/TIME** is the **next upcoming Preferred Showing Slot** from Asana, calculated from now. If today is Tuesday before noon, that's today's 12-2pm slot. If Tuesday afternoon is past, the next slot is the upcoming Saturday 3-5pm. Skip ahead to the next future occurrence either way.
 - Use a concrete date and time, not a recurring description. "Saturday May 16, 3-5pm" beats "Saturdays 3-5pm" because the prospect needs a specific moment to confirm against their schedule.
 - End with single "Thanks," or "Best," — no agent name (Gmail signature handles that).
@@ -178,12 +178,12 @@ Anything that didn't draft cleanly:
 
 ## Asana custom fields used
 
-On the LU or TP sub-task (or the parent task if the field structure shifts during Leasing 3.0):
+On the LU sub-task within `Leasing 3.0 // LU` (search by address returns it directly). TP sub-task exists later in the workflow for tenant placement but does not carry these listing fields:
 
 | Field | Type | Used for |
 |---|---|---|
-| Buildium Link | URL | The 📄 "Listing Link" in the prospect-facing email. Sagareus-owned listing page, source of truth. |
-| Video Walkthrough Link | URL | The 🎥 link. Write "Pending" if empty. |
+| 🤖 Sagareus Listing Link | Text | The 📄 "Listing Link" in the prospect-facing email. Sagareus-owned Buildium listing page, source of truth. |
+| Video Walkthrough | Text | The 🎥 link. Write "Pending" if empty. |
 | Preferred Showing Slot 1 | Text | First preferred recurring window (e.g., "Tuesdays 12-2pm") |
 | Preferred Showing Slot 2 | Text | Second preferred recurring window (e.g., "Saturdays 3-5pm") |
 
