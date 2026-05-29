@@ -44,6 +44,35 @@ v2 will add `team_lead` between ic and director. v3 adds `manager` with read+wri
 
 Multifamily Playbook (per-property reference) and Utilities Playbook (per-provider reference) are imported as SOPs in v1 under the `multifamily playbook` and `utilities` service lines respectively. These docs are reference-shaped rather than procedural; v2 may carve out a separate `references` content type with its own table. For v1 they live in `sops/` for retrieval simplicity.
 
+## Reading Asana Attachments
+
+Claude's code-execution container has a network allowlist that does not include `asanausercontent.com`, so files surfaced by the Asana MCP's `get_attachments` (signed URLs that resolve to that host) can't be read from inside a Claude session. Aster's `fetch_asana_attachment` tool runs server-side, where no such allowlist applies, and returns the file in an MCP format Claude reads natively (text, image, or resource).
+
+Use as a two-step pattern:
+
+1. `mcp__asana__asana_get_attachments_for_object` with the parent task GID to list available attachments and their GIDs.
+2. `mcp__claude_ai_Ask_Aster__fetch_asana_attachment` with each attachment GID you want to actually read.
+
+Example chained call (in a Claude chat with both the Asana and Ask Aster connectors enabled):
+
+```text
+# 1. List what's on the task.
+mcp__asana__asana_get_attachments_for_object(
+  object_gid: "1215182714098623",
+)
+# => [{ gid: "1234567890", name: "credit_report.pdf", ... }, ...]
+
+# 2. Read each one through Aster.
+mcp__claude_ai_Ask_Aster__fetch_asana_attachment(
+  attachment_gid: "1234567890",
+)
+# => MCP image content for PDFs and images,
+#    MCP text content for txt/json/xml,
+#    MCP resource content for everything else.
+```
+
+Requires `ASANA_API_TOKEN` set as a secret on the Supabase Edge Function (Asana Personal Access Token, generated at `app.asana.com/0/my-apps`). Files larger than 25 MB are rejected; upload those directly to chat instead.
+
 ## Migration provenance
 
 Initial content imported from GetOutline on 2026-05-01:

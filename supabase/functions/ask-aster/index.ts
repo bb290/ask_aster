@@ -11,6 +11,7 @@ const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const OPENROUTER_API_KEY = Deno.env.get("OPENROUTER_API_KEY")!;
 const ASTER_ACCESS_KEY = Deno.env.get("ASTER_ACCESS_KEY")!;
+const ASANA_API_TOKEN = Deno.env.get("ASANA_API_TOKEN")!;
 
 const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
@@ -204,6 +205,278 @@ server.registerTool(
     } catch (err: unknown) {
       return {
         content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+// --- fetch_asana_attachment ---
+//
+// Aster lives in claude.ai. When the leasing team asks Aster to read an
+// Asana attachment (credit reports, paystubs, etc.) the Claude code-execution
+// container has a network allowlist that does not include asanausercontent.com,
+// so the bytes never reach the client. This tool runs server-side, where no
+// such allowlist applies, and returns the file in an MCP content format
+// Claude can read natively.
+//
+// Two-step pattern:
+//   1. mcp__asana__asana_get_attachments_for_object -> list attachments + GIDs
+//   2. fetch_asana_attachment(attachment_gid)       -> read the file itself
+
+const ASANA_API_BASE = "https://app.asana.com/api/1.0";
+const ASANA_MAX_BYTES = 25 * 1024 * 1024; // 25 MB
+
+interface AsanaAttachmentMeta {
+  data: {
+    gid: string;
+    name: string;
+    download_url: string | null;
+    resource_type: string;
+    host: string;
+  };
+}
+
+// Chunked base64 encoder. The naive btoa(String.fromCharCode(...buf)) blows
+// the JS argument-count limit on multi-MB buffers; chunking keeps us safe up
+// to the 25 MB cap.
+function bytesToBase64(buf: Uint8Array): string {
+  let bin = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < buf.length; i += CHUNK) {
+    bin += String.fromCharCode.apply(
+      null,
+      Array.from(buf.subarray(i, i + CHUNK)),
+    );
+  }
+  return btoa(bin);
+}
+
+function pickReturnFormat(
+  name: string,
+  contentType: string,
+): { kind: "text" | "image" | "resource"; mime: string } {
+  const lcName = name.toLowerCase();
+  const lcType = contentType.toLowerCase().split(";")[0].trim();
+
+  // PDFs and images return as MCP image content; claude.ai renders both
+  // natively that way.
+  if (
+    lcType === "application/pdf" ||
+    lcType.startsWith("image/") ||
+    lcName.endsWith(".pdf")
+  ) {
+    return {
+      kind: "image",
+      mime: lcType.startsWith("image/") ? lcType : "application/pdf",
+    };
+  }
+
+  // Text-ish payloads decode to text content.
+  if (
+    lcType.startsWith("text/") ||
+    lcType === "application/json" ||
+    lcType === "application/xml"
+  ) {
+    return { kind: "text", mime: lcType };
+  }
+
+  // Everything else (zip, xlsx, docx, etc.) goes through as a resource blob.
+  return { kind: "resource", mime: lcType || "application/octet-stream" };
+}
+
+server.registerTool(
+  "fetch_asana_attachment",
+  {
+    title: "Fetch Asana attachment",
+    description:
+      "Fetch the actual contents of an Asana attachment. The get_attachments tool only returns metadata and URLs; use this tool to read the file itself. Pass the attachment GID returned by get_attachments. Returns the file content in a format Claude can parse natively (text for text files, image for images and PDFs, resource for everything else).",
+    inputSchema: {
+      attachment_gid: z
+        .string()
+        .describe(
+          "The GID of the Asana attachment to fetch (from get_attachments_for_object)",
+        ),
+    },
+  },
+  async ({ attachment_gid }) => {
+    try {
+      // Step 1: re-fetch metadata. Asana's signed download_urls expire, so
+      // never trust a URL passed in by the caller; always get a fresh one.
+      const metaResp = await fetch(
+        `${ASANA_API_BASE}/attachments/${attachment_gid}`,
+        {
+          headers: {
+            Authorization: `Bearer ${ASANA_API_TOKEN}`,
+            Accept: "application/json",
+          },
+        },
+      );
+
+      console.log(
+        `fetch_asana_attachment: gid=${attachment_gid} meta_status=${metaResp.status}`,
+      );
+
+      if (metaResp.status === 401 || metaResp.status === 403) {
+        return {
+          content: [{
+            type: "text" as const,
+            text:
+              `Asana rejected the request with ${metaResp.status}. The Asana API token may have expired or been revoked. Have an admin rotate the ASANA_API_TOKEN secret on the Aster edge function and redeploy.`,
+          }],
+          isError: true,
+        };
+      }
+      if (metaResp.status === 404) {
+        return {
+          content: [{
+            type: "text" as const,
+            text:
+              `No Asana attachment found for GID ${attachment_gid}. It may have been deleted, or the GID may be wrong. Re-run get_attachments_for_object to get current GIDs.`,
+          }],
+          isError: true,
+        };
+      }
+      if (!metaResp.ok) {
+        return {
+          content: [{
+            type: "text" as const,
+            text:
+              `Asana returned HTTP ${metaResp.status} fetching attachment metadata for GID ${attachment_gid}.`,
+          }],
+          isError: true,
+        };
+      }
+
+      const meta = (await metaResp.json()) as AsanaAttachmentMeta;
+      const { name, download_url } = meta.data;
+      if (!download_url) {
+        return {
+          content: [{
+            type: "text" as const,
+            text:
+              `Asana attachment ${attachment_gid} ('${name}') has no download_url. It may be an external link or a Google Drive embed rather than a hosted file. Open it directly in the browser instead.`,
+          }],
+          isError: true,
+        };
+      }
+
+      // Step 2: pre-flight size check off the metadata if Asana included it.
+      // The download_url itself may not echo content-length, so this is the
+      // earliest cheap check we can do.
+
+      // Step 3: download. download_url is short-lived and signed, no auth
+      // header needed.
+      const fileResp = await fetch(download_url);
+      console.log(
+        `fetch_asana_attachment: gid=${attachment_gid} file_status=${fileResp.status}`,
+      );
+
+      if (!fileResp.ok) {
+        return {
+          content: [{
+            type: "text" as const,
+            text:
+              `Downloading the attachment file failed with HTTP ${fileResp.status}. The signed URL may have expired between metadata and download; try again.`,
+          }],
+          isError: true,
+        };
+      }
+
+      const declaredLen = parseInt(
+        fileResp.headers.get("content-length") ?? "0",
+        10,
+      );
+      if (declaredLen > ASANA_MAX_BYTES) {
+        return {
+          content: [{
+            type: "text" as const,
+            text:
+              `Attachment '${name}' is ${
+                (declaredLen / 1024 / 1024).toFixed(1)
+              } MB, larger than Aster's 25 MB limit. Upload the file directly into chat instead.`,
+          }],
+          isError: true,
+        };
+      }
+
+      const buf = new Uint8Array(await fileResp.arrayBuffer());
+
+      // Belt-and-suspenders: some hosts don't send content-length on chunked
+      // responses, so re-check after the body is in memory.
+      if (buf.byteLength > ASANA_MAX_BYTES) {
+        return {
+          content: [{
+            type: "text" as const,
+            text:
+              `Attachment '${name}' is ${
+                (buf.byteLength / 1024 / 1024).toFixed(1)
+              } MB, larger than Aster's 25 MB limit. Upload the file directly into chat instead.`,
+          }],
+          isError: true,
+        };
+      }
+
+      const contentType = fileResp.headers.get("content-type") ??
+        "application/octet-stream";
+      const fmt = pickReturnFormat(name, contentType);
+      const sizeLabel = `${fmt.mime}, ${buf.byteLength} bytes`;
+
+      if (fmt.kind === "text") {
+        const decoded = new TextDecoder().decode(buf);
+        return {
+          content: [{
+            type: "text" as const,
+            text:
+              `Asana attachment '${name}' (${sizeLabel}):\n\n${decoded}`,
+          }],
+        };
+      }
+
+      const b64 = bytesToBase64(buf);
+
+      if (fmt.kind === "image") {
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: `Asana attachment '${name}' (${sizeLabel}):`,
+            },
+            {
+              type: "image" as const,
+              data: b64,
+              mimeType: fmt.mime,
+            },
+          ],
+        };
+      }
+
+      // resource
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `Asana attachment '${name}' (${sizeLabel}):`,
+          },
+          {
+            type: "resource" as const,
+            resource: {
+              uri: `asana://attachment/${attachment_gid}`,
+              mimeType: fmt.mime,
+              blob: b64,
+            },
+          },
+        ],
+      };
+    } catch (err: unknown) {
+      return {
+        content: [{
+          type: "text" as const,
+          text:
+            `Error fetching Asana attachment ${attachment_gid}: ${
+              (err as Error).message
+            }`,
+        }],
         isError: true,
       };
     }
