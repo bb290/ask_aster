@@ -10,6 +10,7 @@ import { incidentReportPrompt } from "./incident-report.ts";
 import { decisionToRolloutPrompt } from "./decision-to-rollout.ts";
 import { shoutOutPrompt } from "./shout-out.ts";
 import { speedToLeadPrompt } from "./speed-to-lead.ts";
+import { screeningPrompt } from "./screening.ts";
 
 export { listingCopywriterPrompt };
 export { listingPrepPrompt };
@@ -21,6 +22,7 @@ export { incidentReportPrompt };
 export { decisionToRolloutPrompt };
 export { shoutOutPrompt };
 export { speedToLeadPrompt };
+export { screeningPrompt };
 
 export const ALL_PROMPTS = [
   listingCopywriterPrompt,
@@ -33,4 +35,5 @@ export const ALL_PROMPTS = [
   decisionToRolloutPrompt,
   shoutOutPrompt,
   speedToLeadPrompt,
+  screeningPrompt,
 ];

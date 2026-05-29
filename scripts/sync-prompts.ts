@@ -119,11 +119,56 @@ async function main() {
       );
       continue;
     }
-    const ts = generateTs(name, description, body.trim());
+
+    // Bundle supporting .md files in the same skill folder into the deployed
+    // prompt. The MCP runtime is a single text body — no file system — so any
+    // "Read SCREENING_CRITERIA.md in this skill's folder" instruction in the
+    // SKILL.md only works if the file content travels with the prompt.
+    // Scan only the immediate skill directory; subfolders (e.g. examples/)
+    // are excluded on purpose since they are reference material, not runtime.
+    const skillDir = dirname(filePath);
+    const supporting: { name: string; content: string }[] = [];
+    for await (const entry of Deno.readDir(skillDir)) {
+      if (
+        entry.isFile &&
+        entry.name.endsWith(".md") &&
+        entry.name !== "SKILL.md"
+      ) {
+        supporting.push({
+          name: entry.name,
+          content: (await Deno.readTextFile(join(skillDir, entry.name))).trim(),
+        });
+      }
+    }
+    supporting.sort((a, b) => a.name.localeCompare(b.name));
+
+    let bundledBody = body.trim();
+    if (supporting.length > 0) {
+      const parts = [
+        bundledBody,
+        "",
+        "---",
+        "",
+        "# Skill folder files",
+        "",
+        "These files were bundled into this prompt at deploy time. The MCP runtime serves a single text body and does not expose a file system. When the instructions above reference a filename in this skill's folder, find the file's content below.",
+      ];
+      for (const f of supporting) {
+        parts.push("", `## ${f.name}`, "", f.content);
+      }
+      bundledBody = parts.join("\n");
+    }
+
+    const ts = generateTs(name, description, bundledBody);
     const outPath = join(PROMPTS_DIR, `${name}.ts`);
     await Deno.writeTextFile(outPath, ts);
     generated.push(name);
-    console.log(`Wrote ${relative(REPO_ROOT, outPath)} (${body.length} chars)`);
+    const bundleNote = supporting.length > 0
+      ? ` (+${supporting.length} bundled file(s): ${supporting.map((f) => f.name).join(", ")})`
+      : "";
+    console.log(
+      `Wrote ${relative(REPO_ROOT, outPath)} (${bundledBody.length} chars)${bundleNote}`,
+    );
   }
 
   // Write an index.ts that re-exports everything, so the function can do a
