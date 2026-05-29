@@ -52,7 +52,15 @@ Pull out anything useful from the assistant's prep notes: applicant names, move-
 
 Use `fetch_asana_attachment` with each attachment GID to read the file contents. For each attachment, identify which applicant it belongs to by matching the document name and internal contents to applicant names. Inventory what was found.
 
-If any fetch fails, stop and tell the assistant which attachment couldn't be read.
+**If individual attachments fail to extract, do not stop the run.** Common failure modes (and they are not rare):
+
+- Scanned PDFs without a text layer (no extractable text — the fetcher returns an error)
+- Non-standard PDF encodings the parser can't read (the fetcher returns an "unknown block type" error)
+- Encrypted or password-protected PDFs
+
+Track which attachments failed and continue extracting from the ones that parsed. The failures will surface to the assistant in step 6 under MISSING OR INCONSISTENT, where the assistant can either confirm values from the originals themselves, request re-upload, or escalate to manager review.
+
+**Only stop the workflow if you cannot fetch the Asana task itself.** That's a hard failure (the input is unreachable). A single failed attachment is a soft failure (flag it and keep going).
 
 ### (5) Extract data per applicant
 
@@ -191,7 +199,7 @@ Stop. Do not draft a manager notification email or any other downstream action. 
 - Do not draft an email to the manager or any other notification. The Asana comment is the handoff.
 - Never use em-dashes. Use commas, periods, or semicolons.
 - Use factual, verifiable language only.
-- If you cannot fetch the Asana task or any attachment, stop and tell the assistant exactly what failed rather than proceeding.
+- If you cannot fetch the Asana task itself, stop and tell the assistant what failed. If individual attachments fail to extract, do NOT stop; track the failures and flag them in step 6 so the assistant can confirm values manually or request re-uploads.
 
 ## Voice
 
