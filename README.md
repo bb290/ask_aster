@@ -46,7 +46,12 @@ Multifamily Playbook (per-property reference) and Utilities Playbook (per-provid
 
 ## Reading Asana Attachments
 
-Claude's code-execution container has a network allowlist that does not include `asanausercontent.com`, so files surfaced by the Asana MCP's `get_attachments` (signed URLs that resolve to that host) can't be read from inside a Claude session. Aster's `fetch_asana_attachment` tool runs server-side, where no such allowlist applies, and returns the file in an MCP format Claude reads natively (text, image, or resource).
+Claude's code-execution container has a network allowlist that does not include `asanausercontent.com`, so files surfaced by the Asana MCP's `get_attachments` (signed URLs that resolve to that host) can't be read from inside a Claude session. Aster's `fetch_asana_attachment` tool runs server-side, where no such allowlist applies, and returns the file in a format the model can read natively:
+
+- **PDFs** are text-extracted server-side via [`unpdf`](https://github.com/unjs/unpdf) (handles credit reports, POI docs, ledgers, underwriting decisions, lease addenda). Page boundaries are preserved with `--- Page N of M ---` markers. Scanned PDFs with no text layer return a clear error so the caller knows to OCR or re-upload.
+- **Raster images** (PNG/JPG/GIF/WEBP) return as MCP image content.
+- **text/json/xml** decode and return as text content.
+- **Anything else** (zip, xlsx, docx) returns as a base64 resource blob; the model can describe it but not parse it natively.
 
 Use as a two-step pattern:
 

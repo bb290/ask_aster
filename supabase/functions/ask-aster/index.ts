@@ -5,6 +5,7 @@ import { StreamableHTTPTransport } from "@hono/mcp";
 import { Hono } from "hono";
 import { z } from "zod";
 import { createClient } from "@supabase/supabase-js";
+import { extractText, getDocumentProxy } from "unpdf";
 import { ALL_PROMPTS } from "./prompts/index.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -255,21 +256,20 @@ function bytesToBase64(buf: Uint8Array): string {
 function pickReturnFormat(
   name: string,
   contentType: string,
-): { kind: "text" | "image" | "resource"; mime: string } {
+): { kind: "text" | "image" | "pdf" | "resource"; mime: string } {
   const lcName = name.toLowerCase();
   const lcType = contentType.toLowerCase().split(";")[0].trim();
 
-  // PDFs and images return as MCP image content; claude.ai renders both
-  // natively that way.
-  if (
-    lcType === "application/pdf" ||
-    lcType.startsWith("image/") ||
-    lcName.endsWith(".pdf")
-  ) {
-    return {
-      kind: "image",
-      mime: lcType.startsWith("image/") ? lcType : "application/pdf",
-    };
+  // PDFs are extracted to text server-side. The MCP image content type only
+  // accepts raster formats (GIF/JPG/PNG/WEBP), so passing a PDF as image
+  // content gets rejected by claude.ai's renderer.
+  if (lcType === "application/pdf" || lcName.endsWith(".pdf")) {
+    return { kind: "pdf", mime: "application/pdf" };
+  }
+
+  // Actual raster images return as MCP image content.
+  if (lcType.startsWith("image/")) {
+    return { kind: "image", mime: lcType };
   }
 
   // Text-ish payloads decode to text content.
@@ -285,12 +285,17 @@ function pickReturnFormat(
   return { kind: "resource", mime: lcType || "application/octet-stream" };
 }
 
+// Soft cap on extracted PDF text returned to the caller. Most leasing docs
+// (POI, ledger, credit report, underwriting decision) are well under this,
+// but a long lease addendum could blow up the response payload.
+const PDF_TEXT_MAX_CHARS = 500_000;
+
 server.registerTool(
   "fetch_asana_attachment",
   {
     title: "Fetch Asana attachment",
     description:
-      "Fetch the actual contents of an Asana attachment. The get_attachments tool only returns metadata and URLs; use this tool to read the file itself. Pass the attachment GID returned by get_attachments. Returns the file content in a format Claude can parse natively (text for text files, image for images and PDFs, resource for everything else).",
+      "Fetch the actual contents of an Asana attachment. The get_attachments tool only returns metadata and URLs; use this tool to read the file itself. Pass the attachment GID returned by get_attachments. Returns content in the format the model can read natively: PDFs come back as server-extracted text with page markers (works for credit reports, POI docs, ledgers, underwriting reports, leases); raster images come back as MCP image content; text/json/xml come back as text; everything else comes back as a base64 resource blob. Scanned PDFs with no text layer return a clear error.",
     inputSchema: {
       attachment_gid: z
         .string()
@@ -431,6 +436,63 @@ server.registerTool(
               `Asana attachment '${name}' (${sizeLabel}):\n\n${decoded}`,
           }],
         };
+      }
+
+      if (fmt.kind === "pdf") {
+        // Extract text server-side. MCP image content rejects PDFs, and
+        // claude.ai can't reach asanausercontent.com to fetch raw bytes,
+        // so text extraction is the only path that actually delivers
+        // content the model can read.
+        try {
+          const pdf = await getDocumentProxy(new Uint8Array(buf));
+          const extracted = await extractText(pdf, { mergePages: false });
+          const totalPages = extracted.totalPages;
+          const pages = extracted.text as string[];
+
+          const hasAnyText = pages.some((p) => p && p.trim().length > 0);
+          if (!hasAnyText) {
+            return {
+              content: [{
+                type: "text" as const,
+                text:
+                  `Asana attachment '${name}' (${sizeLabel}, ${totalPages} page(s)): no extractable text. This is likely a scanned PDF with no text layer, or an image-only export. OCR the document first or upload a rasterized version directly to chat.`,
+              }],
+              isError: true,
+            };
+          }
+
+          let body = pages
+            .map((p, i) =>
+              `--- Page ${i + 1} of ${totalPages} ---\n\n${(p ?? "").trim()}`
+            )
+            .join("\n\n");
+
+          let truncatedNote = "";
+          if (body.length > PDF_TEXT_MAX_CHARS) {
+            truncatedNote =
+              `\n\n[Note: extracted text exceeded ${PDF_TEXT_MAX_CHARS} characters and was truncated. Earlier pages are intact.]`;
+            body = body.slice(0, PDF_TEXT_MAX_CHARS);
+          }
+
+          return {
+            content: [{
+              type: "text" as const,
+              text:
+                `Asana attachment '${name}' (${sizeLabel}, ${totalPages} page(s)) — extracted text:\n\n${body}${truncatedNote}`,
+            }],
+          };
+        } catch (pdfErr: unknown) {
+          return {
+            content: [{
+              type: "text" as const,
+              text:
+                `Failed to extract text from PDF '${name}': ${
+                  (pdfErr as Error).message
+                }. The PDF may be encrypted, password-protected, or corrupted.`,
+            }],
+            isError: true,
+          };
+        }
       }
 
       const b64 = bytesToBase64(buf);
