@@ -1,11 +1,13 @@
 ---
 name: screening
-description: Run an applicant screening for Sagareus Property Management. Use this skill when the leasing assistant asks to "screen an applicant," "run a screening," or invokes /screening. The skill takes an Asana task URL as its only input, reads the credit reports and proof-of-income documents attached to the task, applies Sagareus screening criteria across all three property tiers (Lenient, Standard, Stringent), and produces a near-final screening report that the leasing assistant approves before Aster saves it to Drive as a Google Doc and posts it as a comment on the same Asana task for the leasing manager's final review.
+description: Run an applicant screening for Sagareus Property Management. Use this skill when the leasing assistant asks to "screen an applicant," "run a screening," or invokes /screening. The skill takes an Asana task URL as its only input, reads the credit reports and proof-of-income documents attached to the task, applies Sagareus screening criteria across all three property tiers (Lenient, Standard, Stringent), and produces a near-final screening report that the leasing assistant approves before Aster posts it as a comment on the same Asana task for the leasing manager's final review.
 ---
 
 # Applicant Screening
 
-You are running an applicant screening for the Sagareus leasing team. The leasing assistant has prepared an Asana task with applicant names, prep notes, and uploaded credit reports and proof-of-income documents. Your job is to read everything, apply the Sagareus screening criteria, and produce a near-final report that the leasing assistant approves. The leasing manager then reviews the final report on Asana and makes the actual leasing decision.
+You are running an applicant screening for the Sagareus leasing team. The leasing assistant has prepared an Asana task with applicant names, prep notes, and uploaded credit reports and proof-of-income documents. Your job is to read everything, apply the Sagareus screening criteria, and produce a near-final report that the leasing assistant approves. The leasing manager then reviews the final report on the Asana task and makes the actual leasing decision.
+
+The report is property-agnostic. Instead of evaluating against a specific property's rent, you compute the maximum approved rent the household qualifies for at each of the three tiers (Lenient 2.0x, Standard 2.5x, Stringent 3.0x). The manager applies the figure that matches the property under consideration.
 
 ## Roles to keep clear
 
@@ -16,19 +18,19 @@ You are running an applicant screening for the Sagareus leasing team. The leasin
 ## Setup (read these first, every run)
 
 1. Read `SCREENING_CRITERIA.md` in this skill's folder. This is the source of truth for Sagareus thresholds and decision rules. Do not rely on training-data memory for any criterion.
-2. Read `TEMPLATE.md` in this skill's folder. This contains the Google Doc template ID, the Applications folder ID, and the placeholder map.
+2. Read `TEMPLATE.md` in this skill's folder. This contains the output report format and field rules.
 
 ## Input
 
 The leasing assistant runs this skill by pasting an Asana task URL. If they invoke `/screening` without a URL, ask for it before doing anything else. The URL is the only input. Do not accept document uploads in chat for this skill; if the assistant tries to paste documents instead of linking the task, redirect them to attach the documents to the Asana task first.
 
-## The 11-step workflow
+## The 10-step workflow
 
 ### (1) Fetch and confirm the task
 
 Extract the task GID from the URL. Fetch the task via the Asana MCP. Read:
 - Task name (used to identify the applicant household)
-- Task description (assistant's prep notes; may mention base rent and any other context)
+- Task description (assistant's prep notes; may mention move-in date, owner preferences, or other context)
 - Attachment list via `get_attachments`
 
 Confirm the task name back to the assistant in plain language. Wait for the assistant to confirm before proceeding.
@@ -44,7 +46,7 @@ Do not proceed by guessing. Do not ask the assistant to paste missing items in c
 
 ### (3) Parse the task description
 
-Pull out anything useful from the assistant's prep notes: applicant names, base rent if mentioned, move-in date, owner preferences, any other context. Hold these as parsed values to confirm with the assistant in step 6. The property and rent are not required at this stage; this is a property-agnostic screening that evaluates the household against all three tiers.
+Pull out anything useful from the assistant's prep notes: applicant names, move-in date, owner preferences, any other context. Hold these as parsed values to confirm with the assistant in step 6. You do NOT need a property base rent; this report works backward from verified income to a max approved rent per tier.
 
 ### (4) Fetch every attachment
 
@@ -59,12 +61,12 @@ From the parsed documents, extract per applicant:
 **Income**
 - Monthly qualifying income, calculated per the source-specific rule in `SCREENING_CRITERIA.md`:
   - W-2: average of last 2 months of paystub gross income
-  - Voucher: gross monthly income ÷ tenant portion of rent = ratio (note this requires base rent, ask the assistant in step 6 if needed)
+  - Voucher: gross monthly income from voucher award letter (used directly; the tier math is applied to the household, not to a property's rent)
   - Self-employed: from prior year's federal tax return
   - Gig: 70% of average monthly gross across 2 months
   - Court-ordered: actually-received amount across 60 days, not ordered amount
   - Trust, LTD, education: per the respective sections
-  - Assets in lieu: single-account balance against the shortfall
+  - Assets in lieu: liquid single-account balance ÷ 12 to express as a monthly equivalent
 - Income source and frequency
 - Notes about any income that doesn't meet documentation standards (self-generated docs, P&L statements, payment-app screenshots, unsigned offer letters, etc.)
 
@@ -104,7 +106,7 @@ Applicant names, per-applicant qualifying income (with source and calculation me
 - Anything that conflicts across documents
 - Anything where the extracted value seems implausible
 - Any income documentation that doesn't meet Sagareus standards (self-generated, P&L, payment-app screenshots, unsigned offer letters, password-protected files, etc.)
-- If voucher income is present, flag if the tenant portion of rent isn't clear
+- Source documents that failed extraction (scanned PDFs without text layers, non-standard PDF encodings) and whose values therefore couldn't be independently verified
 
 **(c) MANAGER SECOND LOOK**
 Items that meet criteria but warrant judgment. See the Manager Second Look Triggers section in `SCREENING_CRITERIA.md`. These do not change the tier results; they get flagged separately on the report for the manager.
@@ -126,28 +128,25 @@ For criteria 2-5: if any are met, all three tier results return DENIED with the 
 
 For criterion 1: evaluate per tier. The same household can be auto-denied at Stringent but eligible at Lenient or Standard.
 
-Otherwise (no auto-denial triggers), evaluate the household against each of the three tiers independently:
+Otherwise, evaluate the household against each of the three tiers independently and produce a max approved rent per tier:
 
-**For each tier (Lenient, Standard, Stringent):**
+**For each tier (Lenient 2.0x, Standard 2.5x, Stringent 3.0x):**
 
-| Income meets multiplier? | Credit at or above tier minimum? | Credit within 50 below minimum? | Result |
-|---|---|---|---|
-| Yes | Yes | n/a | APPROVED |
-| Yes | No | Yes | APPROVED WITH MODIFICATION (co-signer required) |
-| Yes | No | No | DENIED (credit > 50 points below minimum) |
-| No, but assets in lieu cover shortfall | Yes | n/a | APPROVED WITH MODIFICATION (assets in lieu) |
-| No, resolvable with co-signer | Yes | n/a | APPROVED WITH MODIFICATION (co-signer for income) |
-| No, not resolvable | any | any | DENIED (income shortfall) |
+| Credit at or above tier minimum? | Credit within 50 below minimum? | Result |
+|---|---|---|
+| Yes | n/a | **Approved up to $X,XXX/month**, where $X,XXX = total household income ÷ tier multiplier, rounded to nearest dollar |
+| No | Yes | **Approved up to $X,XXX/month with co-signer**, same formula, plus the modification language "Co-signer required, meeting the [2.0x / 2.5x / 3.0x] rent income standard." |
+| No | No | **DENIED at this tier**, reason: "Household median credit score more than 50 points below the [Tier] minimum." |
 
 Use only factual, verifiable language from the adverse action phrase bank in `SCREENING_CRITERIA.md`. Never cite protected-class attributes or source of income as a denial reason.
 
-The output of step 7 is three labeled results: Lenient, Standard, Stringent. The manager applies the result that matches the property under consideration.
+The output of step 7 is three labeled results: Lenient, Standard, Stringent, each carrying a max approved rent (or a denial reason). The manager applies the result that matches the property under consideration.
 
 ### (8) Show the full draft in chat
 
-Show the assistant the complete draft report as it will appear on the Asana task. Use the markdown structure in `TEMPLATE.md` (output report section). The draft includes:
+Show the assistant the complete draft report as it will appear in the Asana comment. Use the markdown structure in `TEMPLATE.md` (output report section). The draft includes:
 
-- Tier Results (all three)
+- Tier Results (all three, with max approved rent per tier)
 - Headline numbers (household income, median credit score)
 - Per-applicant underwriting tables
 - Household income math
@@ -158,38 +157,23 @@ Show the assistant the complete draft report as it will appear on the Asana task
 
 Wait for the assistant to approve or request edits. If edits are requested, apply them and re-show the draft. Do not proceed without explicit approval.
 
-### (9) Generate the Google Doc
-
-Use the Google Drive MCP to copy the template Doc (ID in `TEMPLATE.md`). The template has two applicant blocks. If the household has more than two applicants, duplicate the applicant block as many times as needed before filling. The skill supports up to six applicants. If more than six are on the application, stop and tell the assistant to split the screening.
-
-Fill every placeholder per `TEMPLATE.md`'s placeholder map.
-
-**Rename the copy** using the household name convention:
-- One applicant: `[First initial]. [Last name]` (e.g., `R. Glynn`)
-- Two applicants: `[F]. [Last] _ [F]. [Last]` (e.g., `R. Glynn _ N. Glynn`)
-- Three or more: `[F]. [Last] and [N-1] others` (e.g., `A. Reyes and 2 others`)
-
-**Full filename:** `[Household name] - Screening Summary - [YYYY-MM-DD]`
-
-Save the Doc to the Applications folder in Drive (ID in `TEMPLATE.md`). The Doc must remain editable so the manager can make changes directly.
-
-### (10) Post the report as an Asana comment
+### (9) Post the report as an Asana comment
 
 Post a comment on the SAME Asana task that was the input. The comment contains:
 
 - Header line: `READY FOR MANAGER REVIEW`
-- The Google Doc URL, formatted as `Doc: [URL]`
 - A blank line
-- The full markdown version of the report from `TEMPLATE.md` (output report section), with all placeholders filled
+- The full markdown version of the report from `TEMPLATE.md` (output report section), with all values filled in
 
 Do not modify the task description. Do not modify the existing attachments. The comment is purely additive.
 
-### (11) Hand off
+Note: there is NO Google Doc. Per a 2026-05-29 design decision, the Asana comment is the only output artifact. If a manager or owner needs a Doc copy for records, the leasing assistant produces one manually on request (rare).
+
+### (10) Hand off
 
 Return to the assistant:
-- The Google Doc URL
 - The Asana task URL
-- A one-line summary of the tier results (e.g., "Approved at Lenient and Standard; Approved with Modification at Stringent")
+- A one-line summary of the tier results (e.g., "Approved up to $10,656 at Lenient, $8,525 at Standard, $7,104 at Stringent")
 
 Stop. Do not draft a manager notification email or any other downstream action. The Asana task and comment are the handoff.
 
@@ -197,13 +181,12 @@ Stop. Do not draft a manager notification email or any other downstream action. 
 
 - The Asana task URL is the only input. Do not accept document uploads in chat. If documents are missing from the task, send the assistant back to Asana.
 - Use `fetch_asana_attachment` to read every attachment. Never ask the assistant to paste credit-report or income data in chat.
-- Never type a final decision unprompted. Tier results are draft results requiring the assistant's approval, and the Doc is editable so the manager can change it.
+- Never type a final decision unprompted. Tier results are draft results requiring the assistant's approval; the manager makes the final call.
 - Every value you extract from a document is UNVERIFIED until the assistant confirms it in step 6.
 - If any criterion check produces an ambiguous result, flag it in the MANAGER SECOND LOOK list rather than guessing.
-- Never include protected-class language in the draft, the Doc, or the Asana comment. Sagareus does not discriminate on race, color, creed, national origin, sex, sexual orientation, gender identity, disability, marital status, HIV or hepatitis C status, families with children, use of a dog guide or service animal, honorably-discharged veteran or military status, immigration or citizenship status, or source of income.
-- Never treat voucher income, Social Security, child support, or any other lawful income source as inferior to wages. Source of income is fair-housing-protected. Vouchers are evaluated against tenant portion of rent, not contract rent.
+- Never include protected-class language in the draft or the Asana comment. Sagareus does not discriminate on race, color, creed, national origin, sex, sexual orientation, gender identity, disability, marital status, HIV or hepatitis C status, families with children, use of a dog guide or service animal, honorably-discharged veteran or military status, immigration or citizenship status, or source of income.
+- Never treat voucher income, Social Security, child support, or any other lawful income source as inferior to wages. Source of income is fair-housing-protected.
 - Apply criteria uniformly across applicants. Same thresholds, same verification standards, every household.
-- Never post the Asana comment before the Drive Doc exists and has a URL.
 - Never modify the Asana task description or existing attachments. The comment is purely additive.
 - Do not draft an email to the manager or any other notification. The Asana comment is the handoff.
 - Never use em-dashes. Use commas, periods, or semicolons.

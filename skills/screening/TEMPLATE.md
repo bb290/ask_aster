@@ -1,35 +1,15 @@
-# Screening Report Template
+# Screening Report Format
 
-This file pins the Google Doc template ID, the Drive Applications folder
-ID, the full output report markdown, and the placeholder map Aster uses
-when filling the report.
+This file pins the output report markdown and the field rules Aster
+applies when filling it. Aster posts the filled report as a comment
+on the source Asana task. There is no Google Doc; the Asana comment
+is the only artifact.
 
-## Section 1: Doc and folder IDs
+## Section 1: Output report markdown
 
-```
-GOOGLE_DOC_TEMPLATE_ID: 1aQV1rw07ATNA623STsDhuCFfb2gu7UDW9YhrJ08txDs
-APPLICATIONS_FOLDER_ID: 1riMSyoS6jCib04b_yun0LsijZh7zhVrU
-```
-
-How to retrieve each ID:
-
-- **Doc ID** is the URL segment between `/d/` and `/edit` on the template
-  Doc's share URL. Example: in
-  `https://docs.google.com/document/d/1aB2cDeFgHiJkLmN0pQrS/edit`, the
-  Doc ID is `1aB2cDeFgHiJkLmN0pQrS`.
-- **Folder ID** is the URL segment after `/folders/` on the Applications
-  folder's share URL. Example: in
-  `https://drive.google.com/drive/folders/1xYz0aB2cDeFgHiJkLmN`, the
-  folder ID is `1xYz0aB2cDeFgHiJkLmN`.
-
-Paste each ID inline in the block above, replacing the bracketed
-placeholder. No quotes, no extra whitespace.
-
-## Section 2: Output report markdown
-
-This is the exact structure Aster posts as the Asana comment in step 10
-and the structure the Google Doc template mirrors. Every bracketed
-token is a placeholder that Aster fills per Section 3 below.
+This is the exact structure Aster posts as the Asana comment in step 9
+of the skill workflow. Every bracketed token is a placeholder that
+Aster fills per Section 2 below.
 
 ```markdown
 # SAGAREUS PROPERTY MANAGEMENT
@@ -43,63 +23,53 @@ Completed on **[GENERATION DATE]** · Report ID **[XXXXX]**
 ## TIER RESULTS
 
 **Lenient** (600 credit · 2.0x income)
-**[APPROVED] / [APPROVED WITH MODIFICATION] / [DENIED]**
-[Conditions or reasons, if applicable. Leave blank for clean approvals. For modifications, list each on its own line. For denials, cite the specific reason from the adverse action phrase bank.]
+**[Approved up to $X,XXX/month] / [Approved up to $X,XXX/month with co-signer] / [DENIED at this tier]**
+[Conditions or reasons, if applicable. Leave blank for clean approvals. For co-signer modifications, include the modification language from the adverse action phrase bank. For denials, cite the specific reason.]
 
 **Standard** (650 credit · 2.5x income)
-**[APPROVED] / [APPROVED WITH MODIFICATION] / [DENIED]**
+**[Approved up to $X,XXX/month] / [Approved up to $X,XXX/month with co-signer] / [DENIED at this tier]**
 [Conditions or reasons, if applicable.]
 
 **Stringent** (700 credit · 3.0x income)
-**[APPROVED] / [APPROVED WITH MODIFICATION] / [DENIED]**
+**[Approved up to $X,XXX/month] / [Approved up to $X,XXX/month with co-signer] / [DENIED at this tier]**
 [Conditions or reasons, if applicable.]
 
 ---
 
 ## HEADLINE NUMBERS
 
-| **HOUSEHOLD INCOME** | **MEDIAN CREDIT SCORE** |
-|---|---|
-| **$[X,XXX]** | **[XXX]** |
-| _combined verified monthly gross_ | _Equifax FICO, across [N] applicants_ |
+Household income: **$[X,XXX]/month** (combined verified monthly gross)
+Median credit score: **[XXX]** (Equifax FICO, across [N] applicants)
 
 ---
 
 ## UNDERWRITING
 
-### Application Detail
-
-_Each applicant is screened on income, credit, and rental history. The fields below show what was reviewed and where it came from._
-
 ### Applicant 1: [APPLICANT 1 FULL NAME]
 
-| | |
-|---|---|
-| **Monthly qualifying income** | $[X,XXX] |
-| **Income source** | [W-2 / Voucher / Self-employed / Gig / Court-ordered / Education / Trust / LTD / Assets in lieu] |
-| **Income verification** | [Document type reviewed, calculation method applied, any verification calls made by (staff member) on (date)] |
-| **Equifax FICO score** | [XXX] |
-| **Adverse credit items** | [None on file] OR [List items: open collections, charge-offs, judgments, with dates and amounts] |
-| **Bankruptcy** | [None] / [Discharged Chapter 7 on MM/YYYY] / [Discharged Chapter 13 on MM/YYYY] / [Active] |
-| **Eviction history** | [None within 7 years] / [Filing on MM/YYYY: factual description] |
-| **Funds owed to prior landlord** | [None] / [Amount and creditor] |
-| **Rental history** | [Prior landlords contacted, both confirmed on-time payment and clean move-out] OR [Findings: factual description] |
-| **Notes** | [Free-text observations from underwriting, e.g., recent job change verified with offer letter] |
+- **Monthly qualifying income:** $[X,XXX]
+- **Income source:** [W-2 / Voucher / Self-employed / Gig / Court-ordered / Education / Trust / LTD / Assets in lieu]
+- **Income verification:** [Document type reviewed, calculation method applied, any verification calls made by (staff member) on (date)]
+- **Equifax FICO score:** [XXX]
+- **Adverse credit items:** [None on file] OR [List items: open collections, charge-offs, judgments, with dates and amounts]
+- **Bankruptcy:** [None] / [Discharged Chapter 7 on MM/YYYY] / [Discharged Chapter 13 on MM/YYYY] / [Active]
+- **Eviction history:** [None within 7 years] / [Filing on MM/YYYY: factual description]
+- **Funds owed to prior landlord:** [None] / [Amount and creditor]
+- **Rental history:** [Prior landlords contacted, both confirmed on-time payment and clean move-out] OR [Findings: factual description]
+- **Notes:** [Free-text observations from underwriting]
 
 ### Applicant 2: [APPLICANT 2 FULL NAME]
 
-| | |
-|---|---|
-| **Monthly qualifying income** | $[X,XXX] |
-| **Income source** | [...] |
-| **Income verification** | [...] |
-| **Equifax FICO score** | [XXX] |
-| **Adverse credit items** | [...] |
-| **Bankruptcy** | [...] |
-| **Eviction history** | [...] |
-| **Funds owed to prior landlord** | [...] |
-| **Rental history** | [...] |
-| **Notes** | [...] |
+- **Monthly qualifying income:** $[X,XXX]
+- **Income source:** [...]
+- **Income verification:** [...]
+- **Equifax FICO score:** [XXX]
+- **Adverse credit items:** [...]
+- **Bankruptcy:** [...]
+- **Eviction history:** [...]
+- **Funds owed to prior landlord:** [...]
+- **Rental history:** [...]
+- **Notes:** [...]
 
 _For households of three to six applicants, duplicate the applicant block and renumber sequentially._
 
@@ -109,23 +79,25 @@ _For households of three to six applicants, duplicate the applicant block and re
 
 ### Household income
 
-_Sum of each applicant's verified monthly qualifying income, calculated per the source-specific rules in SCREENING_CRITERIA.md (2-month paystub average for W-2, 70% of gig earnings, tenant-portion math for vouchers, etc.)._
+_Sum of each applicant's verified monthly qualifying income, calculated per the source-specific rules in SCREENING_CRITERIA.md (2-month paystub average for W-2, 70% of gig earnings, voucher gross, etc.)._
 
-| | |
-|---|---|
-| Applicant 1 monthly qualifying income | $[X,XXX] |
-| Applicant 2 monthly qualifying income | + $[X,XXX] |
-| **Total household income (monthly, gross)** | **$[X,XXX]** |
+- Applicant 1 monthly qualifying income: $[X,XXX]
+- Applicant 2 monthly qualifying income: + $[X,XXX]
+- **Total household income (monthly, gross): $[X,XXX]**
+
+### Max approved rent per tier (income ÷ multiplier)
+
+- Lenient (2.0x): $[X,XXX]/month
+- Standard (2.5x): $[X,XXX]/month
+- Stringent (3.0x): $[X,XXX]/month
 
 ### Median credit score
 
 _Each applicant's Equifax FICO score sorted low to high, then the middle value taken. For two applicants the median is the average of the two scores._
 
-| | |
-|---|---|
-| Applicant 1 Equifax FICO | [XXX] |
-| Applicant 2 Equifax FICO | [XXX] |
-| **Median credit score** | **[XXX]** |
+- Applicant 1 Equifax FICO: [XXX]
+- Applicant 2 Equifax FICO: [XXX]
+- **Median credit score: [XXX]**
 
 ---
 
@@ -138,7 +110,7 @@ _Items that meet criteria but warrant the manager's judgment. These do not chang
 
 ## ASSISTANT NOTES FOR MANAGER
 
-[Free-text notes the leasing assistant added for the manager during the screening run.]
+[Free-text notes the leasing assistant added for the manager during the screening run. If no notes were added, write "No additional notes from the leasing assistant."]
 
 ---
 
@@ -155,7 +127,7 @@ _Items that meet criteria but warrant the manager's judgment. These do not chang
 _Sagareus Property Management_
 ```
 
-## Section 3: Placeholder map
+## Section 2: Placeholder map
 
 Every bracketed token in the markdown above, what fills it, and any
 special handling.
@@ -169,9 +141,17 @@ special handling.
   appears on identity documents and the credit report. Match
   capitalization to the source documents (not all caps unless that's
   how the doc renders it).
-- **[APPROVED] / [APPROVED WITH MODIFICATION] / [DENIED]**: the tier
-  result. Keep only the applicable token and remove the slashes and
-  other options. Render the chosen result bolded on its own line.
+- **Tier result line** for each of Lenient, Standard, Stringent: keep
+  only the applicable option from the slash-separated set and remove
+  the slashes and other options.
+  - **Approved up to $X,XXX/month**: max rent = household income ÷ tier
+    multiplier (2.0x, 2.5x, 3.0x), rounded to nearest dollar.
+  - **Approved up to $X,XXX/month with co-signer**: same formula, plus
+    the conditions block includes `Co-signer required, meeting the
+    [2.0x / 2.5x / 3.0x] rent income standard.`
+  - **DENIED at this tier**: conditions block cites the specific reason
+    verbatim from the phrase bank in `SCREENING_CRITERIA.md`. One line
+    per reason; if multiple apply, list each.
 - **$[X,XXX]**: dollar amount formatted with comma thousands separator
   and no decimals. Round to the nearest whole dollar (round half up).
 - **[XXX]**: integer credit score in the 300-850 range. If the median
@@ -179,14 +159,6 @@ special handling.
   up for the headline number but show the exact median in the math
   section (e.g., `760.5`).
 - **[N]**: total number of adult applicants in the household.
-- **Conditions or reasons block** (under each tier result):
-  - APPROVED clean: leave the block blank (delete the placeholder).
-  - APPROVED WITH MODIFICATION: list each modification on its own line
-    using the modification language verbatim from
-    `SCREENING_CRITERIA.md`'s adverse action phrase bank.
-  - DENIED: cite the specific reason verbatim from the phrase bank in
-    `SCREENING_CRITERIA.md`. One line per reason; if multiple apply,
-    list each.
 
 ### Per-row placeholder rules in the applicant blocks
 
@@ -197,8 +169,8 @@ special handling.
 - **Income verification**: short factual phrase noting the document
   type reviewed, the calculation rule applied, and any verification
   calls made (with staff initials and date). Examples:
-  - `Two months of paystubs from Tulane University; 2-month average per the W-2 rule. Offer letter confirmed by phone with HR on 2026-05-28 by CS.`
-  - `HCV award letter from Seattle Housing Authority; tenant portion confirmed at $325/mo against $2,200 contract rent. Active through 2027-03.`
+  - `Two months of paystubs from Virginia Mason Franciscan; 2-month average per the W-2 rule. HR confirmed by phone on 2026-05-28 by CS.`
+  - `HCV award letter from Seattle Housing Authority; gross monthly assistance $1,850. Active through 2027-03.`
 - **Adverse credit items**: `None on file` for a clean report. For
   items, list each as `Type, MM/YYYY, $amount, creditor` on its own
   line. Do not editorialize. Do not summarize as "minor" or "significant."
@@ -218,23 +190,13 @@ special handling.
 - **Notes**: free-text observations the assistant or Aster added during
   underwriting. Keep factual. Multiple notes go on separate lines.
 
-### Multi-applicant duplication (Doc template)
+### Multi-applicant duplication
 
-The Google Doc template ships with two applicant blocks (Applicant 1
-and Applicant 2). For households of three to six applicants:
-
-1. In the Doc, copy the entire Applicant 2 block, from the
-   `### Applicant 2:` header row through the `Notes` table row
-   (inclusive).
-2. Paste below Applicant 2 to create Applicant 3. Update the header
-   number.
-3. Repeat for Applicant 4, 5, 6 as needed. The Sagareus Drive API
-   approach: use `batchUpdate` with `insertTable` and `insertText`
-   requests to duplicate the table rows, then `replaceAllText` for
-   the placeholders.
-4. If the household has more than six applicants, stop and tell the
-   assistant to split the screening into two reports. Do not produce
-   a partial report.
+For households of three to six applicants, duplicate the entire
+applicant block in the markdown (the `### Applicant N:` header through
+the `Notes` row), renumber sequentially, and fill placeholders. If the
+household has more than six applicants, stop and tell the assistant to
+split the screening into two reports. Do not produce a partial report.
 
 ### Manager Second Look (bullet list rules)
 

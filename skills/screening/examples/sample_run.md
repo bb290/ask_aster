@@ -202,50 +202,40 @@ Credit at or above tier minimum:
 ## Step 8: Show the full draft in chat
 
 Aster prints the complete report markdown using the structure in
-`TEMPLATE.md`, filled with the figures above. Filename preview:
-`R. Glynn _ N. Glynn - Screening Summary - 2026-05-29`.
+`TEMPLATE.md`, filled with the figures above. The three tier results
+read:
+
+- **Lenient** (600 credit · 2.0x income): **Approved up to $10,656/month**
+- **Standard** (650 credit · 2.5x income): **Approved up to $8,525/month**
+- **Stringent** (700 credit · 3.0x income): **Approved up to $7,104/month**
 
 The assistant reviews and replies `looks good, ship it`.
 
-## Step 9: Generate the Google Doc
-
-Aster:
-1. Copies the template Doc via the Google Drive MCP using the
-   `GOOGLE_DOC_TEMPLATE_ID` from `TEMPLATE.md`.
-2. Fills every placeholder per the placeholder map.
-3. Renames the copy: `R. Glynn _ N. Glynn - Screening Summary - 2026-05-29`.
-4. Moves the copy into the Applications folder using
-   `APPLICATIONS_FOLDER_ID`.
-5. Leaves the Doc editable so the manager can amend it directly.
-
-Aster captures the new Doc's share URL.
-
-## Step 10: Post the Asana comment
+## Step 9: Post the Asana comment
 
 Aster posts a comment on the same task (`1215182714098623`) using the
 Asana MCP. The comment starts:
 
 ```
 READY FOR MANAGER REVIEW
-
-Doc: https://docs.google.com/document/d/[new-doc-id]/edit
 ```
 
 Followed by a blank line and the full markdown report from
 `TEMPLATE.md`, all placeholders filled. The task description and
 existing attachments are not modified.
 
-## Step 11: Hand off
+There is no Google Doc. Per the 2026-05-29 design decision, the
+Asana comment is the only output artifact. If a manager or owner
+later requests a Doc copy for records, the leasing assistant
+generates one manually on request.
+
+## Step 10: Hand off
 
 Aster returns to the assistant:
 
-> Done. Posted to the same Asana task and saved a Doc.
+> Done. Posted to the Asana task.
 >
-> - Doc: https://docs.google.com/document/d/[new-doc-id]/edit
 > - Asana: https://app.asana.com/1/706990140225747/project/1208297375044026/task/1215182714098623
-> - Tier summary: Approved at Lenient, Standard, and Stringent.
->
-> The Doc is editable; the manager reviews on the Asana comment and
-> makes the call.
+> - Tier summary: Approved up to $10,656/month at Lenient, $8,525/month at Standard, $7,104/month at Stringent.
 
 Aster stops here. No follow-up email is drafted, no notifications fire.
