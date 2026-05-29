@@ -8,7 +8,7 @@ when filling the report.
 
 ```
 GOOGLE_DOC_TEMPLATE_ID: 1aQV1rw07ATNA623STsDhuCFfb2gu7UDW9YhrJ08txDs
-APPLICATIONS_FOLDER_ID: [TO BE FILLED BY BRITTANY]
+APPLICATIONS_FOLDER_ID: 1riMSyoS6jCib04b_yun0LsijZh7zhVrU
 ```
 
 How to retrieve each ID:
