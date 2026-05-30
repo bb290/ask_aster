@@ -45,6 +45,8 @@ If any of the following are true, stop and tell the assistant exactly what to fi
 
 Do not proceed by guessing. Do not ask the assistant to paste missing items in chat.
 
+**Do NOT check whether the task has been screened before.** This skill is intentionally re-runnable. Prior \`READY FOR MANAGER REVIEW\` comments on the task, a \`DONE\` prefix in the task name, a "Completed" status, or any other prior-run indicator is NOT a blocker. The most common reason for a re-run is that the first run flagged missing documentation, the applicant submitted new docs, and the assistant is screening the updated set. Just run it.
+
 ### (3) Parse the task description
 
 Pull out anything useful from the assistant's prep notes: applicant names, move-in date, owner preferences, any other context. Hold these as parsed values to confirm with the assistant in step 6. You do NOT need a property base rent; this report works backward from verified income to a max approved rent per tier.
@@ -71,7 +73,7 @@ From the parsed documents, extract per applicant:
 - Monthly qualifying income, calculated per the source-specific rule in \`SCREENING_CRITERIA.md\`:
   - W-2: average of last 2 months of paystub gross income
   - Voucher: gross monthly income from voucher award letter (used directly; the tier math is applied to the household, not to a property's rent)
-  - Self-employed: from prior year's federal tax return
+  - Self-employed: default to gig rule (70% of 2-month average from platform-issued pay statements). Request prior-year federal tax return only as escalation if the gig figure won't qualify the household for the target property.
   - Gig: 70% of average monthly gross across 2 months
   - Court-ordered: actually-received amount across 60 days, not ordered amount
   - Trust, LTD, education: per the respective sections
@@ -201,6 +203,7 @@ Stop. Do not draft a manager notification email or any other downstream action. 
 - Never use em-dashes. Use commas, periods, or semicolons.
 - Use factual, verifiable language only.
 - If you cannot fetch the Asana task itself, stop and tell the assistant what failed. If individual attachments fail to extract, do NOT stop; track the failures and flag them in step 6 so the assistant can confirm values manually or request re-uploads.
+- This skill is intentionally re-runnable. Never warn, ask for permission, or refuse based on prior \`READY FOR MANAGER REVIEW\` comments, \`DONE\` prefixes in task names, or any other prior-run indicator. The assistant invoked /screening; run it.
 
 ## Voice
 
@@ -305,14 +308,25 @@ standard.
   government or nonprofit subsidies
 
 **Self-employed and 1099**
-- Prior year's full federal tax return: Form 1040 plus relevant
-  schedules (C, E, F) or K-1s for partnership, LLC, or S-Corp income
-- Business returns (1120, 1120S, 1065) when personal income depends
-  on business profitability
+- Default verification: gig rule. Use platform or service-provider
+  pay statements covering the most recent 60 days, then calculate
+  qualifying income at 70% of the 2-month average gross. Same math
+  as the Gig and contract work section. Acceptable monthly
+  documentation includes physician reimbursement letters, contractor
+  payment statements, 1099-K platform reports, marketplace earnings
+  dashboards, and similar platform-issued documents.
+- Escalation: if the gig-rule qualifying income is too low for the
+  target property's tier, request the prior year's full federal tax
+  return (Form 1040 plus relevant schedules C, E, F, or K-1s for
+  partnership, LLC, or S-Corp income; business returns 1120, 1120S,
+  1065 where personal income depends on business profitability). The
+  tax return supports a higher qualifying figure because the 70%
+  discount no longer applies.
 - Self-generated invoices, P&L statements, and payment-app screenshots
-  (Venmo, Cash App, Zelle) do not meet the standard
+  (Venmo, Cash App, Zelle) without a platform-issued document do not
+  meet the standard at either tier.
 - Bank statements may support asset-based qualification but are not
-  standalone income verification
+  standalone income verification.
 
 **Gig and contract work**
 - Earnings reports from each platform covering the most recent 60 days

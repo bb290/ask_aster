@@ -89,14 +89,25 @@ standard.
   government or nonprofit subsidies
 
 **Self-employed and 1099**
-- Prior year's full federal tax return: Form 1040 plus relevant
-  schedules (C, E, F) or K-1s for partnership, LLC, or S-Corp income
-- Business returns (1120, 1120S, 1065) when personal income depends
-  on business profitability
+- Default verification: gig rule. Use platform or service-provider
+  pay statements covering the most recent 60 days, then calculate
+  qualifying income at 70% of the 2-month average gross. Same math
+  as the Gig and contract work section. Acceptable monthly
+  documentation includes physician reimbursement letters, contractor
+  payment statements, 1099-K platform reports, marketplace earnings
+  dashboards, and similar platform-issued documents.
+- Escalation: if the gig-rule qualifying income is too low for the
+  target property's tier, request the prior year's full federal tax
+  return (Form 1040 plus relevant schedules C, E, F, or K-1s for
+  partnership, LLC, or S-Corp income; business returns 1120, 1120S,
+  1065 where personal income depends on business profitability). The
+  tax return supports a higher qualifying figure because the 70%
+  discount no longer applies.
 - Self-generated invoices, P&L statements, and payment-app screenshots
-  (Venmo, Cash App, Zelle) do not meet the standard
+  (Venmo, Cash App, Zelle) without a platform-issued document do not
+  meet the standard at either tier.
 - Bank statements may support asset-based qualification but are not
-  standalone income verification
+  standalone income verification.
 
 **Gig and contract work**
 - Earnings reports from each platform covering the most recent 60 days
