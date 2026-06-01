@@ -32,7 +32,7 @@ Run everything end-to-end without pausing for confirmations between steps. There
 
 Extract the task GID from the URL. Fetch the task via the Asana MCP. Read the task name (applicant household), the task description (assistant prep notes; may include move-in date or owner context), and the attachment list via `get_attachments`. Then call `fetch_asana_attachment` on each attachment.
 
-**Skip any prior-underwriting reports during the fetch.** Tasks may still have an underwriting decision PDF attached from the previous (pre-Aster) underwriting workflow. These are NOT source documents and Aster must not read them, parse them, or use any figure from them. Detect them by filename pattern (case-insensitive): names containing `underwriting decision`, `underwriting report`, `underwriting summary`, `decision report`, or `decision summary`. Skip the `fetch_asana_attachment` call entirely for these files; record them under MISSING OR INCONSISTENT so the manager sees what was deliberately ignored. Rationale: the old system has known calculation errors (e.g., annual-vs-monthly income miscomputations), and pulling fallback figures from those reports would propagate the errors. Always re-derive from source documents.
+**Skip any prior-underwriting reports during the fetch.** Tasks may still have an underwriting decision PDF attached from the previous (pre-Aster) underwriting workflow. These are NOT source documents and Aster must not read them, parse them, or use any figure from them. Detect them by filename pattern (case-insensitive): names containing `underwriting decision`, `underwriting report`, `underwriting summary`, `decision report`, or `decision summary`. Skip the `fetch_asana_attachment` call entirely for these files; record them under Manager Review at the top of the report so the manager sees what was deliberately ignored. Rationale: the old system has known calculation errors (e.g., annual-vs-monthly income miscomputations), and pulling fallback figures from those reports would propagate the errors. Always re-derive from source documents.
 
 **If a source document still contains prior-underwriting language** (decision matrix tables, "Approved As-Is", per-tier verdicts pre-computed, "MAXIMUM APPROVED RENT" figures), ignore those values inside that document. Trust only income figures from paystubs, voucher letters, tax returns, and platform pay statements, and only credit figures from credit reports.
 
@@ -43,7 +43,7 @@ Extract the task GID from the URL. Fetch the task via the Asana MCP. Read the ta
 
 If any of these fire, tell the assistant exactly what to fix and stop. Otherwise, proceed silently.
 
-**Per-attachment fetch failures are soft.** If a specific attachment fails to extract (scanned PDF, encrypted, malformed encoding), track the failure and keep going with the attachments that worked; surface the failure in MISSING OR INCONSISTENT inside the report.
+**Per-attachment fetch failures are soft.** If a specific attachment fails to extract (scanned PDF, encrypted, malformed encoding), track the failure and keep going with the attachments that worked; surface the failure in the Manager Review section at the top of the report.
 
 **The skill is intentionally re-runnable.** Prior `READY FOR MANAGER REVIEW` comments, `DONE` prefixes in the task name, or any other prior-run signal is NOT a blocker. Just run it.
 
@@ -105,15 +105,17 @@ Use only factual, verifiable language from the adverse action phrase bank. Never
 
 Build the complete report per `TEMPLATE.md`. The report includes:
 
-- Tier Results (all three, with max approved rent per tier)
-- Headline numbers (household income, median credit)
-- Per-applicant underwriting blocks
-- Show the math (income sum, median calculation, per-tier max rent)
-- **MANAGER SECOND LOOK** — items that meet criteria but warrant manager judgment (see the Manager Second Look Triggers section in `SCREENING_CRITERIA.md`)
-- **MISSING OR INCONSISTENT** — anything you couldn't extract, conflicts across documents, implausible values, sub-standard documentation, prior-underwriting reports you skipped, source documents that failed extraction
-- Notices
+Section order:
 
-ASSISTANT NOTES FOR MANAGER is left as a placeholder for now; it gets filled in step 5.
+1. **Manager Review** (at the top, for quick reference): a single combined list of items that meet criteria but warrant manager judgment (see the Manager Review Triggers section in `SCREENING_CRITERIA.md`) AND data integrity flags (prior-underwriting reports you skipped, attachments that failed extraction, conflicts across documents, implausible values, documentation that does not meet Sagareus standards). If nothing qualifies, write `None on file` and leave the rest empty.
+2. **Tier Results** (all three, with max approved rent per tier)
+3. **Headline Numbers** (household income, median credit)
+4. **Underwriting** (per-applicant blocks)
+5. **Show the Math** (income sum, median calculation, per-tier max rent)
+6. **Assistant Notes for Manager** (placeholder for now; gets filled in step 5 of this skill)
+7. **Notices**
+
+Do NOT insert `---` horizontal rules between sections; the `##` headings alone are the visual structure. Do NOT include criminal background, sex-offender, or restricted-person data anywhere.
 
 ### (5) Show the draft and ask once
 
@@ -142,12 +144,12 @@ Stop. Do not draft a manager notification email or any other downstream action.
 
 ## Behavioral guardrails (non-negotiable)
 
-- **One confirmation gate, period.** The assistant pasted the URL — that's the green light for everything from fetching to draft generation. Steps 1 through 4 run silently. Step 5 is the only place you pause for input, and you ask exactly one question (about Assistant Notes for Manager). Do not narrate intermediate progress, do not confirm parsed values, do not request approval of the tier math. Show the finished draft, ask the one question, ship.
+- **One confirmation gate, period.** The assistant pasted the URL; that's the green light for everything from fetching to draft generation. Steps 1 through 4 run silently. Step 5 is the only place you pause for input, and you ask exactly one question (about Assistant Notes for Manager). Do not narrate intermediate progress, do not confirm parsed values, do not request approval of the tier math. Show the finished draft, ask the one question, ship.
 - The Asana task URL is the only input. Do not accept document uploads in chat. If documents are missing from the task, send the assistant back to Asana.
 - Use `fetch_asana_attachment` to read every attachment. Never ask the assistant to paste credit-report or income data in chat.
 - Skip prior-underwriting-report PDFs by filename pattern. The previous underwriting system has known calculation errors; do not pull figures from those reports under any circumstance. Always re-derive from source documents.
 - Never type a final decision unprompted. Tier results are a draft for the manager; the manager makes the final call.
-- If any criterion check produces an ambiguous result, flag it in the MANAGER SECOND LOOK list inside the report rather than guessing or asking the assistant.
+- If any criterion check produces an ambiguous result, flag it in the Manager Review list at the top of the report rather than guessing or asking the assistant.
 - Never include protected-class language in the draft or the Asana comment. Sagareus does not discriminate on race, color, creed, national origin, sex, sexual orientation, gender identity, disability, marital status, HIV or hepatitis C status, families with children, use of a dog guide or service animal, honorably-discharged veteran or military status, immigration or citizenship status, or source of income.
 - Never treat voucher income, Social Security, child support, or any other lawful income source as inferior to wages. Source of income is fair-housing-protected.
 - Apply criteria uniformly across applicants. Same thresholds, same verification standards, every household.
@@ -155,7 +157,7 @@ Stop. Do not draft a manager notification email or any other downstream action.
 - Do not draft an email to the manager or any other notification. The Asana comment is the handoff.
 - Never use em-dashes. Use commas, periods, or semicolons.
 - Use factual, verifiable language only.
-- If you cannot fetch the Asana task itself, stop and tell the assistant what failed. If individual attachments fail to extract, do NOT stop; track the failures and surface them in the MISSING OR INCONSISTENT section of the report.
+- If you cannot fetch the Asana task itself, stop and tell the assistant what failed. If individual attachments fail to extract, do NOT stop; track the failures and surface them in the Manager Review section at the top of the report.
 - This skill is intentionally re-runnable. Never warn, ask for permission, or refuse based on prior `READY FOR MANAGER REVIEW` comments, `DONE` prefixes in task names, or any other prior-run indicator. The assistant invoked /screening; run it.
 
 ## Voice

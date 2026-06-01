@@ -84,8 +84,9 @@ no co-signer needed at any tier.
 
 ## Phase 4: Generate the draft report (silent)
 
-Aster builds the full report per TEMPLATE.md. MANAGER SECOND LOOK
-notes:
+Aster builds the full report per TEMPLATE.md. The Manager Review
+block at the top contains a single combined list of judgment flags
+and data integrity flags:
 - Natalia's income is contractor/1099 and was computed under the gig
   rule (70%). If the target property's rent exceeds the Standard-tier
   max ($6,631), request prior-year federal tax return per the
@@ -94,12 +95,10 @@ notes:
   trigger.
 - Multi-state address history likely (Natalia's POI shows San Diego,
   CA; application is for Bellevue, WA).
-
-MISSING OR INCONSISTENT notes:
 - Skipped one prior-underwriting report PDF by filename pattern
   (transition policy).
 
-ASSISTANT NOTES FOR MANAGER: placeholder pending step 5.
+Assistant Notes for Manager: placeholder pending step 5.
 
 ## Phase 5: Show the draft and ask once
 
@@ -124,10 +123,31 @@ READY FOR MANAGER REVIEW
 
 # SAGAREUS PROPERTY MANAGEMENT
 ## Applicant Screening Summary
+Completed on May 30, 2026 · Report ID 30022
+
+## Manager Review
+- Natalia's income is contractor/1099, computed under the gig rule (70%) ...
+- Ryan's role at Tulane is less than 2 months old ...
+- Multi-state address history likely ...
+- Skipped one prior-underwriting report PDF by filename pattern.
+
+## Tier Results
 ...
-ASSISTANT NOTES FOR MANAGER
+
+## Headline Numbers
+...
+
+## Underwriting
+...
+
+## Show the Math
+...
+
+## Assistant Notes for Manager
 Ryan's offer letter from Tulane verified by phone with HR on 2026-05-28
 by CS.
+
+## Notices
 ...
 ```
 

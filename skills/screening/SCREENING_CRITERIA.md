@@ -237,7 +237,7 @@ for:
 - Derogatory flags: collections, charge-offs, bankruptcies, evictions
 - Outstanding balances and balance-to-limit ratios
 
-Non-score findings inform the Manager Second Look list and may trigger
+Non-score findings inform the Manager Review list and may trigger
 the automatic denial criteria below.
 
 ### Co-signer eligibility (evaluated per tier)
@@ -304,7 +304,7 @@ denial across all tiers:
 - Unlawful detainer filings that resulted in tenant removal
 
 Evictions older than 7 years may be reviewed but do not automatically
-clear; flag for Manager Second Look.
+clear; flag for Manager Review.
 
 ### 4. Open (active) bankruptcy
 
@@ -352,7 +352,7 @@ about the applicant as a person.
 - "Assets in lieu of income qualifying applied; documentation on file."
 - "Both modifications: co-signer plus additional security deposit."
 
-## Manager Second Look triggers
+## Manager Review triggers
 
 Items that meet criteria above but warrant the manager's judgment.
 These do not change a tier result; they appear in a separate notes

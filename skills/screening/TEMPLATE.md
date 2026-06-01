@@ -18,9 +18,14 @@ Aster fills per Section 2 below.
 
 Completed on **[GENERATION DATE]** · Report ID **[XXXXX]**
 
----
+## Manager Review
 
-## TIER RESULTS
+_Items that meet criteria but warrant the manager's judgment. These do not change the tier results below; they are flagged here for quick reference._
+
+- [Item or "None on file"]
+- [Item]
+
+## Tier Results
 
 **Lenient** (600 credit · 2.0x income)
 **[Approved up to $X,XXX/month] / [Approved up to $X,XXX/month with co-signer] / [DENIED at this tier]**
@@ -34,16 +39,12 @@ Completed on **[GENERATION DATE]** · Report ID **[XXXXX]**
 **[Approved up to $X,XXX/month] / [Approved up to $X,XXX/month with co-signer] / [DENIED at this tier]**
 [Conditions or reasons, if applicable.]
 
----
-
-## HEADLINE NUMBERS
+## Headline Numbers
 
 Household income: **$[X,XXX]/month** (combined verified monthly gross)
 Median credit score: **[XXX]** (Equifax FICO, across [N] applicants)
 
----
-
-## UNDERWRITING
+## Underwriting
 
 ### Applicant 1: [APPLICANT 1 FULL NAME]
 
@@ -73,9 +74,7 @@ Median credit score: **[XXX]** (Equifax FICO, across [N] applicants)
 
 _For households of three to six applicants, duplicate the applicant block and renumber sequentially._
 
----
-
-## SHOW THE MATH
+## Show the Math
 
 ### Household income
 
@@ -99,22 +98,11 @@ _Each applicant's Equifax FICO score sorted low to high, then the middle value t
 - Applicant 2 Equifax FICO: [XXX]
 - **Median credit score: [XXX]**
 
----
-
-## MANAGER SECOND LOOK
-
-_Items that meet criteria but warrant the manager's judgment. These do not change the tier results above; they are flagged here for review._
-
-- [Item or "None on file"]
-- [Item]
-
-## ASSISTANT NOTES FOR MANAGER
+## Assistant Notes for Manager
 
 [Free-text notes the leasing assistant added for the manager during the screening run. If no notes were added, write "No additional notes from the leasing assistant."]
 
----
-
-## NOTICES
+## Notices
 
 **Generation:** This report was produced by Aster, the Sagareus leasing assistant, with AI assistance, then reviewed and finalized by the leasing assistant. All application decisions are made by the Sagareus Leasing Manager.
 
@@ -198,7 +186,7 @@ the `Notes` row), renumber sequentially, and fill placeholders. If the
 household has more than six applicants, stop and tell the assistant to
 split the screening into two reports. Do not produce a partial report.
 
-### Manager Second Look (bullet list rules)
+### Manager Review (bullet list rules)
 
 - If no triggers fire, write `None on file` as the only bullet and
   leave the rest of the section empty.
@@ -208,6 +196,7 @@ split the screening into two reports. Do not produce a partial report.
   - `Discharged Chapter 7 bankruptcy on 2024-08-12, within the 2-year window.`
   - `Self-employment income meets threshold; tax return shows declining year-over-year revenue (2024: $112,400; 2025: $89,200).`
   - `Multi-state address history within prior 12 months (WA, OR, CA).`
+- Skipped prior-underwriting reports and source documents that failed extraction also surface here so the manager sees what was deliberately ignored or could not be parsed.
 
 ### Assistant Notes for Manager
 
