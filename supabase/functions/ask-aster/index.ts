@@ -5,7 +5,28 @@ import { StreamableHTTPTransport } from "@hono/mcp";
 import { Hono } from "hono";
 import { z } from "zod";
 import { createClient } from "@supabase/supabase-js";
-import { extractText, getDocumentProxy } from "unpdf";
+// pdfjs-dist legacy build: works in Deno Edge Runtime without DOM polyfills
+// for text extraction. The `password: ""` parameter handles consumer credit
+// reports (Equifax, RealPage, etc.) that are commonly exported encrypted
+// with an empty user password — `unpdf` couldn't pass that through.
+import { getDocument } from "pdfjs-dist/legacy";
+// MuPDF compiled to WASM: tolerant parser + rasterizer for PDFs that
+// pdfjs-dist can't open (the "Unknown block type in flate stream" case
+// on credit-report exports) and for scanned PDFs with no text layer.
+// When pdfjs fails or returns no text, we render each page to a PNG via
+// MuPDF and return them as MCP image content for claude.ai's vision model
+// to read directly. Equivalent to the `mutool clean` step in the recipe,
+// plus a rasterization step, all in pure JS+WASM.
+import * as mupdf from "mupdf";
+
+// Minimal type shim for MuPDF's JS bindings. Artifex's published types
+// don't import cleanly in Deno; we only need a thin surface here.
+interface MupdfDocument {
+  countPages(): number;
+  // deno-lint-ignore no-explicit-any
+  loadPage(index: number): any;
+  destroy?(): void;
+}
 import { ALL_PROMPTS } from "./prompts/index.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -439,56 +460,186 @@ server.registerTool(
       }
 
       if (fmt.kind === "pdf") {
-        // Extract text server-side. MCP image content rejects PDFs, and
-        // claude.ai can't reach asanausercontent.com to fetch raw bytes,
-        // so text extraction is the only path that actually delivers
-        // content the model can read.
+        // Three-tier PDF cascade:
+        //   1. pdfjs-dist text extraction (fast, works for most PDFs).
+        //   2. MuPDF text extraction (more tolerant; salvages credit-report
+        //      exports that pdfjs can't open at all).
+        //   3. MuPDF page rasterization to PNG (final fallback; returns
+        //      images for claude.ai's vision model to read directly).
+        //
+        // The cascade is necessary because the leasing team's real-world
+        // PDFs include three failure modes pdfjs alone can't handle:
+        //   - Encrypted-with-empty-password (consumer credit reports)
+        //   - Malformed-flate-stream (screening-vendor exports)
+        //   - No text layer at all (scanned proof-of-income docs)
+        // MuPDF rasterization handles all three by punting to vision.
+
+        const pdfBytes = new Uint8Array(buf);
+        let totalPages = 0;
+        let extractedPages: string[] | null = null;
+        let extractionMethod = "";
+
+        // --- Tier 1: pdfjs-dist text extraction ---
         try {
-          const pdf = await getDocumentProxy(new Uint8Array(buf));
-          const extracted = await extractText(pdf, { mergePages: false });
-          const totalPages = extracted.totalPages;
-          const pages = extracted.text as string[];
-
-          const hasAnyText = pages.some((p) => p && p.trim().length > 0);
-          if (!hasAnyText) {
-            return {
-              content: [{
-                type: "text" as const,
-                text:
-                  `Asana attachment '${name}' (${sizeLabel}, ${totalPages} page(s)): no extractable text. This is likely a scanned PDF with no text layer, or an image-only export. OCR the document first or upload a rasterized version directly to chat.`,
-              }],
-              isError: true,
-            };
+          const pdfDoc = await getDocument({
+            data: pdfBytes,
+            password: "",
+            verbosity: 0,
+            useSystemFonts: false,
+            disableFontFace: true,
+            isEvalSupported: false,
+            stopAtErrors: false,
+          }).promise;
+          totalPages = pdfDoc.numPages;
+          const pages: string[] = [];
+          for (let i = 1; i <= totalPages; i++) {
+            const page = await pdfDoc.getPage(i);
+            const content = await page.getTextContent();
+            const pageText = content.items
+              .map((item: unknown) =>
+                typeof item === "object" && item !== null && "str" in item
+                  ? String((item as { str: unknown }).str)
+                  : ""
+              )
+              .join(" ")
+              .trim();
+            pages.push(pageText);
           }
+          if (pages.some((p) => p && p.trim().length > 0)) {
+            extractedPages = pages;
+            extractionMethod = "pdfjs";
+          }
+          // else: text layer empty, fall through to MuPDF render below
+        } catch (pdfjsErr) {
+          // pdfjs couldn't even open the PDF. Fall through to MuPDF.
+          console.log(
+            `fetch_asana_attachment: pdfjs failed gid=${attachment_gid} err="${
+              (pdfjsErr as Error).message
+            }" — falling back to mupdf`,
+          );
+        }
 
-          let body = pages
+        // --- Tier 2: MuPDF text extraction (only if Tier 1 produced nothing) ---
+        if (!extractedPages) {
+          try {
+            const doc = (mupdf as unknown as {
+              Document: { openDocument(b: Uint8Array, mime: string): MupdfDocument };
+            }).Document.openDocument(pdfBytes, "application/pdf");
+            totalPages = doc.countPages();
+            const pages: string[] = [];
+            for (let i = 0; i < totalPages; i++) {
+              const page = doc.loadPage(i);
+              // MuPDF's StructuredText#asText returns plain reading-order text.
+              // Behavior: empty string when there's no text layer.
+              // deno-lint-ignore no-explicit-any
+              const stext: any = page.toStructuredText("preserve-whitespace");
+              const t: string = typeof stext.asText === "function"
+                ? String(stext.asText())
+                : "";
+              pages.push(t.trim());
+              page.destroy?.();
+            }
+            doc.destroy?.();
+            if (pages.some((p) => p.length > 0)) {
+              extractedPages = pages;
+              extractionMethod = "mupdf-text";
+            }
+          } catch (mupdfTextErr) {
+            console.log(
+              `fetch_asana_attachment: mupdf-text failed gid=${attachment_gid} err="${
+                (mupdfTextErr as Error).message
+              }"`,
+            );
+          }
+        }
+
+        // --- Tiers 1+2 succeeded: return text content ---
+        if (extractedPages) {
+          let body = extractedPages
             .map((p, i) =>
               `--- Page ${i + 1} of ${totalPages} ---\n\n${(p ?? "").trim()}`
             )
             .join("\n\n");
-
           let truncatedNote = "";
           if (body.length > PDF_TEXT_MAX_CHARS) {
             truncatedNote =
               `\n\n[Note: extracted text exceeded ${PDF_TEXT_MAX_CHARS} characters and was truncated. Earlier pages are intact.]`;
             body = body.slice(0, PDF_TEXT_MAX_CHARS);
           }
-
           return {
             content: [{
               type: "text" as const,
               text:
-                `Asana attachment '${name}' (${sizeLabel}, ${totalPages} page(s)) — extracted text:\n\n${body}${truncatedNote}`,
+                `Asana attachment '${name}' (${sizeLabel}, ${totalPages} page(s)) — extracted text (${extractionMethod}):\n\n${body}${truncatedNote}`,
             }],
           };
-        } catch (pdfErr: unknown) {
+        }
+
+        // --- Tier 3: MuPDF rasterize each page to PNG, return as image content ---
+        // No text layer or pdfjs+mupdf-text both came up empty. Render the
+        // pages as grayscale PNGs at 200 DPI and let claude.ai's vision model
+        // read them. Cap at MAX_PAGES_RENDERED to keep response size bounded.
+        const MAX_PAGES_RENDERED = 20;
+        const RENDER_DPI = 200;
+        try {
+          const doc = (mupdf as unknown as {
+            Document: { openDocument(b: Uint8Array, mime: string): MupdfDocument };
+          }).Document.openDocument(pdfBytes, "application/pdf");
+          if (!totalPages) totalPages = doc.countPages();
+          const pageLimit = Math.min(totalPages, MAX_PAGES_RENDERED);
+          const scale = RENDER_DPI / 72;
+          // deno-lint-ignore no-explicit-any
+          const Matrix = (mupdf as any).Matrix;
+          // deno-lint-ignore no-explicit-any
+          const ColorSpace = (mupdf as any).ColorSpace;
+          const matrix = Matrix.scale(scale, scale);
+          const grayscale = ColorSpace.DeviceGray;
+
+          const imageContents: Array<{
+            type: "image";
+            data: string;
+            mimeType: "image/png";
+          }> = [];
+
+          for (let i = 0; i < pageLimit; i++) {
+            // deno-lint-ignore no-explicit-any
+            const page = doc.loadPage(i) as any;
+            const pixmap = page.toPixmap(matrix, grayscale, false);
+            const pngBytes: Uint8Array = pixmap.asPNG();
+            imageContents.push({
+              type: "image",
+              data: bytesToBase64(pngBytes),
+              mimeType: "image/png",
+            });
+            pixmap.destroy?.();
+            page.destroy?.();
+          }
+          doc.destroy?.();
+
+          const truncatedNote = totalPages > MAX_PAGES_RENDERED
+            ? ` Rendered the first ${MAX_PAGES_RENDERED} pages; the remaining ${
+              totalPages - MAX_PAGES_RENDERED
+            } pages are not included.`
+            : "";
+
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text:
+                  `Asana attachment '${name}' (${sizeLabel}, ${totalPages} page(s)) — no text layer or unparseable; rendered each page as a grayscale PNG for vision reading.${truncatedNote} Read the page images below to extract content.`,
+              },
+              ...imageContents,
+            ],
+          };
+        } catch (mupdfRenderErr) {
           return {
             content: [{
               type: "text" as const,
               text:
-                `Failed to extract text from PDF '${name}': ${
-                  (pdfErr as Error).message
-                }. The PDF may be encrypted, password-protected, or corrupted.`,
+                `Failed to extract or render PDF '${name}': pdfjs and mupdf both could not open the file. Last error: ${
+                  (mupdfRenderErr as Error).message
+                }. The PDF may be heavily corrupted or use an unsupported feature.`,
             }],
             isError: true,
           };
