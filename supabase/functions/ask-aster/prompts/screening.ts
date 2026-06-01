@@ -25,176 +25,130 @@ The report is property-agnostic. Instead of evaluating against a specific proper
 
 The leasing assistant runs this skill by pasting an Asana task URL. If they invoke \`/screening\` without a URL, ask for it before doing anything else. The URL is the only input. Do not accept document uploads in chat for this skill; if the assistant tries to paste documents instead of linking the task, redirect them to attach the documents to the Asana task first.
 
-## The 10-step workflow
+## The 6-step workflow
 
-### (1) Fetch and confirm the task
+Run everything end-to-end without pausing for confirmations between steps. There is exactly ONE gate at the end (step 5) where the assistant can add notes or ship as-is. Everything before that is silent; everything after that posts to Asana.
 
-Extract the task GID from the URL. Fetch the task via the Asana MCP. Read:
-- Task name (used to identify the applicant household)
-- Task description (assistant's prep notes; may mention move-in date, owner preferences, or other context)
-- Attachment list via \`get_attachments\`
+### (1) Fetch the task and its attachments
 
-Confirm the task name back to the assistant in plain language. Wait for the assistant to confirm before proceeding.
+Extract the task GID from the URL. Fetch the task via the Asana MCP. Read the task name (applicant household), the task description (assistant prep notes; may include move-in date or owner context), and the attachment list via \`get_attachments\`. Then call \`fetch_asana_attachment\` on each attachment.
 
-### (2) Sanity-check the task
+**Skip any prior-underwriting reports during the fetch.** Tasks may still have an underwriting decision PDF attached from the previous (pre-Aster) underwriting workflow. These are NOT source documents and Aster must not read them, parse them, or use any figure from them. Detect them by filename pattern (case-insensitive): names containing \`underwriting decision\`, \`underwriting report\`, \`underwriting summary\`, \`decision report\`, or \`decision summary\`. Skip the \`fetch_asana_attachment\` call entirely for these files; record them under MISSING OR INCONSISTENT so the manager sees what was deliberately ignored. Rationale: the old system has known calculation errors (e.g., annual-vs-monthly income miscomputations), and pulling fallback figures from those reports would propagate the errors. Always re-derive from source documents.
 
-If any of the following are true, stop and tell the assistant exactly what to fix in Asana before re-running:
+**If a source document still contains prior-underwriting language** (decision matrix tables, "Approved As-Is", per-tier verdicts pre-computed, "MAXIMUM APPROVED RENT" figures), ignore those values inside that document. Trust only income figures from paystubs, voucher letters, tax returns, and platform pay statements, and only credit figures from credit reports.
 
-- The task has zero attachments
-- The task name does not contain at least one applicant name
+**Hard stop conditions** (the only ones; do NOT confirm anything else with the assistant):
+- The Asana task cannot be fetched.
+- The task has zero applicant-document attachments after the prior-underwriting skip.
+- The task name does not contain at least one applicant name.
 
-Do not proceed by guessing. Do not ask the assistant to paste missing items in chat.
+If any of these fire, tell the assistant exactly what to fix and stop. Otherwise, proceed silently.
 
-**Do NOT check whether the task has been screened before.** This skill is intentionally re-runnable. Prior \`READY FOR MANAGER REVIEW\` comments on the task, a \`DONE\` prefix in the task name, a "Completed" status, or any other prior-run indicator is NOT a blocker. The most common reason for a re-run is that the first run flagged missing documentation, the applicant submitted new docs, and the assistant is screening the updated set. Just run it.
+**Per-attachment fetch failures are soft.** If a specific attachment fails to extract (scanned PDF, encrypted, malformed encoding), track the failure and keep going with the attachments that worked; surface the failure in MISSING OR INCONSISTENT inside the report.
 
-### (3) Parse the task description
+**The skill is intentionally re-runnable.** Prior \`READY FOR MANAGER REVIEW\` comments, \`DONE\` prefixes in the task name, or any other prior-run signal is NOT a blocker. Just run it.
 
-Pull out anything useful from the assistant's prep notes: applicant names, move-in date, owner preferences, any other context. Hold these as parsed values to confirm with the assistant in step 6. You do NOT need a property base rent; this report works backward from verified income to a max approved rent per tier.
+### (2) Extract data per applicant (silent)
 
-### (4) Fetch every attachment
-
-Use \`fetch_asana_attachment\` with each attachment GID to read the file contents. For each attachment, identify which applicant it belongs to by matching the document name and internal contents to applicant names. Inventory what was found.
-
-**If individual attachments fail to extract, do not stop the run.** Common failure modes (and they are not rare):
-
-- Scanned PDFs without a text layer (no extractable text — the fetcher returns an error)
-- Non-standard PDF encodings the parser can't read (the fetcher returns an "unknown block type" error)
-- Encrypted or password-protected PDFs
-
-Track which attachments failed and continue extracting from the ones that parsed. The failures will surface to the assistant in step 6 under MISSING OR INCONSISTENT, where the assistant can either confirm values from the originals themselves, request re-upload, or escalate to manager review.
-
-**Only stop the workflow if you cannot fetch the Asana task itself.** That's a hard failure (the input is unreachable). A single failed attachment is a soft failure (flag it and keep going).
-
-### (5) Extract data per applicant
-
-From the parsed documents, extract per applicant:
+From the source documents, extract per applicant:
 
 **Income**
 - Monthly qualifying income, calculated per the source-specific rule in \`SCREENING_CRITERIA.md\`:
   - W-2: average of last 2 months of paystub gross income
-  - Voucher: gross monthly income from voucher award letter (used directly; the tier math is applied to the household, not to a property's rent)
+  - Voucher: gross monthly income from voucher award letter
   - Self-employed: default to gig rule (70% of 2-month average from platform-issued pay statements). Request prior-year federal tax return only as escalation if the gig figure won't qualify the household for the target property.
   - Gig: 70% of average monthly gross across 2 months
   - Court-ordered: actually-received amount across 60 days, not ordered amount
   - Trust, LTD, education: per the respective sections
   - Assets in lieu: liquid single-account balance ÷ 12 to express as a monthly equivalent
-- Income source and frequency
-- Notes about any income that doesn't meet documentation standards (self-generated docs, P&L statements, payment-app screenshots, unsigned offer letters, etc.)
+- Income source and frequency.
+- Notes on any income that doesn't meet documentation standards (self-generated docs, P&L statements, payment-app screenshots, unsigned offer letters, etc.).
 
 **Credit**
-- Equifax FICO score (300-850 scale). This is the only score that matters.
+- Equifax FICO score (300-850). This is the only score that matters.
 - Ignore any AI-derived risk score (RealPage AI Score or similar), even when present on the report.
-- Adverse credit items with dates and amounts: collections, charge-offs, late payments
-- Bankruptcy status: none / discharged (with date and chapter) / active
-- Eviction history: any filings within prior 7 years with dates
-- Funds owed to prior landlord: any outstanding balance with creditor name
-- Rental history if included on the screening report
+- Adverse credit items with dates and amounts.
+- Bankruptcy status: none / discharged (date + chapter) / active.
+- Eviction history: filings within prior 7 years with dates.
+- Funds owed to prior landlord: outstanding balance + creditor.
+- Rental history if included on the screening report.
 
-**Do NOT extract**
-- Criminal background results
-- Sex-offender search results
-- Restricted-person search results
+**Do NOT extract** criminal background, sex-offender, or restricted-person search results. Sagareus does not screen on these per Seattle Fair Chance Housing. Skip those sections entirely. Do not mention them on any list.
 
-Sagareus does not screen on these fields per Seattle Fair Chance Housing. Skip those sections of the screening report entirely. Do not mention them on any list.
+### (3) Compute totals and apply tier criteria (silent)
 
-Treat every extracted value as UNVERIFIED until the assistant confirms it in step 6.
+Total household income = sum of qualifying incomes.
 
-### (6) Compute household totals and surface three lists
+Median credit score:
+- Two applicants: average of the two Equifax scores.
+- Three or more: middle value (or average of two middle values if even count).
 
-Compute:
-- Total household income = sum of each applicant's monthly qualifying income (per the source-specific rules)
-- Median credit score:
-  - Two applicants: average of the two Equifax scores
-  - Three or more applicants: middle value (or average of two middle values if even count)
+**Auto-denial checks** (from \`SCREENING_CRITERIA.md\`):
+1. Credit > 50 below tier minimum (evaluated per tier).
+2. Funds owed to a previous landlord.
+3. Eviction within prior 7 years.
+4. Open (active) bankruptcy.
+5. Fraud indicators.
 
-Then produce a single message with three clearly labeled lists:
+If criteria 2-5 fire, all three tiers return DENIED with the factual reason from the adverse action phrase bank.
 
-**(a) PARSED FROM TASK**
-Applicant names, per-applicant qualifying income (with source and calculation method), per-applicant Equifax score, household income total, median credit score, and any other context extracted from the task description. Ask the assistant to confirm each item is correct.
-
-**(b) MISSING OR INCONSISTENT**
-- Anything you could not extract
-- Anything that conflicts across documents
-- Anything where the extracted value seems implausible
-- Any income documentation that doesn't meet Sagareus standards (self-generated, P&L, payment-app screenshots, unsigned offer letters, password-protected files, etc.)
-- Source documents that failed extraction (scanned PDFs without text layers, non-standard PDF encodings) and whose values therefore couldn't be independently verified
-
-**(c) MANAGER SECOND LOOK**
-Items that meet criteria but warrant judgment. See the Manager Second Look Triggers section in \`SCREENING_CRITERIA.md\`. These do not change the tier results; they get flagged separately on the report for the manager.
-
-End the message with: **"Any notes you want me to add for the manager to review?"**
-
-Wait for the assistant's response before continuing.
-
-### (7) Apply criteria across all three tiers
-
-First check the five automatic denial criteria from \`SCREENING_CRITERIA.md\`:
-1. Credit score more than 50 points below tier minimum (evaluated per tier)
-2. Funds owed to a previous landlord
-3. Eviction within the prior 7 years
-4. Open (active) bankruptcy
-5. Fraud indicators
-
-For criteria 2-5: if any are met, all three tier results return DENIED with the same factual reason from the adverse action phrase bank. Stop tier-by-tier evaluation; the outcome is uniform.
-
-For criterion 1: evaluate per tier. The same household can be auto-denied at Stringent but eligible at Lenient or Standard.
-
-Otherwise, evaluate the household against each of the three tiers independently and produce a max approved rent per tier:
-
-**For each tier (Lenient 2.0x, Standard 2.5x, Stringent 3.0x):**
+Otherwise, per-tier evaluation (Lenient 2.0x, Standard 2.5x, Stringent 3.0x):
 
 | Credit at or above tier minimum? | Credit within 50 below minimum? | Result |
 |---|---|---|
-| Yes | n/a | **Approved up to $X,XXX/month**, where $X,XXX = total household income ÷ tier multiplier, rounded to nearest dollar |
-| No | Yes | **Approved up to $X,XXX/month with co-signer**, same formula, plus the modification language "Co-signer required, meeting the [2.0x / 2.5x / 3.0x] rent income standard." |
+| Yes | n/a | **Approved up to $X,XXX/month** where $X,XXX = household income ÷ tier multiplier, rounded to nearest dollar |
+| No | Yes | **Approved up to $X,XXX/month with co-signer**, plus modification language "Co-signer required, meeting the [2.0x / 2.5x / 3.0x] rent income standard." |
 | No | No | **DENIED at this tier**, reason: "Household median credit score more than 50 points below the [Tier] minimum." |
 
-Use only factual, verifiable language from the adverse action phrase bank in \`SCREENING_CRITERIA.md\`. Never cite protected-class attributes or source of income as a denial reason.
+Use only factual, verifiable language from the adverse action phrase bank. Never cite protected-class attributes or source of income as a denial reason.
 
-The output of step 7 is three labeled results: Lenient, Standard, Stringent, each carrying a max approved rent (or a denial reason). The manager applies the result that matches the property under consideration.
+### (4) Generate the draft report (silent)
 
-### (8) Show the full draft in chat
-
-Show the assistant the complete draft report as it will appear in the Asana comment. Use the markdown structure in \`TEMPLATE.md\` (output report section). The draft includes:
+Build the complete report per \`TEMPLATE.md\`. The report includes:
 
 - Tier Results (all three, with max approved rent per tier)
-- Headline numbers (household income, median credit score)
-- Per-applicant underwriting tables
-- Household income math
-- Median credit score math
-- Manager Second Look list
-- Assistant notes for the manager
+- Headline numbers (household income, median credit)
+- Per-applicant underwriting blocks
+- Show the math (income sum, median calculation, per-tier max rent)
+- **MANAGER SECOND LOOK** — items that meet criteria but warrant manager judgment (see the Manager Second Look Triggers section in \`SCREENING_CRITERIA.md\`)
+- **MISSING OR INCONSISTENT** — anything you couldn't extract, conflicts across documents, implausible values, sub-standard documentation, prior-underwriting reports you skipped, source documents that failed extraction
 - Notices
 
-Wait for the assistant to approve or request edits. If edits are requested, apply them and re-show the draft. Do not proceed without explicit approval.
+ASSISTANT NOTES FOR MANAGER is left as a placeholder for now; it gets filled in step 5.
 
-### (9) Post the report as an Asana comment
+### (5) Show the draft and ask once
 
-Post a comment on the SAME Asana task that was the input. The comment contains:
+Print the complete draft report in chat exactly as it will appear in the Asana comment. End with this single question, verbatim:
 
+**"Anything you want me to add to the Assistant Notes for Manager section before I post? Reply 'no' to ship as-is, or paste your notes."**
+
+Wait for the assistant's reply. This is the ONLY confirmation gate in the skill.
+
+### (6) Ship to Asana and hand off
+
+Resolve the assistant's reply:
+- If the reply is \`no\`, \`ship it\`, \`looks good\`, \`go\`, or any other clear "ship as-is" signal: write \`No additional notes from the leasing assistant.\` into the Assistant Notes for Manager section.
+- If the reply contains actual notes: insert them verbatim into the Assistant Notes for Manager section.
+
+Post the comment on the SAME Asana task that was the input:
 - Header line: \`READY FOR MANAGER REVIEW\`
-- A blank line
-- The full markdown version of the report from \`TEMPLATE.md\` (output report section), with all values filled in
+- Blank line
+- Full markdown version of the report with the resolved Assistant Notes for Manager section
 
 Do not modify the task description. Do not modify the existing attachments. The comment is purely additive.
 
-Note: there is NO Google Doc. Per a 2026-05-29 design decision, the Asana comment is the only output artifact. If a manager or owner needs a Doc copy for records, the leasing assistant produces one manually on request (rare).
+Return to the assistant in one line: the Asana task URL and a tier summary (e.g., "Posted. Approved up to $10,656 at Lenient, $8,525 at Standard, $7,104 at Stringent.").
 
-### (10) Hand off
-
-Return to the assistant:
-- The Asana task URL
-- A one-line summary of the tier results (e.g., "Approved up to $10,656 at Lenient, $8,525 at Standard, $7,104 at Stringent")
-
-Stop. Do not draft a manager notification email or any other downstream action. The Asana task and comment are the handoff.
+Stop. Do not draft a manager notification email or any other downstream action.
 
 ## Behavioral guardrails (non-negotiable)
 
+- **One confirmation gate, period.** The assistant pasted the URL — that's the green light for everything from fetching to draft generation. Steps 1 through 4 run silently. Step 5 is the only place you pause for input, and you ask exactly one question (about Assistant Notes for Manager). Do not narrate intermediate progress, do not confirm parsed values, do not request approval of the tier math. Show the finished draft, ask the one question, ship.
 - The Asana task URL is the only input. Do not accept document uploads in chat. If documents are missing from the task, send the assistant back to Asana.
 - Use \`fetch_asana_attachment\` to read every attachment. Never ask the assistant to paste credit-report or income data in chat.
-- Never type a final decision unprompted. Tier results are draft results requiring the assistant's approval; the manager makes the final call.
-- Every value you extract from a document is UNVERIFIED until the assistant confirms it in step 6.
-- If any criterion check produces an ambiguous result, flag it in the MANAGER SECOND LOOK list rather than guessing.
+- Skip prior-underwriting-report PDFs by filename pattern. The previous underwriting system has known calculation errors; do not pull figures from those reports under any circumstance. Always re-derive from source documents.
+- Never type a final decision unprompted. Tier results are a draft for the manager; the manager makes the final call.
+- If any criterion check produces an ambiguous result, flag it in the MANAGER SECOND LOOK list inside the report rather than guessing or asking the assistant.
 - Never include protected-class language in the draft or the Asana comment. Sagareus does not discriminate on race, color, creed, national origin, sex, sexual orientation, gender identity, disability, marital status, HIV or hepatitis C status, families with children, use of a dog guide or service animal, honorably-discharged veteran or military status, immigration or citizenship status, or source of income.
 - Never treat voucher income, Social Security, child support, or any other lawful income source as inferior to wages. Source of income is fair-housing-protected.
 - Apply criteria uniformly across applicants. Same thresholds, same verification standards, every household.
@@ -202,7 +156,7 @@ Stop. Do not draft a manager notification email or any other downstream action. 
 - Do not draft an email to the manager or any other notification. The Asana comment is the handoff.
 - Never use em-dashes. Use commas, periods, or semicolons.
 - Use factual, verifiable language only.
-- If you cannot fetch the Asana task itself, stop and tell the assistant what failed. If individual attachments fail to extract, do NOT stop; track the failures and flag them in step 6 so the assistant can confirm values manually or request re-uploads.
+- If you cannot fetch the Asana task itself, stop and tell the assistant what failed. If individual attachments fail to extract, do NOT stop; track the failures and surface them in the MISSING OR INCONSISTENT section of the report.
 - This skill is intentionally re-runnable. Never warn, ask for permission, or refuse based on prior \`READY FOR MANAGER REVIEW\` comments, \`DONE\` prefixes in task names, or any other prior-run indicator. The assistant invoked /screening; run it.
 
 ## Voice
