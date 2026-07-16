@@ -6,7 +6,7 @@ outline_url: https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC
 status: active
 last_reviewed: 2026-07-16
 visibility_tier: ic
-version: 2
+version: 3
 tags: [leasing, site-visit, vacant-unit, move-in, turnover, documentation, operation-no-drama, leasing-3.0]
 created_but_never_updated: false
 ---
@@ -59,6 +59,22 @@ Include:
 * Any subtasks you have created
 
 These comments are your running notes for the upcoming Weekly Activity Report.
+
+## What Quality Documentation Looks Like
+
+**Minimum 3 full sentences, every comment.** Answer at least: What did you observe? What did you check or test? Anything worth noting outside, the exterior, the street, the neighborhood?
+
+Good:
+
+> "Walked the unit inside and out. Ran the dishwasher and the washer, both drain fine, and turned the mailbox key, opens clean. Lawn was mowed and still looks showing-ready, but the neighbor's tree is dropping branches over the walkway, so I created a subtask for cleanup. 4 photos attached."
+
+> "Showed the unit at 10am, prospect liked the kitchen but asked about street parking. Tested the heat, warm air within a minute and the thermostat responds. Noticed a faint musty smell in the hall bath, so I created a subtask to check the caulking and fan. Street is quiet, no dumping, no graffiti. Photos attached."
+
+Not documentation:
+
+> "Stopped by, all good."
+
+One vague sentence checks nothing, feeds nothing into the weekly report, and does not protect you. If nothing was wrong, say what you checked to know that.
 
 :::info
 **The Accountability Rule applies in full:** anything you identify and document **as an Asana subtask, assigned and with a due date, 72 hours before move-in** does not count against leasing agent performance. The comment communicates you were there; the subtask communicates you've identified an issue requiring action.
