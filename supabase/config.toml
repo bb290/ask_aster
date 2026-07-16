@@ -11,3 +11,9 @@
 # rejects requests with UNAUTHORIZED_NO_AUTH_HEADER before the function is
 # even invoked.
 verify_jwt = false
+
+[functions.rentcast-proxy]
+# Public widget endpoint: auth is origin allowlist + rate limits inside the
+# function (the RentCast key never leaves the server). Disable gateway JWT so
+# browser requests reach the function.
+verify_jwt = false
