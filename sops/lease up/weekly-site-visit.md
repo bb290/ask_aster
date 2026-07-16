@@ -6,7 +6,7 @@ outline_url: https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC
 status: active
 last_reviewed: 2026-07-16
 visibility_tier: ic
-version: 4
+version: 5
 tags: [leasing, site-visit, vacant-unit, move-in, turnover, documentation, operation-no-drama, leasing-3.0]
 created_but_never_updated: false
 ---
@@ -19,7 +19,7 @@ Companion docs: [Scheduling Preferred Slots](https://sagareus.getoutline.com/doc
 
 1. Walk the property. Inside and out.
 2. Take photos, at least 2 per visit; more when anything looks off.
-3. **Create subtasks for anything needing maintenance attention**, the day you see it. Every subtask gets an **assignee and a due date**; per the Asana SOP, if it is not in Asana, it does not exist. The subtask is what protects you and what gets it fixed.
+3. **Create subtasks for anything needing maintenance attention**, the day you see it. Every subtask gets an **assignee and a due date**; per the Asana SOP, if it is not in Asana, it does not exist. The subtask is what protects you and what gets it fixed. **Assign maintenance subtasks to the Turn Over Coordinator: whoever the property's Turn Over task is assigned to.**
 4. Document the site visit in the comment thread. The comment proves you were there and feeds the weekly report; it implies no action is needed. Anything needing action gets a subtask too.
 
 ## Common Move-In Issues to Look For
@@ -50,7 +50,7 @@ Every visit:
 3. Attach **at least 2 photos**.
 4. Anything marked N gets its own **subtask, assigned, with a due date**, the day you see it.
 
-## Rent Ready Inspection Checklist (copy/paste)
+## Site Visit Inspection Checklist (copy/paste)
 
 ```
 SITE VISIT — [date]

@@ -77,7 +77,7 @@ For every issue a comment describes, look for a matching **subtask with an assig
 - Issue has a subtask missing assignee or due date: flag it; per the Asana SOP and the Accountability Rule, a subtask without an assignee and due date does not count.
 - Issue has no subtask: suggest one, with a proposed title, the property, a suggested assignee, and a suggested due date. If a move-in date is set, propose a due date that lands **more than 72 hours before move-in** and say why (the Accountability Rule cutoff).
 
-Suggested-assignee default: the agent themselves, unless they say maintenance handles it. If they are unsure who should own it, tell them to check with their Team Lead; the ops default is still being decided.
+Suggested-assignee default: the **Turn Over Coordinator for that property**, which is whoever the "Turn Over | [address]" task is assigned to (decision BF 2026-07-16). Look up that task's assignee and prefill it in the suggestion. If no Turn Over task exists for the property, ask the agent who is coordinating and suggest they confirm with their Team Lead.
 
 ### Check 3 — Slot 1 and the calendar event
 
