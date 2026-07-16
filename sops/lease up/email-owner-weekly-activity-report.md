@@ -5,7 +5,7 @@ sop_owner: brittany@sagareus.com
 status: active
 last_reviewed: 2026-07-16
 visibility_tier: ic
-version: 2
+version: 3
 tags: [leasing, showing, application, listing, buildium, weekly-report, site-visit, operation-no-drama, leasing-3.0]
 created_but_never_updated: false
 ---
@@ -112,8 +112,8 @@ Hi [Owner Name],
 
 **Site Visit: [Date Visited]**
 
-* Progress on turnover (check turn over note)
-* List any sub tasks added
+* What you saw during the site visit (observations only; the Turn Over Coordinator, CC'd, reports turnover progress)
+* List any sub tasks added from the visit
 
 [attach at least 2 photos]
 :::
@@ -155,7 +155,6 @@ Hi [Owner Name],
 * Open punch list items and their status
 * Anything new found this week and the subtasks created to address it
 
-We will keep weekly eyes on the home until our new resident moves in.
 :::
 
 ## Updating Active Listings
