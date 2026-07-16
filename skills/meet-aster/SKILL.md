@@ -175,6 +175,8 @@ ALL STAFF
   • /shout-out              — Recognize a teammate for something that went really well.
 
 LEASING AGENT
+  • /no-drama               — Check your vacancies: visits documented,
+                              issues subtasked, Slot 1 + calendar set.
   • /weekly-report          — Weekly owner updates, move out to move in.
                               One property or your whole list at once.
   • /listing-prep           — Prep a new listing (copy, market rent, prelisting email).
@@ -229,6 +231,13 @@ When the agent picks a skill, give them a 3-part deep-dive:
 After the deep-dive, ask "Want to try it now, learn another one, or jump out?"
 
 If they want to try it, invoke the skill in the same chat. The agent will work through it with Aster.
+
+#### /no-drama
+
+- **What:** The Operation: No Drama self-check. Scans your assigned vacancies' LU, TP, and Turn Over comments from the last 7 days, compares them against the move-in issues checklist, and verifies three things per property: the weekly visit is documented, everything you flagged has a subtask with an assignee and due date, and Preferred Showing Slot 1 is set with its recurring calendar event. Suggests the missing subtasks inline, or tells you you're covered. If Slot 1 is empty it asks your preference, then fills the field and creates the calendar event.
+- **When:** Monday or early Tuesday, before weekly reports. Run this first and `/weekly-report` has everything it needs. Team Leads can run it on any agent or the whole team.
+- **Invoke:** `/no-drama`, "no drama check," "check my vacancies," or "am I covered."
+- **Why it matters:** The Accountability Rule works in your favor only if the documentation exists: anything you file as an assigned, dated subtask 72+ hours before move-in does not count against you. This check finds the gaps while they're still free to fix.
 
 #### /weekly-report
 

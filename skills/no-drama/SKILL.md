@@ -1,0 +1,153 @@
+---
+name: no-drama
+description: The Operation No Drama compliance check for vacancies. Scans a selected user's assigned vacancies (LU, TP, and TO tasks) for site-visit comments in the last 7 days, compares what the comments describe against the move-in issues checklist from the Weekly Site Visit SOP, verifies that anything needing action has a real subtask (assignee + due date), and verifies Preferred Showing Slot 1 is filled with a matching recurring calendar event. Responds inline with suggested subtasks to create, or reassurance that documentation looks up to date. If Slot 1 is empty, asks the agent's preference, then fills the custom field and creates the recurring calendar event after approval. Use when someone says "no drama check," "check my vacancies," "am I covered," or invokes /no-drama. Pairs with /weekly-report; run this first and Tuesday reports write themselves. Requires Asana MCP; Google Calendar MCP for the calendar checks and writes.
+---
+
+# No Drama — vacancy documentation check
+
+## What this is
+
+The self-audit for [Operation: No Drama](https://sagareus.getoutline.com/doc/operation-no-drama-1KiDctsybm). One command answers three questions for every vacancy an agent holds:
+
+1. **Did the property get its weekly visit, and is it documented?** (a comment with photos on the LU/TP or TO task in the last 7 days)
+2. **Does everything the comments describe as a problem have a subtask?** (assigned, with a due date; per the Accountability Rule, that is what protects the agent)
+3. **Is Preferred Showing Slot 1 set, with the recurring calendar event to back it up?**
+
+The tone is a teammate double-checking your work before it matters, not an inspector. Bruce the No Drama Llama is the mascot of this operation; one dry Bruce-flavored line per run is welcome, a lecture is not.
+
+Source SOPs: [Weekly Site Visit](https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC) (the checklist and comment rules), [Scheduling Preferred Slots](https://sagareus.getoutline.com/doc/scheduling-preferred-slots-pa5dv5TXHb) (Slot 1 and the calendar event), [Email | Owner - Weekly Activity Report](https://sagareus.getoutline.com/doc/email-owner-weekly-activity-report-VDE6GnaYef) (where the comments end up mattering).
+
+## When to use
+
+- Agent says "no drama check," "check my vacancies," "am I covered," "did I document everything," or invokes `/no-drama`
+- Monday or early Tuesday, before weekly reports; run this first and `/weekly-report` has everything it needs
+- A Team Lead wants to check an agent's portfolio ("no drama check for Dana") or the whole team's
+- Right after the Schedule Showing Slots subtask lands on a new vacancy, to get Slot 1 set up
+
+## When NOT to use
+
+- Composing the actual owner email (use `/weekly-report`)
+- Reporting a specific incident (use `/incident-report`)
+- The property is occupied with no move-out in progress
+
+## Voice
+
+- Casual coworker, plain English, never em dashes.
+- Lead with the verdict per property: covered, or gaps found.
+- Coaching, never punitive. The point of the Accountability Rule is that documentation PROTECTS the agent; frame every suggestion that way.
+- One light Bruce touch per run maximum (e.g. closing a clean run with "Bruce has nothing to add. That's the highest compliment he gives."). Never scold as Bruce.
+
+## How it works (high level)
+
+1. Establish whose vacancies to scan (default: the person asking).
+2. Pull their assigned vacancies and, for each, the LU/TP task, the TO task, and both tasks' user comments from the last 7 days.
+3. Run the three checks per property (visit documented, issues have subtasks, Slot 1 + calendar).
+4. Respond inline: per-property verdicts, suggested subtasks as a numbered list, Slot 1 asks where needed.
+5. After the agent approves: create the chosen subtasks, fill Slot 1 fields, create recurring calendar events. Never write before approval.
+
+## Step 1: whose vacancies
+
+Default to the invoker. If they name someone ("no drama check for Dana"), scan that person instead; that is the Team Lead view and works the same way. "The whole team" is allowed: run the same scan per agent and group the output by agent, gaps first.
+
+## Step 2: pull the worklist and comments
+
+Same Asana structure as `/weekly-report`:
+
+- Vacancies = incomplete leasing tasks assigned to the user in project **"Leasing | LU"** (GID `1213171756304238`), names starting `LU |`, `TP |`, or `PreLease |`. The parent is "Leasing | [address]".
+- For each, also locate the **"Turn Over | [address]"** task (site-visit comments live there until the Turnover Completion Inspection is complete; after that they belong on the LU/TP task).
+- Pull user comments (ignore system stories) from the **last 7 days** on BOTH the leasing task and the TO task.
+- Pull custom fields from the leasing task: `🙆 Preferred Showing Slot 1`, `🙆 Preferred Showing Slot 2`, `🙌 Move in Date`, `🙌 Lease Signed Date`, `💁 List Date`, `🙌 Tenant Move-Out Date`.
+- Pull incomplete subtasks of both tasks (name, assignee, due date) to match against issues.
+
+## Step 3: the three checks, per property
+
+### Check 1 — visit documented
+
+At least one user comment in the last 7 days on the LU/TP or TO task that reads like a site visit (notes about the property's condition, showing notes, photos attached). No qualifying comment means the check fails: remind, do not scold, and note that the Weekly Site Visit SOP expects a comment with at least 2 photos every visit. If the property went vacant less than a week ago, say so instead of flagging it.
+
+### Check 2 — issues mentioned vs subtasks created
+
+Compare the comments against the **move-in issues checklist** from the Weekly Site Visit SOP. Categories to scan for (including plain-language mentions like "broken," "leak," "missing," "dirty," "not working," "needs"):
+
+appliances (washer, dryer, dishwasher, fridge, ice maker, disposal, oven, microwave) • heating and A/C (thermostat, remotes) • keys and access (3 unit keys, garage remotes, locks) • mailbox keys (2, tested) • cleanliness and smell • pests • water (leaks, toilets, pressure, hot water, caulk) • electrical and safety (outlets, lights, smoke and CO detectors, handrails, deadbolts) • doors, windows, blinds, screens • landscaping and exterior • garage and grounds • signs of entry or squatters
+
+For every issue a comment describes, look for a matching **subtask with an assignee and a due date** on the LU/TP or TO task. Judge matches loosely by meaning, not exact words ("hall bath drains slow" matches a subtask "snake hallway bathroom drain").
+
+- Issue has a proper subtask: covered.
+- Issue has a subtask missing assignee or due date: flag it; per the Asana SOP and the Accountability Rule, a subtask without an assignee and due date does not count.
+- Issue has no subtask: suggest one, with a proposed title, the property, a suggested assignee, and a suggested due date. If a move-in date is set, propose a due date that lands **more than 72 hours before move-in** and say why (the Accountability Rule cutoff).
+
+Suggested-assignee default: the agent themselves, unless they say maintenance handles it. If they are unsure who should own it, tell them to check with their Team Lead; the ops default is still being decided.
+
+### Check 3 — Slot 1 and the calendar event
+
+- `🙆 Preferred Showing Slot 1` filled: confirm the recurring calendar event exists. If the Google Calendar MCP is connected, search the agent's calendar for a weekly recurring event matching the property address around the Slot 1 day/time; report found or not found. If Calendar is not connected, ask the agent to confirm it exists.
+- Slot 1 empty: ask for their preference in the response ("What day and time can you hold every single week at [address]? And a backup window for Slot 2."). When they answer, after approval: update the `🙆 Preferred Showing Slot 1` (and Slot 2) custom fields, then create the calendar event.
+- Calendar event spec (per the Scheduling Preferred Slots SOP): title `Site Visit | [address]`, at the Slot 1 day and window, **recurring weekly, 6 weeks** by default, extended if the vacancy runs longer. Delete at move-in is the agent's job, not this skill's.
+
+## Step 4: respond inline
+
+One message, per-property verdicts, gaps first, clean properties compressed. Format:
+
+```
+No Drama check for [name], [N] vacancies scanned (last 7 days of comments):
+
+NEEDS ATTENTION
+
+1537 Valentine Pl S
+  • Visit: no comment since Jul 9. The SOP wants a comment with 2+ photos
+    every visit.
+  • Your Jul 9 comment mentions a sticking deadbolt. No subtask found.
+      → Suggested: "Fix sticking back door deadbolt | 1537 Valentine",
+        assignee you, due Jul 19 (move-in is Jul 24, this keeps you ahead
+        of the 72-hour line).
+  • Slot 1: empty. What day + time can you hold every week here, plus a
+    backup window?
+
+653 Myrtine St #A
+  • Visit: ✓ commented Jul 14 with photos.
+  • Issues → subtasks: your comment flags worn carpet; subtask exists but
+    has no due date. Add one and it counts.
+  • Slot 1: "Tue 10-11a" ✓, but I can't find the recurring calendar event.
+    Want me to create it?
+
+LOOKING GOOD
+
+522 N 117th St — visit documented, no open issues mentioned, Slot 1 +
+calendar ✓.
+
+Reply with the subtask numbers to create, your Slot 1 answers, and I'll
+set it all up. Anything I got wrong, say so.
+```
+
+If every property is clean: say so plainly, one line per property, and close with the single Bruce touch. Do not invent gaps to seem useful.
+
+## Step 5: writes (only after the agent approves)
+
+- **Subtasks:** create on the task where the issue was documented (TO task if that is where the comment lives, otherwise LU/TP), with the agreed name, assignee, and due date. One confirmation line each.
+- **Slot fields:** update `🙆 Preferred Showing Slot 1` / `Slot 2` custom fields on the leasing task.
+- **Calendar:** create the recurring weekly event (6 weeks) per the spec above on the agent's calendar. If the Calendar MCP is missing, give them the one-line manual instruction instead.
+- Close with a one-line recap: what was created, what they still owe (photos, comments, anything they deferred).
+
+## Edge cases
+
+- **No vacancies found for the user:** say so and stop. Offer to check another name.
+- **Comments exist but are clearly not site visits** (pricing discussion, lead chatter): do not count them as the weekly visit; say what you found instead.
+- **Vacancy newer than 7 days:** skip the visit check with a note ("assigned 3 days ago, first visit due this week").
+- **Move-in within 72 hours and an undocumented issue surfaces:** still suggest the subtask, but be straight that it lands inside the 72-hour window, so the agent should give their Team Lead a heads up.
+- **Agent disputes a flag ("that dishwasher note was the outgoing tenant's"):** take their word, drop the flag, move on.
+- **Team-wide run with many agents:** group by agent, gaps first, clean agents as one line each. Keep it scannable.
+
+## Out of scope
+
+- Drafting the owner email (that is `/weekly-report`).
+- Marking any task or subtask complete.
+- Creating or closing the Weekly Activity Report subtask.
+- Judging whether an issue was "preventable" (that is Brittany French's call, per the initiative brief).
+- Any write before the agent approves it in this conversation.
+
+## Limitations to flag if asked
+
+- The issue-to-subtask matching is by meaning, not magic. If a comment is vague ("place looks rough"), Aster will ask what specifically needs action rather than guessing.
+- Photo attachments on comments cannot always be verified through the connector; Aster checks for the comment and reminds about the 2-photo rule rather than claiming to count photos.
+- Calendar verification requires the Google Calendar connector; without it, Aster asks instead of checking.
