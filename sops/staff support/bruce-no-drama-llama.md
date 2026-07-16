@@ -2,6 +2,7 @@
 title: "Bruce || No Drama Llama"
 service_line: staff support
 sop_owner: brittany@sagareus.com
+outline_url: https://sagareus.getoutline.com/doc/bruce-no-drama-llama-Utvteb9EBY
 status: active
 last_reviewed: 2026-07-16
 visibility_tier: ic

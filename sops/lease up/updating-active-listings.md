@@ -2,6 +2,7 @@
 title: Updating Active Listings
 service_line: lease up
 sop_owner: brittany@sagareus.com
+outline_url: https://sagareus.getoutline.com/doc/updating-active-listings-aytdYiWQoa
 status: active
 last_reviewed: 2026-07-16
 visibility_tier: ic
@@ -10,7 +11,7 @@ tags: [leasing, listing, buildium, rent-reduction, move-in-special, leasing-3.0]
 created_but_never_updated: false
 ---
 
-All changes are made in Buildium, then documented in Asana. (Split out of Email | Owner - Weekly Activity Report on 2026-07-15.)
+All changes are made in Buildium, then documented in Asana. Source of truth: [Updating Active Listings in Outline](https://sagareus.getoutline.com/doc/updating-active-listings-aytdYiWQoa). (Split out of Email | Owner - Weekly Activity Report on 2026-07-15.)
 
 Buildium → Leasing → Listings → Listed Units → Search address → Edit (Listing Details or Unit Details)
 
@@ -28,7 +29,7 @@ Buildium → Leasing → Listings → Listed Units → Search address → Edit (
 ## Adding a Move-In Special
 
 1. Add promotional language in the listing description. E.g., "Winter Special! Move in before Jan 1st and get $1,000 rent credit!"
-2. Add Move-In Special photo as the 2nd photo in the lineup (download from the Move-In Specials task in Asana).
+2. Add Move-In Special photo as the 2nd photo in the lineup (download from the [Move-In Specials task in Asana](https://app.asana.com/1/706990140225747/project/1208297375044026/task/1210833737247612)).
 
 ## After Updating
 

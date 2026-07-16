@@ -2,6 +2,7 @@
 title: Sagareus Values
 service_line: staff support
 sop_owner: brittany@sagareus.com
+outline_url: https://sagareus.getoutline.com/doc/sagareus-values-gfLVdbGiFf
 status: active
 last_reviewed: 2026-07-16
 visibility_tier: ic

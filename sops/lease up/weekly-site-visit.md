@@ -2,6 +2,7 @@
 title: Weekly Site Visit
 service_line: lease up
 sop_owner: brittany@sagareus.com
+outline_url: https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC
 status: active
 last_reviewed: 2026-07-16
 visibility_tier: ic

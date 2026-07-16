@@ -2,6 +2,7 @@
 title: Scheduling Preferred Slots
 service_line: lease up
 sop_owner: brittany@sagareus.com
+outline_url: https://sagareus.getoutline.com/doc/scheduling-preferred-slots-pa5dv5TXHb
 status: active
 last_reviewed: 2026-07-16
 visibility_tier: ic

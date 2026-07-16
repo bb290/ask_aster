@@ -2,6 +2,7 @@
 title: "Email | Owner - Weekly Activity Report"
 service_line: lease up
 sop_owner: brittany@sagareus.com
+outline_url: https://sagareus.getoutline.com/doc/email-owner-weekly-activity-report-VDE6GnaYef
 status: active
 last_reviewed: 2026-07-16
 visibility_tier: ic
