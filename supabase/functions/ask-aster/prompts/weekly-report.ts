@@ -132,9 +132,9 @@ The state decides the template, the batched question, and the recipients. Work i
 
 The task-name prefix (\`LU |\` / \`PreLease |\` / \`TP |\`) corroborates but the fields decide. State the conclusion in the confirmation message ("This one looks like it's in **Turnover**, not listed yet") and let the agent correct it in the same reply. The agent's word wins over the inference; if the signals genuinely conflict, just ask which state it is in instead of guessing.
 
-### Step 3d: pull the latest site-visit comments — check BOTH tasks
+### Step 3d: pull the latest site-visit comments
 
-Per the Weekly Site Visit SOP, every site visit gets a comment with notes and photos: on the **TO (Turn Over) task** until the Turnover Completion Inspection is complete, on the **LU or TP task** after. In practice comments land on either, so always check **both**: use \`mcp__asana__asana_get_stories_for_task\` on the TO sub-task AND the LU/TP sub-task, and take the most recent user comments (roughly the last 7 days) across the two. Ignore system stories (assignments, due-date changes); user comments only.
+Per the Weekly Site Visit SOP (updated 2026-07-16), site visits are documented as comments on the dedicated **"Weekly Site Visit / Inspection" sub-task** under the LU task: the agent pastes the Rent Ready checklist from the sub-task description, marks it up, and attaches photos. Pull the most recent user comments (roughly the last 7 days) from that sub-task first with \`mcp__asana__asana_get_stories_for_task\`. Transition fallback: older properties may still carry site-visit comments directly on the LU/TP task or the TO (Turn Over) task, so if the dedicated sub-task is missing or empty, check both of those too. Ignore system stories (assignments, due-date changes); user comments only.
 
 These comments are the raw material for the site-visit portion of the email; use their substance, not their verbatim text. If comments exist on both tasks this week, use both and note where each came from when confirming with the agent.
 

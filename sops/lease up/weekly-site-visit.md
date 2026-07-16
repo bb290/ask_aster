@@ -6,7 +6,7 @@ outline_url: https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC
 status: active
 last_reviewed: 2026-07-16
 visibility_tier: ic
-version: 3
+version: 4
 tags: [leasing, site-visit, vacant-unit, move-in, turnover, documentation, operation-no-drama, leasing-3.0]
 created_but_never_updated: false
 ---
@@ -39,14 +39,69 @@ These are the misses that generated real post-move-in tickets in the last 90 day
 * **Garage and grounds.** Garage actually empty, remotes present and functional.
 * **Signs of entry or squatters.**
 
+## The Weekly Site Visit / Inspection Subtask
+
+Every Lease Up task carries a dedicated subtask: **Weekly Site Visit / Inspection**. Its description holds the Rent Ready inspection checklist below, formatted for the phone.
+
+Every visit:
+
+1. Open the subtask and **copy the checklist from the description**.
+2. **Paste it as a new comment**, mark each line (Y / N / na), and add your notes.
+3. Attach **at least 2 photos**.
+4. Anything marked N gets its own **subtask, assigned, with a due date**, the day you see it.
+
+## Rent Ready Inspection Checklist (copy/paste)
+
+```
+SITE VISIT — [date]
+
+CLEANLINESS
+( ) Clean overall / photo ready
+( ) Pests? Kitchen first: ants, roaches, spiders, rats
+( ) Mold? Sills, bathrooms, behind washer
+Notes:
+
+SAFETY
+( ) Front door rekeyed, 3 working keys
+( ) Mailbox key turns + opens
+( ) Smoke detectors, no beeping (each bedroom + common area)
+( ) CO detector each floor, no beeping
+
+APPLIANCES (run them)
+( ) Dishwasher: runs, no leaks, no odor
+( ) Disposal: runs, no leaks, no odor
+( ) Stove top: all burners
+( ) Oven heats
+( ) Fridge / freezer: cold, lights work
+( ) Microwave + hood fan + light
+( ) Washer: runs, no leaks, no odor
+( ) Dryer: heats + spins
+
+HVAC + LIGHTS
+( ) Heat blows warm, every room
+( ) A/C blows cold
+( ) Every light works, no dead bulbs
+( ) Vent fans: baths, kitchen, laundry
+
+PLUMBING
+( ) Drains run clear, no standing water
+( ) No leaks: sinks, toilets, tubs, shower heads
+
+EXTERIOR
+( ) Lawn + walkways showing ready
+( ) Garage empty, remote works
+( ) No signs of entry or squatters
+
+RESULT
+( ) All good, photos attached
+( ) Issues found, subtasks created: [list them]
+
+Photos attached: [#]
+```
+
 ## Site Visit Notes
 
-**Every time you visit the site, there is a note.** Comment directly on the **Turn Over or Lease Up task** with notes and pictures from the visit. The comment is the record.
-
-Which task gets the comment depends on where the property is in the process:
-
-* **Turnover Completion Inspection not yet complete:** comment on the **Turn Over task**.
-* **Turnover Completion Inspection complete:** comment on the **Lease Up task**.
+**Every time you visit the site, there is a note.** Paste the marked-up checklist as a comment on the **Weekly Site Visit / Inspection subtask**, with your notes and pictures. The comment is the record. (Changed 2026-07-16; comments previously went on the Turn Over or Lease Up task directly.)
 
 :::warning
 **Document or it didn't happen.**

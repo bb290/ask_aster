@@ -10,7 +10,7 @@ export const noDramaPrompt = {
 
 The self-audit for [Operation: No Drama](https://sagareus.getoutline.com/doc/operation-no-drama-1KiDctsybm). One command answers three questions for every vacancy an agent holds:
 
-1. **Did the property get its weekly visit, and is it documented?** (a comment with photos on the LU/TP or TO task in the last 7 days)
+1. **Did the property get its weekly visit, and is it documented?** (a marked-up checklist comment with photos on the Weekly Site Visit / Inspection sub-task in the last 7 days)
 2. **Does everything the comments describe as a problem have a subtask?** (assigned, with a due date; per the Accountability Rule, that is what protects the agent)
 3. **Is Preferred Showing Slot 1 set, with the recurring calendar event to back it up?**
 
@@ -55,8 +55,8 @@ Default to the invoker. If they name someone ("no drama check for Dana"), scan t
 Same Asana structure as \`/weekly-report\`:
 
 - Vacancies = incomplete leasing tasks assigned to the user in project **"Leasing | LU"** (GID \`1213171756304238\`), names starting \`LU |\`, \`TP |\`, or \`PreLease |\`. The parent is "Leasing | [address]".
-- For each, also locate the **"Turn Over | [address]"** task (site-visit comments live there until the Turnover Completion Inspection is complete; after that they belong on the LU/TP task).
-- Pull user comments (ignore system stories) from the **last 7 days** on BOTH the leasing task and the TO task.
+- For each, locate the dedicated **"Weekly Site Visit / Inspection" sub-task** under the leasing task. Per the updated SOP (2026-07-16), that is where site-visit documentation lives: the agent pastes the Rent Ready checklist from its description as a marked-up comment with photos.
+- Pull user comments (ignore system stories) from the **last 7 days** on the Weekly Site Visit / Inspection sub-task first. Transition fallback: also check the leasing task and the "Turn Over | [address]" task, where comments lived before the dedicated sub-task existed.
 - Pull custom fields from the leasing task: \`🙆 Preferred Showing Slot 1\`, \`🙆 Preferred Showing Slot 2\`, \`🙌 Move in Date\`, \`🙌 Lease Signed Date\`, \`💁 List Date\`, \`🙌 Tenant Move-Out Date\`.
 - Pull incomplete subtasks of both tasks (name, assignee, due date) to match against issues.
 
@@ -64,7 +64,7 @@ Same Asana structure as \`/weekly-report\`:
 
 ### Check 1 — visit documented
 
-At least one user comment in the last 7 days on the LU/TP or TO task that reads like a site visit (notes about the property's condition, showing notes, photos attached). No qualifying comment means the check fails: remind, do not scold, and note that the Weekly Site Visit SOP expects a comment with at least 2 photos every visit. If the property went vacant less than a week ago, say so instead of flagging it.
+At least one user comment in the last 7 days on the Weekly Site Visit / Inspection sub-task (or, transition fallback, the LU/TP or TO task) that reads like a site visit: ideally the pasted Rent Ready checklist marked up, or notes about the property's condition with photos attached. No qualifying comment means the check fails: remind, do not scold, and note that the SOP expects the checklist pasted as a comment with at least 2 photos every visit. If the property went vacant less than a week ago, say so instead of flagging it.
 
 ### Check 2 — issues mentioned vs subtasks created
 
