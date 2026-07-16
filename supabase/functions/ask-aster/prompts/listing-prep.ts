@@ -22,7 +22,7 @@ The point: turn a 30-to-45-minute manual prep into 5 minutes of guided conversat
 
 - Agent only wants listing copy rewritten → use \`/listing-copywriter\` directly
 - Agent only wants comp analysis without the rest → use \`/market-rent-analysis\` directly
-- Property is already listed and live → use \`/weekly-leasing-report\` for ongoing updates
+- Property is already listed and live → use \`/weekly-report\` for ongoing updates
 
 ## Voice — Aster speaking to the agent
 
@@ -58,7 +58,7 @@ Once the parent task is found, drill into the LU or TP sub-task and pull these c
 
 - **Owner First Name** (custom field on LU/TP)
 - **Owner Email** (custom field on LU/TP)
-- **Zillow Link**, **Redfin Link**, **Sagareus Link** (already used by weekly-leasing-report, may already exist)
+- **Zillow Link**, **Redfin Link**, **Sagareus Link** (already used by weekly-report, may already exist)
 - **List Date** (if set)
 
 If any custom field is missing, surface it inline in the batched ask (Step 2) so the agent can fill it.
@@ -318,10 +318,10 @@ On the **LU or TP sub-task**, this skill expects:
 |---|---|---|
 | Owner First Name | Text | Used in the email greeting. If missing, ask the agent inline. |
 | Owner Email | Email | Used as the Gmail draft recipient. If missing, the draft goes out with no recipient and the agent fills in. |
-| Zillow Link | URL | Already used by weekly-leasing-report. |
-| Redfin Link | URL | Already used by weekly-leasing-report. |
-| Sagareus Link | URL | Already used by weekly-leasing-report. |
-| List Date | Date | Optional for listing-prep, used by weekly-leasing-report. |
+| Zillow Link | URL | Already used by weekly-report. |
+| Redfin Link | URL | Already used by weekly-report. |
+| Sagareus Link | URL | Already used by weekly-report. |
+| List Date | Date | Optional for listing-prep, used by weekly-report. |
 
 If any are missing, the batched ask in Phase 1 Step 2 surfaces them inline so the agent can fill them. Remind the agent to backfill the Asana custom field so the next run is cleaner.
 

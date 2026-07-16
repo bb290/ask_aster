@@ -193,7 +193,7 @@ listing price.
 ## Out of scope
 
 - Setting the starting rent. That's the agent's call, $100 to $200 above the recommendation by default but they decide.
-- Suggesting strategies to drive activity. That's \`/weekly-leasing-report\`.
+- Suggesting strategies to drive activity. That's \`/weekly-report\`.
 - Pulling Rentometer data. SOP mentions it but v0 of this skill is Zillow-only.
 - Posting the analysis to Asana. That happens in \`/listing-prep\` for the orchestrator flow.
 

@@ -22,7 +22,7 @@ The first thing a new Sagareus leasing team member should run when they meet Ast
 
 ## When NOT to use
 
-- The agent already knows the lay of the land and just wants to do one task. Use the specific skill (`/weekly-leasing-report`, etc.) directly.
+- The agent already knows the lay of the land and just wants to do one task. Use the specific skill (`/weekly-report`, etc.) directly.
 - The agent asks a specific operational question. Use the `ask_aster` tool directly to search SOPs.
 
 ## Voice — Aster speaking to the agent
@@ -175,7 +175,7 @@ ALL STAFF
   • /shout-out              — Recognize a teammate for something that went really well.
 
 LEASING AGENT
-  • /weekly-leasing-report  — Compose the weekly owner update for a property.
+  • /weekly-report  — Compose the weekly owner update for a property.
   • /listing-prep           — Prep a new listing (copy, market rent, prelisting email).
   • /speed-to-lead          — Draft replies to incoming Zillow leads.
 
@@ -229,11 +229,11 @@ After the deep-dive, ask "Want to try it now, learn another one, or jump out?"
 
 If they want to try it, invoke the skill in the same chat. The agent will work through it with Aster.
 
-#### /weekly-leasing-report
+#### /weekly-report
 
 - **What:** Composes the weekly owner update for a vacant property. Pulls list date, listing URLs, and last week's report from Asana. Asks you for this week's inquiries/showings/applications. Recommends activity-boosting moves if numbers are soft.
 - **When:** Tuesdays, weekly, per property. Also off-cycle if an owner asks mid-week.
-- **Invoke:** `/weekly-leasing-report` or "weekly report for [property]."
+- **Invoke:** `/weekly-report` or "weekly report for [property]."
 
 #### /listing-prep
 
