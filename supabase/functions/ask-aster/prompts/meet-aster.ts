@@ -146,8 +146,8 @@ Setting up a connector in Claude.ai takes about a minute per service:
 
 Then list **only the missing ones** with a quick why-it-matters note:
 
-- **Asana** — lets Aster look up properties, sub-tasks, custom fields (list date, listing URLs), and post comments on the right sub-tasks. Required for the weekly leasing report skill and most others.
-- **Gmail** — lets Aster read incoming Zillow leads and draft replies. Required for the Speed to Lead skill. Aster never sends without your review.
+- **Asana** — lets Aster look up properties, sub-tasks, custom fields (list date, listing URLs, showing slots), and post comments on the right sub-tasks. Required for the weekly report skill and most others.
+- **Gmail** — lets Aster read incoming Zillow leads and create drafts for you (Speed to Lead replies, weekly report emails). Aster never sends without your review.
 - **Google Calendar** — lets Aster propose showing times and add showings to your calendar. Required when scheduling showings out of Speed to Lead.
 
 After each connection, ask the agent to confirm. Take their word for it. Do not pretend to verify by claiming to "scan" the tool list, because that gives false positives. If something doesn't work later when they invoke a skill, the skill itself will surface that the MCP isn't actually available.
@@ -176,7 +176,8 @@ ALL STAFF
   • /shout-out              — Recognize a teammate for something that went really well.
 
 LEASING AGENT
-  • /weekly-report  — Compose the weekly owner update for a property.
+  • /weekly-report          — Weekly owner updates, move out to move in.
+                              One property or your whole list at once.
   • /listing-prep           — Prep a new listing (copy, market rent, prelisting email).
   • /speed-to-lead          — Draft replies to incoming Zillow leads.
 
@@ -232,9 +233,9 @@ If they want to try it, invoke the skill in the same chat. The agent will work t
 
 #### /weekly-report
 
-- **What:** Composes the weekly owner update for a vacant property. Pulls list date, listing URLs, and last week's report from Asana. Asks you for this week's inquiries/showings/applications. Recommends activity-boosting moves if numbers are soft.
-- **When:** Tuesdays, weekly, per property. Also off-cycle if an owner asks mid-week.
-- **Invoke:** \`/weekly-report\` or "weekly report for [property]."
+- **What:** Composes the weekly owner update for every vacancy you hold, from move-out to move-in. Detects each property's state in Asana and picks the right template: Turnover (site-visit observations, Turn Over Coordinator CC'd), Leasing (the full activity report with numbers, comps at 30+ days, and recommendations when activity is soft), or Pre-Move-In (readiness update). Pulls your site-visit comments, last week's report, and listing data from Asana so most of the email writes itself. Drafts in Gmail for your review and posts the copy back to the Asana sub-task with the due date rolled to next Tuesday.
+- **When:** Tuesdays by 12pm, weekly, until the resident moves in (not until lease signing). Also off-cycle if an owner asks mid-week.
+- **Invoke:** \`/weekly-report\`, "weekly reports time," or "weekly report for [property]." It asks whether you want your whole list batched in one pass or walked one by one, and whether you're covering anyone else's properties this week.
 
 #### /listing-prep
 
