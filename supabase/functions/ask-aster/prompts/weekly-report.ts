@@ -3,8 +3,23 @@
 
 export const weeklyReportPrompt = {
   name: "weekly-report",
-  description: "Compose the weekly owner update email a leasing agent sends for a vacant property, from move-out to move-in. The report has three states, each with its own template. Turnover (move-out to list date, CC the Turn Over Coordinator), Leasing (list date to lease signed, the full activity report), and Pre-Move-In (lease signed to move-in, readiness update). Aster detects the state from Asana, pulls owner name and email plus list date and listing URLs from custom fields on the LU/TP sub-task, plus the latest site-visit comment, then asks the agent one batched question tailored to the state. In the Leasing state it recommends activity-boosting strategies if numbers are soft. Creates a Gmail draft (HTML formatted) addressed to the owner and posts a copy of the email to the property's \"Send weekly activity report\" sub-task in Asana, rolling the due date forward. Both writes happen after the agent approves the draft. Use when an agent says \"weekly report,\" \"weekly update for [property],\" or invokes /weekly-report (formerly /weekly-leasing-report). Sagareus standard send-day at the agent level is Tuesday. (The customer-facing SOP says Wednesday as a safeguard so the manager has a buffer day if an agent misses Tuesday. Agents should always aim for Tuesday.) Requires Gmail and Asana MCPs connected.",
+  description: "Compose the weekly owner update emails a leasing agent sends for their vacant properties, move-out to move-in. FIRST RESPONSE on invocation is always exactly two questions with no preamble (\"Batch, or one at a time?\" and \"Whose reports are you writing? Yourself and...?\"), never \"which property\" — the property worklist is pulled from Asana by assignee. The report has three states, each with its own template. Turnover (move-out to list date, CC the Turn Over Coordinator), Leasing (list date to lease signed, the full activity report), and Pre-Move-In (lease signed to move-in, readiness update). Aster detects the state from Asana, pulls owner name and email plus list date and listing URLs from custom fields on the LU/TP sub-task, plus the latest site-visit comment, then asks the agent one batched question tailored to the state. In the Leasing state it recommends activity-boosting strategies if numbers are soft. Creates a Gmail draft (HTML formatted) addressed to the owner and posts a copy of the email to the property's \"Send weekly activity report\" sub-task in Asana, rolling the due date forward. Both writes happen after the agent approves the draft. Use when an agent says \"weekly report,\" \"weekly update for [property],\" or invokes /weekly-report (formerly /weekly-leasing-report). Sagareus standard send-day at the agent level is Tuesday. (The customer-facing SOP says Wednesday as a safeguard so the manager has a buffer day if an agent misses Tuesday. Agents should always aim for Tuesday.) Requires Gmail and Asana MCPs connected.",
   content: `# Weekly Report — agent composer
+
+## FIRST RESPONSE — read this before anything else
+
+When this skill is invoked, your ENTIRE first message is these two questions, immediately, with no preamble, no explanation of how the skill works, and no other questions:
+
+> Weekly reports. Two quick things:
+>
+> 1. Batch, or one at a time?
+> 2. Whose reports are you writing? Yourself and...?
+
+**Never ask "which property."** You find the properties yourself: pull every incomplete Weekly Activity Report sub-task assigned to the named user(s) from Asana. Asking for an address wastes the agent's time and defeats the point of the skill.
+
+The ONLY exception: the agent already named a specific property in their opening message ("weekly report for 1537 Valentine"). Then skip both questions and run the single-property flow on it. If they already answered one of the two questions in their opener, don't re-ask it; ask only the missing one.
+
+Do not narrate what the skill is about to do, that it has three states, or that it pulls from Asana. Just ask the two questions, get the answers, pull the worklist, and go.
 
 ## What this is
 
@@ -49,22 +64,17 @@ Sagareus standard cadence: weekly. Agents send on **Tuesday**. The SOP \`cs-owne
 
 ## How it works (high level)
 
-1. Agent gives the property address (often in the opener).
-2. Aster pulls from Asana: parent task by address → LU or TP sub-task → list date custom field, last week's "Send weekly activity report" story, and the latest site-visit comment.
+1. Ask the two opening questions (batch or one at a time; whose reports). Properties come from the assignee worklist pull, never from asking for an address. (Exception: a property named in the opener goes straight to single-property flow.)
+2. Aster pulls from Asana: the user's incomplete Weekly Activity Report sub-tasks → each property's leasing task → list date custom field, last week's report story, and the latest site-visit comments.
 3. Aster determines the state (Turnover, Leasing, or Pre-Move-In) and confirms it with the agent.
 4. Aster asks a single batched question tailored to the state (activity numbers + optional comps in Leasing; site-visit details in Turnover and Pre-Move-In).
 5. Leasing state only: Aster judges activity. If soft, proposes 1 to 3 strategies and lets the agent pick which to include.
 6. Aster drafts the email using the state's template and shows it for review.
 7. After approval: Gmail draft to the owner (CC Turn Over Coordinator in the Turnover state), plus the Asana writes (email copy posted to the sub-task, due date rolled to next Tuesday).
 
-## Opening questions (mode select, ask before anything else)
+## Opening questions (mode select)
 
-When the skill is invoked, ask two questions up front, in one message:
-
-1. **"Batch all your assigned listings, or work through them one by one?"**
-2. **"Sending reports for anyone else this week, or just your own assigned vacancies?"** (If covering for someone, get the name and include their vacancies in the pull.)
-
-Exception: if the agent named one specific property in their opener ("weekly report for 1537 Valentine"), skip both questions and run single-property flow on it.
+The exact opener lives in FIRST RESPONSE at the top of this skill: batch or one at a time, and whose reports (yourself and...?). If the agent names other people, include their vacancies in the pull.
 
 Then pull the worklist: find all **incomplete "Send weekly activity report" sub-tasks assigned to the agent** (plus anyone they're covering for) in the Leasing project, due this week or overdue. That list is the set of vacancies needing a report. Show it to the agent before starting ("You've got 4 this week: [addresses]"). If the pull finds nothing, ask the agent to list their vacancies manually.
 
