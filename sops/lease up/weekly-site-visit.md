@@ -5,7 +5,7 @@ sop_owner: brittany@sagareus.com
 status: active
 last_reviewed: 2026-07-16
 visibility_tier: ic
-version: 1
+version: 2
 tags: [leasing, site-visit, vacant-unit, move-in, turnover, documentation, operation-no-drama, leasing-3.0]
 created_but_never_updated: false
 ---
@@ -40,7 +40,12 @@ These are the misses that generated real post-move-in tickets in the last 90 day
 
 ## Site Visit Notes
 
-**Every time you visit the site, there is a note.** Comment directly on the **Lease Up or Turn Over task** with notes and pictures from the visit. The comment is the record.
+**Every time you visit the site, there is a note.** Comment directly on the **Turn Over or Lease Up task** with notes and pictures from the visit. The comment is the record.
+
+Which task gets the comment depends on where the property is in the process:
+
+* **Turnover Completion Inspection not yet complete:** comment on the **Turn Over task**.
+* **Turnover Completion Inspection complete:** comment on the **Lease Up task**.
 
 :::warning
 **Document or it didn't happen.**
