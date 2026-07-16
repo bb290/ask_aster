@@ -3,31 +3,41 @@ title: "Email | Owner - Weekly Activity Report"
 service_line: lease up
 sop_owner: brittany@sagareus.com
 status: active
-last_reviewed: 2026-05-01
+last_reviewed: 2026-07-16
 visibility_tier: ic
-version: 1
-tags: [leasing, showing, application, security-deposit, listing, buildium, leasing-2.0]
+version: 2
+tags: [leasing, showing, application, listing, buildium, weekly-report, site-visit, operation-no-drama, leasing-3.0]
 created_but_never_updated: false
 ---
 
 Keep owners informed and listings optimized with a weekly update sent every Tuesday by 12pm.
 
-## Report Preparation
+Deadline: Tuesdays at 12pm
 
+:::warning
+**What changed (2026-07-15):**
+
+* Leasing Agents visit the property **at least weekly from move-out to move-in** for a [Weekly Site Visit](https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC). Sometimes coupled with a showing, sometimes not.
+* On every visit, **look for common move-in issues** (checklist in Weekly Site Visit) and create subtasks for anything needing maintenance attention.
+* **Every site visit gets a comment on the Turn Over or Lease Up task** with notes and photos. This documents the visit and makes writing the weekly report much easier.
+* The Weekly Activity Report **closes at move-in, not at lease signing**, and runs regardless of state: listed or not listed, turnover in progress, lease signed, move-in pending.
+
+Companion docs: [Scheduling Preferred Slots](https://sagareus.getoutline.com/doc/scheduling-preferred-slots-pa5dv5TXHb) (locking in the weekly slot) and [Weekly Site Visit](https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC) (conducting the visit + move-in issues checklist). Initiative brief: [Operation: No Drama](https://sagareus.getoutline.com/doc/operation-no-drama-1KiDctsybm).
+:::
+
+## Report Preparation
 
 1. Leasing Agent prepares the report using the Weekly Update template below.
 2. The report is emailed to the Leasing Team Lead or directly to the Property Owner, as designated by Team Lead.
-
 
 ---
 
 ## Review & Distribution
 
-
 1. Leasing Team Lead reviews and revises the report as needed.
-2. Team Lead updates the listing in Buildium based on current activity.
+2. Leasing Agent and/or Team Lead updates the listing in Buildium based on current activity.
 3. Finalized report is sent to the **Property Owner**.
-
+4. Copy/paste email into the Weekly Activity Report subtask.
 
 :::info
 **CC the Leasing Manager and/or Operations Manager only if:**
@@ -36,25 +46,20 @@ Keep owners informed and listings optimized with a weekly update sent every Tues
 * The Leasing Team needs or may need additional support.
 
 This keeps management's inbox clear and ensures the emails they receive are actionable.
-
 :::
-
 
 ---
 
 ## Task Documentation
 
-After sending:
+After sending (the email itself is pasted into the Weekly Activity Report subtask in Review & Distribution step 4 above):
 
-
-1. Copy/paste the final email content into the **Comments section** of the Asana LU task to maintain a running log.
-2. Update the task due date to the **following week**.
-3. Repeat until a lease is signed or a move-in is scheduled.
-
+1. Update the task due date to the **following week**.
+2. Repeat every week **until a resident has moved in**. Do not mark the Weekly Activity Report subtask done at lease signing or when a move-in is scheduled; it closes at move-in. (Changed 2026-07-15; previously "until a lease is signed or a move-in is scheduled.")
 
 ---
 
-## Standard Activity Report Content
+## Standard Leasing Activity Report Content
 
 * **Zillow Link** — click to verify the listing is live and accurate before sending.
 * **# of inquiries** received that week.
@@ -65,23 +70,20 @@ After sending:
 
 ### Activity Levels → Recommendations
 
-
 :::tip
 * **10+ inquiries or 5+ showings** — activity is adequate. No changes needed.
-* **10+ inquiries, fewer than 5 showings** — Leasing Agent conversion problem. Review step 6. Is the agent using the response template?
+* **10+ inquiries, fewer than 5 showings** — Leasing Agent conversion problem. Is the agent using the response template?
 * **Fewer than 5 showings** — triple-check the listing and make recommendations.
-
 :::
 
 **Low Activity? Triple-Check the Listing:**
 
-
-1. Verify Zillow listing is active. See [Zillow Troubleshooting](zillow-troubleshooting.md).
+1. Verify Zillow listing is active. See Zillow Troubleshooting.
 2. Check Redfin.
-3. Posted to Facebook? (Owner-posted only — see [Lease Up Policies](lease-up-policies.md))
-4. Review photos — are they professional quality? See [Rental Listing Standards](rental-listing-standards.md).
+3. Posted to Facebook? (Owner-posted only — see Lease Up Policies)
+4. Review photos — are they professional quality? See Rental Listing Standards.
 5. Confirm amenities are checked in Buildium: Washer/Dryer, Cats, Dogs, Pet Friendly.
-6. Review listing remarks — does it follow the [Rental Listing Standards](rental-listing-standards.md) template?
+6. Review listing remarks — does it follow the Rental Listing Standards template?
 
 **Standard Recommendations to Increase Activity:**
 
@@ -93,44 +95,30 @@ After sending:
 * Add Move-In Special ($500, $1,000, or 1 month free rent at lease signing)
 * Improve the property (LVP flooring, interior paint, minor upgrades)
 
-
 ---
 
-## Updating Active Listings
+## Email Templates
 
-All changes are made in Buildium, then documented in Asana.
+The weekly report runs move-out to move-in, so pick the template for the unit's current state and edit it based on your site visit and activity. Three states, three templates.
 
-Buildium → Leasing → Listings → Listed Units → Search address → Edit (Listing Details or Unit Details)
+### Turnover (between move-out and list date)
 
-**Update every week:**
+**CC the Turn Over Coordinator on every Turnover-state report.**
 
-* Reduce rent price (unless owner has specifically declined)
-* Rearrange photos slightly when editing rent — makes the listing appear refreshed
-* Update availability date to today or a few days out — same reason
+:::info
+**Subject:** Site Visit | [Date Range] | [Property Address]
 
-**Reducing Rent:**
+Hi [Owner Name],
 
+**Site Visit: [Date Visited]**
 
-1. Edit Listing Details → adjust asking rent.
-2. Reduce deposit to $100 less than new asking rent.
+* Progress on turnover (check turn over note)
+* List any sub tasks added
 
-**Adding a Move-In Special:**
+[attach at least 2 photos]
+:::
 
-
-1. Add promotional language in the listing description. E.g., *"Winter Special! Move in before Jan 1st and get $1,000 rent credit!"*
-2. Add Move-In Special photo as the 2nd photo in the lineup.
-   * Download from the [Move-In Specials Task in Asana](https://app.asana.com/1/706990140225747/project/1208297375044026/task/1210833737247612).
-
-**After updating:**
-
-* Add a comment to the parent LU Asana task listing all changes.
-* @ the Leasing Agent so they're aware.
-
-
----
-
-## Email Template
-
+### Leasing (existing activity report, list date to lease signed)
 
 :::info
 **Subject:** Leasing Activity | [Date Range] | [Property Address]
@@ -148,7 +136,28 @@ Hi [Owner Name],
 **Recent Comparables** Comparable 1: [Address](link) — $[price], [#] days on market, [#] inquiries, [incentives] Comparable 2: [Address](link) — $[price], [#] days on market, [#] inquiries, [incentives] Comparable 3: [Address](link) — $[price], [#] days on market, [#] inquiries, [incentives]
 
 **Recommendations to Improve Activity** [Only include items relevant to this listing that haven't already been tried]
-
 :::
 
-[Video Overview](https://www.loom.com/share/476f45d8faf441fcb384e27c3d66aec2)
+### Pre-Move-In (between lease signed and move-in)
+
+:::info
+**Subject:** Site Visit | [Property Address]
+
+Hi [Owner Name],
+
+**Move In Scheduled:** [Date]
+
+**Site Visit:** [Date Visited]
+
+**Move-In Readiness**
+
+* Cleaning: scheduled or completed
+* Open punch list items and their status
+* Anything new found this week and the subtasks created to address it
+
+We will keep weekly eyes on the home until our new resident moves in.
+:::
+
+## Updating Active Listings
+
+See [Updating Active Listings](https://sagareus.getoutline.com/doc/updating-active-listings-aytdYiWQoa) — weekly Buildium listing updates, rent reductions, move-in specials, and the after-update Asana documentation steps.
