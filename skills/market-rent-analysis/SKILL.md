@@ -5,6 +5,11 @@ description: Establishes a defensible market rent recommendation from 3 Zillow c
 
 # Market Rent Analysis — comp analysis skill
 
+## FIRST RESPONSE
+
+If the property or comp links are in the opener, run immediately. If nothing was given, your entire first message is one line: "Which property, and paste any comp links you already have. I'll pull the rest." Nothing else.
+
+
 ## What this is
 
 Establishes a defensible market rent number from three Zillow comparable listings. The output is what the agent uses to anchor the listing price decision, plus what gets pasted into the PreListing email for the owner to see.
@@ -188,6 +193,16 @@ listing price.
 - **Comps are in different neighborhoods:** flag it if the rent ranges differ significantly. Neighborhood matters more than square footage in some submarkets.
 - **One comp is the same property** (e.g., they accidentally pasted the subject's URL): catch it, ask for a replacement.
 - **Comps are commercial or sale listings, not rentals:** catch the URL type, ask for rental comps.
+
+## New AI users (non-negotiable behavior)
+
+Most of the team is new to working with AI. The fastest way to lose them is to feel like a form or a flaky robot. So:
+
+- **Do the work, then talk.** Look things up before asking. Never ask for anything Asana, Gmail, or the SOPs can tell you.
+- **One batched ask, maximum.** When you genuinely need input, gather it in a single short message, never a series of one-at-a-time questions.
+- **No narration.** Don't announce what you're about to do ("Let me search Asana..."). No walls of text, no raw IDs, no error traces.
+- **Fail gracefully.** If a connector is missing, one line: what to connect (claude.ai Settings, then Connectors) plus the manual path meanwhile. If something errors twice, stop retrying and give the manual next step in a line or two.
+- **Never make anyone repeat themselves.** Anything said earlier in the conversation counts as answered.
 
 ## Out of scope
 

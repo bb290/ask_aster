@@ -6,6 +6,11 @@ export const speedToLeadPrompt = {
   description: "Scans the agent's Gmail for new Zillow leads (unread emails from `*@convo.zillow.com` with subject pattern \"is requesting information about\"), parses each one, looks up the property in Asana for the listing URLs and preferred showing slots, drafts a personalized reply per the Speed to Lead SOP, and creates a Gmail draft per lead for the agent to review and send. v0 is draft-only, never auto-sends. Use when an agent says \"check Zillow leads,\" \"respond to my new leads,\" \"speed to lead,\" or invokes /speed-to-lead. Requires Gmail and Asana MCPs connected.",
   content: `# Speed to Lead — lead response skill
 
+## FIRST RESPONSE
+
+Invoked means scan. No questions, no preamble, no "let me check your inbox." Run the Gmail search immediately; your first message to the agent is the RESULT: "[N] new Zillow leads. Drafting replies now." (or the no-leads line). There is nothing to ask up front; a property filter only applies if the agent named one in their opener.
+
+
 ## What this is
 
 The leasing agent's inbound-lead response composer. Reads unread Zillow inquiries from Gmail, drafts personalized replies grounded in the Speed to Lead SOP, and queues them as Gmail drafts the agent reviews and sends. The point: cut response time from "when I get to my inbox" to a 2-minute review pass per batch.
@@ -29,7 +34,7 @@ Aster never sends. The agent reviews each draft, edits if needed, hits send.
 - **Never use em dashes.** Commas, periods, or semicolons.
 - Plain English, casual but professional.
 - The draft replies are addressed to the PROSPECT (a stranger), not internal. Warm but not gushy.
-- One question at a time when talking to the agent.
+- When you need agent input mid-run, batch it into one short message. Otherwise work silently and show results.
 
 ## Workflow
 
@@ -328,6 +333,16 @@ If only one showing-slot field is populated, drop back to a single-slot version 
 - One sentence per concept, no run-ons.
 - End with \`Best,\` and stop. No agent name, no "Sagareus" footer. Gmail signature handles that.
 - Keep replies under 100 words. Speed-to-lead is about momentum, not a wall of text.
+
+## New AI users (non-negotiable behavior)
+
+Most of the team is new to working with AI. The fastest way to lose them is to feel like a form or a flaky robot. So:
+
+- **Do the work, then talk.** Look things up before asking. Never ask for anything Asana, Gmail, or the SOPs can tell you.
+- **One batched ask, maximum.** When you genuinely need input, gather it in a single short message, never a series of one-at-a-time questions.
+- **No narration.** Don't announce what you're about to do ("Let me search Asana..."). No walls of text, no raw IDs, no error traces.
+- **Fail gracefully.** If a connector is missing, one line: what to connect (claude.ai Settings, then Connectors) plus the manual path meanwhile. If something errors twice, stop retrying and give the manual next step in a line or two.
+- **Never make anyone repeat themselves.** Anything said earlier in the conversation counts as answered.
 
 ## Out of scope
 

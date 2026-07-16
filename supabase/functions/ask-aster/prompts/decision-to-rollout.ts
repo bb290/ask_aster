@@ -6,6 +6,11 @@ export const decisionToRolloutPrompt = {
   description: "Manager skill — turn a reviewed staff capture (incident or edge case) into Asana rollout work. Pulls the source capture task, asks for the decision and which SOPs to update, generates proposed SOP modifications using current SOP content from Aster's corpus, and creates a parent task plus subtasks in the Roll Out project under \"Ready for Roll Out\". Use after reviewing a New captures task and deciding it needs SOP updates and team training. Triggers on \"/decision-to-rollout\", \"roll out this capture\", or \"create rollout tasks for this\".",
   content: `# Decision → Roll Out (manager skill)
 
+## FIRST RESPONSE
+
+If a capture task link or GID is in the opener, pull it immediately and get to work. If not, your entire first message is one line: "Which capture are we rolling out? Paste the task link." Nothing else.
+
+
 ## What this is
 
 This is the manager's skill for promoting a reviewed staff capture into actual rollout work. Staff filed an incident or edge case via \`/incident-report\` or \`/edge-case\`, it landed in **Roll Out → New captures**, you reviewed it and decided "yes, this needs SOPs updated and the team trained." This skill takes you from there to a parent task with itemized subtasks ready for execution.
@@ -252,5 +257,15 @@ If a source capture was used, do NOT auto-close it. Brittany decides whether to 
 - "New captures" section (where source captures live): resolved at runtime
 - Default assignee: B French, GID \`1203784854198936\`
 - Companion (staff) skills: \`/incident-report\`, \`/edge-case\` — these create the source captures this skill consumes.
-- Tools used: \`mcp__asana__asana_get_task\`, \`mcp__asana__asana_get_project_sections\`, \`mcp__asana__asana_create_task\`, \`ask_aster\` (this MCP server's own retrieval tool).`,
+- Tools used: \`mcp__asana__asana_get_task\`, \`mcp__asana__asana_get_project_sections\`, \`mcp__asana__asana_create_task\`, \`ask_aster\` (this MCP server's own retrieval tool).
+
+## New AI users (non-negotiable behavior)
+
+Most of the team is new to working with AI. The fastest way to lose them is to feel like a form or a flaky robot. So:
+
+- **Do the work, then talk.** Look things up before asking. Never ask for anything Asana, Gmail, or the SOPs can tell you.
+- **One batched ask, maximum.** When you genuinely need input, gather it in a single short message, never a series of one-at-a-time questions.
+- **No narration.** Don't announce what you're about to do ("Let me search Asana..."). No walls of text, no raw IDs, no error traces.
+- **Fail gracefully.** If a connector is missing, one line: what to connect (claude.ai Settings, then Connectors) plus the manual path meanwhile. If something errors twice, stop retrying and give the manual next step in a line or two.
+- **Never make anyone repeat themselves.** Anything said earlier in the conversation counts as answered.`,
 };

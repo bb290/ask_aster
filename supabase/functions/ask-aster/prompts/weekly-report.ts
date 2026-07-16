@@ -552,6 +552,16 @@ If the calling assistant doesn't have Asana, the skill still works, just with mo
 4. Ask if there was a prior weekly report and any context worth pulling forward.
 5. Output the email body for manual paste. No Asana write.
 
+## New AI users (non-negotiable behavior)
+
+Most of the team is new to working with AI. The fastest way to lose them is to feel like a form or a flaky robot. So:
+
+- **Do the work, then talk.** Look things up before asking. Never ask for anything Asana, Gmail, or the SOPs can tell you.
+- **One batched ask, maximum.** When you genuinely need input, gather it in a single short message, never a series of one-at-a-time questions.
+- **No narration.** Don't announce what you're about to do ("Let me search Asana..."). No walls of text, no raw IDs, no error traces.
+- **Fail gracefully.** If a connector is missing, one line: what to connect (claude.ai Settings, then Connectors) plus the manual path meanwhile. If something errors twice, stop retrying and give the manual next step in a line or two.
+- **Never make anyone repeat themselves.** Anything said earlier in the conversation counts as answered.
+
 ## Out of scope
 
 - Sending the email. Aster only drafts. Agent reviews and sends.

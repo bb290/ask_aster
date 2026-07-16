@@ -5,6 +5,11 @@ description: Coordinates the full prelisting workflow for a Sagareus rental prop
 
 # Listing Prep — orchestrator skill
 
+## FIRST RESPONSE
+
+If the property was named in the opener, start the Asana pull immediately; your first message is what you found plus the one batched question the flow needs. If no property was named, your entire first message is one line: "Which property are we prepping?" Nothing else, no explanation of the workflow.
+
+
 ## What this is
 
 The leasing agent's full prelisting workflow in one skill. Pulls owner info and property metadata from Asana custom fields, runs the comp analysis to determine market rent first, walks the agent through pricing decisions using that number, generates the listing copy, drafts the PreListing email in Gmail, and posts a copy on the matching Asana subtask for the record.
@@ -333,6 +338,16 @@ If any are missing, the batched ask in Phase 1 Step 2 surfaces them inline so th
 - **Gmail MCP missing.** Skip Step 9 mechanically, output the body for manual paste. Still run Step 10.
 - **Asana subtask "Email | Owner - Market Rent & PreListing" not found.** Surface error. Don't auto-create. The Asana structure is owned by the team's onboarding process.
 - **Agent wants to skip the listing copy.** Allowed. The email will say "Listing copy in progress, will follow separately." Note in the Asana comment.
+
+## New AI users (non-negotiable behavior)
+
+Most of the team is new to working with AI. The fastest way to lose them is to feel like a form or a flaky robot. So:
+
+- **Do the work, then talk.** Look things up before asking. Never ask for anything Asana, Gmail, or the SOPs can tell you.
+- **One batched ask, maximum.** When you genuinely need input, gather it in a single short message, never a series of one-at-a-time questions.
+- **No narration.** Don't announce what you're about to do ("Let me search Asana..."). No walls of text, no raw IDs, no error traces.
+- **Fail gracefully.** If a connector is missing, one line: what to connect (claude.ai Settings, then Connectors) plus the manual path meanwhile. If something errors twice, stop retrying and give the manual next step in a line or two.
+- **Never make anyone repeat themselves.** Anything said earlier in the conversation counts as answered.
 
 ## Out of scope
 

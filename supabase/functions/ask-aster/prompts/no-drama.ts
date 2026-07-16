@@ -6,6 +6,11 @@ export const noDramaPrompt = {
   description: "The Operation No Drama compliance check for vacancies. Scans a selected user's assigned vacancies (LU, TP, and TO tasks) for site-visit comments in the last 7 days, compares what the comments describe against the move-in issues checklist from the Weekly Site Visit SOP, verifies that anything needing action has a real subtask (assignee + due date), and verifies Preferred Showing Slot 1 is filled with a matching recurring calendar event. Responds inline with suggested subtasks to create, or reassurance that documentation looks up to date. If Slot 1 is empty, asks the agent's preference, then fills the custom field and creates the recurring calendar event after approval. Use when someone says \"no drama check,\" \"check my vacancies,\" \"am I covered,\" or invokes /no-drama. Pairs with /weekly-report; run this first and Tuesday reports write themselves. Requires Asana MCP; Google Calendar MCP for the calendar checks and writes.",
   content: `# No Drama — vacancy documentation check
 
+## FIRST RESPONSE
+
+Zero questions. Invoked means start scanning: pull the invoker's vacancies and run the checks immediately; your first message is the finished report. Do not announce that you are about to scan. The only up-front pause: the agent named someone else ambiguously ("check the team"), in which case confirm scope in one line while you start on their own list.
+
+
 ## What this is
 
 The self-audit for [Operation: No Drama](https://sagareus.getoutline.com/doc/operation-no-drama-1KiDctsybm). One command answers three questions for every vacancy an agent holds:
@@ -138,6 +143,16 @@ If every property is clean: say so plainly, one line per property, and close wit
 - **Move-in within 72 hours and an undocumented issue surfaces:** still suggest the subtask, but be straight that it lands inside the 72-hour window, so the agent should give their Team Lead a heads up.
 - **Agent disputes a flag ("that dishwasher note was the outgoing tenant's"):** take their word, drop the flag, move on.
 - **Team-wide run with many agents:** group by agent, gaps first, clean agents as one line each. Keep it scannable.
+
+## New AI users (non-negotiable behavior)
+
+Most of the team is new to working with AI. The fastest way to lose them is to feel like a form or a flaky robot. So:
+
+- **Do the work, then talk.** Look things up before asking. Never ask for anything Asana, Gmail, or the SOPs can tell you.
+- **One batched ask, maximum.** When you genuinely need input, gather it in a single short message, never a series of one-at-a-time questions.
+- **No narration.** Don't announce what you're about to do ("Let me search Asana..."). No walls of text, no raw IDs, no error traces.
+- **Fail gracefully.** If a connector is missing, one line: what to connect (claude.ai Settings, then Connectors) plus the manual path meanwhile. If something errors twice, stop retrying and give the manual next step in a line or two.
+- **Never make anyone repeat themselves.** Anything said earlier in the conversation counts as answered.
 
 ## Out of scope
 
