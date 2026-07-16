@@ -7,6 +7,16 @@ description: Audit the Ask Aster corpus against the live GetOutline SOPs so the 
 
 The corpus (`sops/`) is what Aster answers from. Outline is what the team edits. Every mirrored file declares its live doc in frontmatter as `outline_url:`. This skill compares the two and reports drift before it becomes wrong answers.
 
+## Scope: leasing lines only
+
+Per the 2026-05-09 scope decision (`decisions/2026-05-09-leasing-team-scope-and-routing.md`), Aster is the **leasing team's** assistant and answers only from the 8 leasing service lines: applicant screening, tenant placement, lease up, move in, premove out, move out, inspections, turn over. Questions in the other 17 lines get routed to an inbox, not answered, so drift there is harmless. Drift maintenance covers ONLY:
+
+- `sops/` files in those 8 service-line folders (~118 files as of July 2026)
+- The deliberately added staff-support docs (Sagareus Values, Bruce, getting-started)
+- `decisions/` files that carry an `outline_url`
+
+Do not audit, map, or sync the other service lines. If a mapping backfill is ever run, it runs against this scope, not the full corpus.
+
 ## Direction of truth
 
 **Outline wins for SOP content.** The team edits SOPs in Outline; the corpus is the retrieval copy. When they disagree, update the corpus to match Outline, bump `version:` in the frontmatter, update `last_reviewed:`, commit, push, and run the ingest. The one exception: if the corpus contains a change Brittany made through Claude that clearly never got patched to Outline (check the git log), flag it as "Outline behind" instead of overwriting the corpus, and offer to patch Outline.
