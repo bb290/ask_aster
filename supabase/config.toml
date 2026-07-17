@@ -17,3 +17,8 @@ verify_jwt = false
 # function (the RentCast key never leaves the server). Disable gateway JWT so
 # browser requests reach the function.
 verify_jwt = false
+
+[functions.site-visit-proxy]
+# Internal site-visit widget: auth = origin allowlist + shared team key header
+# (x-sv-key) checked inside the function; Asana PAT stays server-side.
+verify_jwt = false
