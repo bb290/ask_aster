@@ -373,30 +373,50 @@ app.post("*", async (c) => {
       if (!BUILDIUM_ID || !BUILDIUM_SECRET) {
         return j(headers, 500, { error: "buildium_not_configured", message: "Buildium keys are not set up yet." });
       }
-      const address = String(body.address ?? "").trim();
-      if (!address) return j(headers, 400, { error: "missing_address" });
-      const units = await allUnits();
-      const m = matchUnit(units, address);
-      if (m.ambiguous) {
-        return j(headers, 404, { error: "ambiguous", message: `Multiple units match that address (${m.ambiguous.join(", ")}). Add the unit number and pull again.` });
+      // Preferred path: direct Buildium Unit ID (from the Asana Unit Settings task).
+      // Fallback path: address matching against Unit Settings.
+      let uid = String(body.unitId ?? "").trim();
+      if (uid && !/^\d+$/.test(uid)) {
+        return j(headers, 400, { error: "bad_unit_id", message: "Unit ID should be just the number from the Unit Settings task." });
       }
-      const hit = m.hit;
-      if (!hit) {
-        return j(headers, 404, { error: "unit_not_found", message: "No managed unit matches that address. Check the spelling, or fill the fields by hand." });
-      }
-      const task = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
-      const uid = (task.custom_fields ?? []).find((f: { name: string }) => /^unit id$/i.test(f.name))?.display_value;
       if (!uid) {
-        return j(headers, 404, { error: "no_unit_id", message: `Found ${hit.address}, but its Settings task has no Unit ID. Add it in Asana, or fill the fields by hand.` });
+        const address = String(body.address ?? "").trim();
+        if (!address) return j(headers, 400, { error: "missing_address" });
+        const units = await allUnits();
+        const m = matchUnit(units, address);
+        if (m.ambiguous) {
+          return j(headers, 404, { error: "ambiguous", message: `Multiple units match that address (${m.ambiguous.join(", ")}). Add the unit number and pull again.` });
+        }
+        if (!m.hit) {
+          return j(headers, 404, { error: "unit_not_found", message: "No managed unit matches that address. Check the spelling, or fill the fields by hand." });
+        }
+        const task = await asana("GET", `/tasks/${m.hit.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+        uid = String((task.custom_fields ?? []).find((f: { name: string }) => /^unit id$/i.test(f.name))?.display_value ?? "");
+        if (!uid) {
+          return j(headers, 404, { error: "no_unit_id", message: `Found ${m.hit.address}, but its Settings task has no Unit ID. Add it in Asana, or fill the fields by hand.` });
+        }
       }
       const res = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(String(uid))}`, {
         headers: { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET },
       });
+      if (res.status === 404) return j(headers, 404, { error: "buildium_unit_not_found", message: "Buildium has no unit with that ID. Double-check it on the Unit Settings task." });
       if (!res.ok) return j(headers, 502, { error: "buildium_failed", message: "Buildium didn't answer. Fill the fields by hand for now." });
       const u = await res.json();
+      // full address for the comps lookup: line1 (+ unit #), city, state, zip
+      const a = u.Address ?? {};
+      let line1 = String(a.AddressLine1 ?? "").trim();
+      const unitNo = String(u.UnitNumber ?? "").trim();
+      if (unitNo) {
+        const toks = line1.toLowerCase().split(/[^a-z0-9#]+/);
+        const un = unitNo.toLowerCase();
+        if (!toks.includes(un) && !toks.includes("#" + un)) line1 += ` #${unitNo}`;
+      }
+      const fullAddress = [line1, a.City, [a.State === "Washington" || a.State === "WA" ? "WA" : a.State, a.PostalCode].filter(Boolean).join(" ")]
+        .filter(Boolean).join(", ");
       return j(headers, 200, {
         ok: true,
-        matchedAddress: hit.address,
+        matchedAddress: fullAddress,
+        address: fullAddress,
         beds: bedBathNum(u.UnitBedrooms),
         baths: bedBathNum(u.UnitBathrooms),
         sqft: u.UnitSize ?? null,
