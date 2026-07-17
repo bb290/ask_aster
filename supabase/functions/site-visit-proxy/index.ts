@@ -83,9 +83,50 @@ const ADDR_EXPAND: Record<string, string> = {
   cir: "circle", n: "north", s: "south", e: "east", w: "west",
   ne: "northeast", nw: "northwest", se: "southeast", sw: "southwest",
 };
+function addrTokens(s: string): string[] {
+  const raw = s.toLowerCase().replace(/[.,]/g, " ").split(/\s+/).filter(Boolean);
+  const out: string[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    let w = raw[i];
+    // "unit 2" / "apt B" / "ste 4" -> "#2" / "#b" / "#4"
+    if ((w === "unit" || w === "apt" || w === "ste" || w === "suite") && raw[i + 1]) {
+      out.push("#" + raw[++i].replace(/^#/, ""));
+      continue;
+    }
+    w = ADDR_EXPAND[w] ?? w;
+    // drop state and zip noise ("wa", "98166"); the leading street number survives (i > 0)
+    if (w === "wa" || w === "washington") continue;
+    if (i > 0 && /^9\d{4}(-\d{4})?$/.test(w)) continue;
+    out.push(w);
+  }
+  return out;
+}
 function normAddr(s: string): string {
-  return s.toLowerCase().replace(/[.,]/g, " ").split(/\s+/).filter(Boolean)
-    .map((w) => ADDR_EXPAND[w] ?? w).join(" ");
+  return addrTokens(s).join(" ");
+}
+// Best Unit Settings match for a typed address; "ambiguous" when a multi-unit
+// building matches but the typed address doesn't say which unit.
+function matchUnit(units: Array<{ gid: string; address: string }>, typed: string):
+  { hit?: { gid: string; address: string }; ambiguous?: string[] } {
+  const t = addrTokens(typed);
+  if (!t.length) return {};
+  const target = t.join(" ");
+  const exact = units.find((u) => normAddr(u.address) === target);
+  if (exact) return { hit: exact };
+  const candidates = units.filter((u) => {
+    const ut = addrTokens(u.address);
+    if (ut[0] !== t[0]) return false;
+    const set = new Set(ut);
+    const missing = t.filter((w) => !set.has(w)).length;
+    return missing <= 1;
+  });
+  if (candidates.length === 1) return { hit: candidates[0] };
+  if (candidates.length > 1) {
+    // all the same building, different units? surface the unit markers
+    const markers = candidates.map((c) => (c.address.match(/#[^\s,]+/) ?? ["?"])[0]);
+    return { ambiguous: markers.slice(0, 8) };
+  }
+  return {};
 }
 
 // Buildium bed/bath enums ("TwoBed", "OnePointFiveBath", "Studio") -> numbers
@@ -335,10 +376,11 @@ app.post("*", async (c) => {
       const address = String(body.address ?? "").trim();
       if (!address) return j(headers, 400, { error: "missing_address" });
       const units = await allUnits();
-      const target = normAddr(address);
-      const hit = units.find((u) => normAddr(u.address) === target) ??
-        units.find((u) => normAddr(u.address).startsWith(target)) ??
-        units.find((u) => target.startsWith(normAddr(u.address)));
+      const m = matchUnit(units, address);
+      if (m.ambiguous) {
+        return j(headers, 404, { error: "ambiguous", message: `Multiple units match that address (${m.ambiguous.join(", ")}). Add the unit number and pull again.` });
+      }
+      const hit = m.hit;
       if (!hit) {
         return j(headers, 404, { error: "unit_not_found", message: "No managed unit matches that address. Check the spelling, or fill the fields by hand." });
       }
