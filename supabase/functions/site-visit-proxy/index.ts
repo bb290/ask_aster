@@ -73,6 +73,14 @@ function addressFromTaskName(name: string): string {
   return afterBar.split(" - ")[0].trim();
 }
 
+// "Tuesday 10-11am" / "Tues @ 2pm" -> 0-6 (Sunday-Saturday), or null if no weekday found
+function weekdayFromText(text: string): number | null {
+  const m = text.match(/\b(sun|mon|tues?|wed(?:nes)?|thur?s?|fri|sat(?:ur)?)(?:day)?s?\b/i);
+  if (!m) return null;
+  const key = m[1].slice(0, 3).toLowerCase();
+  return { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 }[key] ?? null;
+}
+
 function addressFromSettingsName(name: string): string {
   // "Settings // 2813 Southwest 28th Street, Redmond" -> "2813 Southwest 28th Street, Redmond"
   return name.split("//").slice(1).join("//").trim();
@@ -175,12 +183,15 @@ app.post("*", async (c) => {
         }
       }
 
-      // 2) move-in date (for the 72-hour rule) from the leasing task custom fields
+      // 2) move-in date (72-hour rule) + Preferred Showing Slot 1 (next visit due date)
       let moveIn: Date | null = null;
+      let slot1 = "";
       if (source !== "manual") try {
         const lu = await asana("GET", `/tasks/${taskGid}?opt_fields=custom_fields.name,custom_fields.display_value`);
         const mi = (lu.custom_fields ?? []).find((f: { name: string }) => /move in date/i.test(f.name));
         if (mi?.display_value) moveIn = new Date(mi.display_value);
+        const s1 = (lu.custom_fields ?? []).find((f: { name: string }) => /preferred showing slot 1/i.test(f.name));
+        if (s1?.display_value) slot1 = String(s1.display_value);
       } catch { /* non-fatal */ }
 
       // 3) Turn Over Coordinator = assignee of the "Turn Over | <address>" task
@@ -240,6 +251,21 @@ app.post("*", async (c) => {
       lines.push(`RESULT: ${created.length ? `${created.length} issue subtask(s) created${assignee ? `, assigned to ${assignee.name}` : ""}` : "All good, no issues found"}`);
       const story = await asana("POST", `/tasks/${inspection.gid}/stories`, { text: lines.join("\n") });
 
+      // 7) bump the inspection subtask's due date to the next Slot 1 weekday.
+      //    Slot 1 is free text ("Tuesday 10-11am"); blank or no weekday = leave as is.
+      let inspectionDueOn: string | null = null;
+      const wd = slot1 ? weekdayFromText(slot1) : null;
+      if (wd !== null) {
+        try {
+          const local = new Date(Date.now() - 7 * 3600 * 1000); // Seattle-ish day boundary
+          let add = (wd - local.getUTCDay() + 7) % 7;
+          if (add === 0) add = 7; // visit happened today; due date is NEXT week's slot
+          local.setUTCDate(local.getUTCDate() + add);
+          inspectionDueOn = local.toISOString().slice(0, 10);
+          await asana("PUT", `/tasks/${inspection.gid}`, { due_on: inspectionDueOn });
+        } catch { inspectionDueOn = null; /* non-fatal */ }
+      }
+
       return j(headers, 200, {
         ok: true,
         inspectionGid: inspection.gid,
@@ -248,6 +274,7 @@ app.post("*", async (c) => {
         subtasks: created,
         assignee: assignee ? assignee.name : null,
         dueOn,
+        inspectionDueOn,
       });
     }
 
