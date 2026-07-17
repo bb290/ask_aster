@@ -3,7 +3,7 @@
 // The widget is a tap-through checklist on an internal page (/site-visit). This
 // function holds the Asana PAT server-side (the "Asana Bot" account) and does the
 // writes the agents used to do by hand:
-//   - action "vacancies": list the agent's assigned vacancies (Leasing | LU project)
+//   - action "vacancies": list the open vacancies (Leasing | LU project)
 //   - action "submit": post the marked-up checklist as a comment on the property's
 //     "Weekly Site Visit / Inspection" subtask (created if missing), and create a
 //     maintenance subtask on the LU task for every item flagged "create ticket",
@@ -88,24 +88,19 @@ app.post("*", async (c) => {
   const action = String(body.action ?? "");
 
   try {
-    // ---------- vacancies: the agent's open leasing tasks ----------
+    // ---------- vacancies: all open leasing tasks in Leasing | LU ----------
     if (action === "vacancies") {
-      const agentName = String(body.agentName ?? "").trim();
-      if (!agentName) return j(headers, 400, { error: "missing_agent" });
-      const users = await asana("GET", `/workspaces/${WORKSPACE}/typeahead?resource_type=user&query=${encodeURIComponent(agentName)}&count=3`);
-      const user = (users ?? [])[0];
-      if (!user) return j(headers, 404, { error: "agent_not_found", message: `Couldn't find "${agentName}" in Asana.` });
       const tasks = await asana("GET",
-        `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LEASING_LU_PROJECT}&assignee.any=${user.gid}&completed=false&limit=50&opt_fields=name`);
+        `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LEASING_LU_PROJECT}&completed=false&limit=100&opt_fields=name`);
       const vacancies = (tasks ?? [])
         .filter((t: { name: string }) => /^(LU|TP|PreLease)\s*\|/i.test(t.name))
-        .map((t: { gid: string; name: string }) => ({ gid: t.gid, name: t.name, address: addressFromTaskName(t.name) }));
-      return j(headers, 200, { agentGid: user.gid, agentName: user.name, vacancies });
+        .map((t: { gid: string; name: string }) => ({ gid: t.gid, name: t.name, address: addressFromTaskName(t.name) }))
+        .sort((a: { address: string }, b: { address: string }) => a.address.localeCompare(b.address));
+      return j(headers, 200, { vacancies });
     }
 
     // ---------- submit: comment + tickets ----------
     if (action === "submit") {
-      const agentName = String(body.agentName ?? "Agent").trim();
       const taskGid = String(body.taskGid ?? "");
       const address = String(body.address ?? "");
       const generalNote = String(body.generalNote ?? "").trim();
@@ -162,7 +157,7 @@ app.post("*", async (c) => {
           name,
           ...(toCoordinator ? { assignee: toCoordinator.gid } : {}),
           due_on: dueOn,
-          notes: `Found on weekly site visit by ${agentName} (${today.toISOString().slice(0, 10)}).\nChecklist item: ${label}${note ? `\nNote: ${note}` : ""}\nPhotos on the Weekly Site Visit / Inspection subtask.${toCoordinator ? "" : "\nNo Turn Over task found for this property. Assign to your Turn Over Coordinator."}`,
+          notes: `Found on weekly site visit (${today.toISOString().slice(0, 10)}).\nChecklist item: ${label}${note ? `\nNote: ${note}` : ""}\nPhotos on the Weekly Site Visit / Inspection subtask.${toCoordinator ? "" : "\nNo Turn Over task found for this property. Assign to your Turn Over Coordinator."}`,
         });
         created.push({ gid: sub.gid, name: sub.name, url: `https://app.asana.com/0/0/${sub.gid}` });
       }
@@ -176,7 +171,7 @@ app.post("*", async (c) => {
         (bySection[sec] = bySection[sec] || []).push(
           `${mark} ${it.item}${note ? ` -- ${note}` : ""}${it.ticket ? " [ticket created]" : ""}`);
       }
-      const lines: string[] = [`SITE VISIT -- ${today.toISOString().slice(0, 10)} -- by ${agentName} (via site visit tool)`, ""];
+      const lines: string[] = [`SITE VISIT -- ${today.toISOString().slice(0, 10)} (via site visit tool)`, ""];
       for (const sec of Object.keys(bySection)) { lines.push(sec); lines.push(...bySection[sec]); lines.push(""); }
       if (generalNote) { lines.push("Notes:"); lines.push(generalNote); lines.push(""); }
       lines.push(`RESULT: ${created.length ? `${created.length} issue subtask(s) created${toCoordinator ? `, assigned to ${toCoordinator.name}` : ""}` : "All good, no issues found"}`);
