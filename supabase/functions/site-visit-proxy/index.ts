@@ -133,6 +133,7 @@ app.post("*", async (c) => {
       const vacancies = (tasks ?? [])
         .filter((t: { name: string }) => /^(LU|TP|PreLease)\s*\|/i.test(t.name))
         .map((t: { gid: string; name: string }) => ({ gid: t.gid, address: addressFromTaskName(t.name) }))
+        .filter((v: { address: string }) => v.address && !v.address.includes("<"))
         .sort((a: { address: string }, b: { address: string }) => a.address.localeCompare(b.address));
       return j(headers, 200, { vacancies, units });
     }
