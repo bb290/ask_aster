@@ -22,6 +22,10 @@ const TEAM_KEY = Deno.env.get("SITE_VISIT_KEY") ?? "";
 const WORKSPACE = "706990140225747";
 const LEASING_LU_PROJECT = "1213171756304238";
 const UNIT_SETTINGS_PROJECT = "1213032009308835";
+const PROPERTY_SETTINGS_PROJECT = "1211134623744906";
+// Lead maintenance coordinator; default assignee for occupied-unit and manual-address
+// tickets until per-property routing exists (Brittany, 2026-07-17).
+const DEFAULT_MAINT = { gid: "1201894870325840", name: "Joylyn De Castro" };
 const ASANA = "https://app.asana.com/api/1.0";
 
 const ALLOWED_ORIGINS = (Deno.env.get("ALLOWED_ORIGINS") ??
@@ -135,28 +139,44 @@ app.post("*", async (c) => {
 
     // ---------- submit: comment + tickets ----------
     if (action === "submit") {
-      const taskGid = String(body.taskGid ?? "");
-      const address = String(body.address ?? "");
-      const source = body.source === "unit" ? "unit" : "lu";
+      const address = String(body.address ?? "").trim();
+      const source = body.source === "unit" ? "unit" : body.source === "manual" ? "manual" : "lu";
+      const taskGid = source === "manual" ? "" : String(body.taskGid ?? "");
       const generalNote = String(body.generalNote ?? "").trim();
       const items = Array.isArray(body.items) ? body.items as Array<Record<string, unknown>> : [];
-      if (!taskGid || !items.length) return j(headers, 400, { error: "missing_fields" });
+      if (!items.length || (source === "manual" ? !address : !taskGid)) {
+        return j(headers, 400, { error: "missing_fields" });
+      }
 
-      // 1) find or create the site visit subtask ("Weekly Site Visit / Inspection" on
-      //    leasing tasks per SOP; plain "Site Visits" on occupied-unit Settings tasks)
-      const subtasks = await asana("GET", `/tasks/${taskGid}/subtasks?limit=100&opt_fields=name`);
-      let inspection = (subtasks ?? []).find((s: { name: string }) => /site\s*visit/i.test(s.name)) ??
-                       (subtasks ?? []).find((s: { name: string }) => /inspect/i.test(s.name));
-      if (!inspection) {
-        inspection = await asana("POST", `/tasks/${taskGid}/subtasks`, {
-          name: source === "unit" ? "Site Visits" : "Weekly Site Visit / Inspection",
-          notes: "Site visit documentation lives here. Every visit: one comment with the marked-up checklist and photos. SOP: https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC",
+      // 1) the anchor task and site-visit subtask.
+      //    lu: "Weekly Site Visit / Inspection" subtask per SOP. unit: "Site Visits"
+      //    subtask on the Settings task. manual: property isn't in Asana yet, so
+      //    create a standalone "Site Visit // <address>" task in Property Settings
+      //    and everything (comment, tickets) hangs off it.
+      let anchorGid = taskGid;
+      let inspection;
+      if (source === "manual") {
+        inspection = await asana("POST", "/tasks", {
+          name: `Site Visit // ${address}`.slice(0, 250),
+          projects: [PROPERTY_SETTINGS_PROJECT],
+          notes: "Created from the site visit tool. This address wasn't in Unit Settings when visited (new onboarding, or not under management). If the property gets a Settings task, fold this into it.",
         });
+        anchorGid = inspection.gid;
+      } else {
+        const subtasks = await asana("GET", `/tasks/${taskGid}/subtasks?limit=100&opt_fields=name`);
+        inspection = (subtasks ?? []).find((s: { name: string }) => /site\s*visit/i.test(s.name)) ??
+                     (subtasks ?? []).find((s: { name: string }) => /inspect/i.test(s.name));
+        if (!inspection) {
+          inspection = await asana("POST", `/tasks/${taskGid}/subtasks`, {
+            name: source === "unit" ? "Site Visits" : "Weekly Site Visit / Inspection",
+            notes: "Site visit documentation lives here. Every visit: one comment with the marked-up checklist and photos. SOP: https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC",
+          });
+        }
       }
 
       // 2) move-in date (for the 72-hour rule) from the leasing task custom fields
       let moveIn: Date | null = null;
-      try {
+      if (source !== "manual") try {
         const lu = await asana("GET", `/tasks/${taskGid}?opt_fields=custom_fields.name,custom_fields.display_value`);
         const mi = (lu.custom_fields ?? []).find((f: { name: string }) => /move in date/i.test(f.name));
         if (mi?.display_value) moveIn = new Date(mi.display_value);
@@ -184,18 +204,21 @@ app.post("*", async (c) => {
       }
       const dueOn = due.toISOString().slice(0, 10);
 
-      // 5) create a maintenance subtask per flagged item, on the LU task
+      // 5) create a maintenance subtask per flagged item, on the anchor task.
+      //    Assignee: TO Coordinator when a turnover exists; otherwise Joylyn (default
+      //    maintenance coordinator) for occupied/manual, unassigned + note for leasing.
+      const assignee = toCoordinator ?? (source === "lu" ? null : DEFAULT_MAINT);
       const created: Array<{ gid: string; name: string; url: string }> = [];
       for (const it of items) {
         if (!it.ticket) continue;
         const label = String(it.item ?? "Issue");
         const note = String(it.note ?? "").trim();
         const name = `${note ? note : label} // ${address}`.slice(0, 250);
-        const sub = await asana("POST", `/tasks/${taskGid}/subtasks`, {
+        const sub = await asana("POST", `/tasks/${anchorGid}/subtasks`, {
           name,
-          ...(toCoordinator ? { assignee: toCoordinator.gid } : {}),
+          ...(assignee ? { assignee: assignee.gid } : {}),
           due_on: dueOn,
-          notes: `Found on site visit (${today.toISOString().slice(0, 10)}).\nChecklist item: ${label}${note ? `\nNote: ${note}` : ""}\nPhotos on the site visit subtask.${toCoordinator ? "" : source === "unit" ? "\nOccupied property; no Turn Over task. Route to whoever handles maintenance for this property." : "\nNo Turn Over task found for this property. Assign to your Turn Over Coordinator."}`,
+          notes: `Found on site visit (${today.toISOString().slice(0, 10)}).\nChecklist item: ${label}${note ? `\nNote: ${note}` : ""}\nPhotos on the site visit subtask.${assignee ? assignee === DEFAULT_MAINT ? "\nAssigned to the default maintenance coordinator; reroute if this property has someone else." : "" : "\nNo Turn Over task found for this property. Assign to your Turn Over Coordinator."}`,
         });
         created.push({ gid: sub.gid, name: sub.name, url: `https://app.asana.com/0/0/${sub.gid}` });
       }
@@ -212,7 +235,7 @@ app.post("*", async (c) => {
       const lines: string[] = [`SITE VISIT -- ${today.toISOString().slice(0, 10)} (via site visit tool)`, ""];
       for (const sec of Object.keys(bySection)) { lines.push(sec); lines.push(...bySection[sec]); lines.push(""); }
       if (generalNote) { lines.push("Notes:"); lines.push(generalNote); lines.push(""); }
-      lines.push(`RESULT: ${created.length ? `${created.length} issue subtask(s) created${toCoordinator ? `, assigned to ${toCoordinator.name}` : ""}` : "All good, no issues found"}`);
+      lines.push(`RESULT: ${created.length ? `${created.length} issue subtask(s) created${assignee ? `, assigned to ${assignee.name}` : ""}` : "All good, no issues found"}`);
       await asana("POST", `/tasks/${inspection.gid}/stories`, { text: lines.join("\n") });
 
       return j(headers, 200, {
@@ -220,7 +243,7 @@ app.post("*", async (c) => {
         inspectionGid: inspection.gid,
         inspectionUrl: `https://app.asana.com/0/0/${inspection.gid}`,
         subtasks: created,
-        assignee: toCoordinator ? toCoordinator.name : null,
+        assignee: assignee ? assignee.name : null,
         dueOn,
       });
     }
