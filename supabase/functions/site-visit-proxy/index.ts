@@ -238,12 +238,13 @@ app.post("*", async (c) => {
       for (const sec of Object.keys(bySection)) { lines.push(sec); lines.push(...bySection[sec]); lines.push(""); }
       if (generalNote) { lines.push("Notes:"); lines.push(generalNote); lines.push(""); }
       lines.push(`RESULT: ${created.length ? `${created.length} issue subtask(s) created${assignee ? `, assigned to ${assignee.name}` : ""}` : "All good, no issues found"}`);
-      await asana("POST", `/tasks/${inspection.gid}/stories`, { text: lines.join("\n") });
+      const story = await asana("POST", `/tasks/${inspection.gid}/stories`, { text: lines.join("\n") });
 
       return j(headers, 200, {
         ok: true,
         inspectionGid: inspection.gid,
         inspectionUrl: `https://app.asana.com/0/0/${inspection.gid}`,
+        storyGid: story?.gid ?? null,
         subtasks: created,
         assignee: assignee ? assignee.name : null,
         dueOn,
@@ -267,6 +268,36 @@ app.post("*", async (c) => {
       });
       if (!res.ok) return j(headers, 502, { error: "attach_failed" });
       return j(headers, 200, { ok: true });
+    }
+
+    // ---------- pdf: attach the inspection PDF and link it in the checklist comment ----------
+    if (action === "pdf") {
+      const parent = String(body.parent ?? "");
+      const storyGid = String(body.storyGid ?? "");
+      const filename = String(body.filename ?? "site-visit.pdf").replace(/[^\w.\-]/g, "_");
+      const dataB64 = String(body.dataB64 ?? "");
+      if (!parent || !dataB64 || dataB64.length > 12_000_000) return j(headers, 400, { error: "bad_pdf" });
+      const bytes = Uint8Array.from(atob(dataB64), (ch) => ch.charCodeAt(0));
+      const form = new FormData();
+      form.append("parent", parent);
+      form.append("file", new Blob([bytes], { type: "application/pdf" }), filename);
+      const res = await fetch(`${ASANA}/attachments?opt_fields=permanent_url,view_url`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${ASANA_PAT}` },
+        body: form,
+      });
+      const attJson = await res.json().catch(() => ({}));
+      if (!res.ok) return j(headers, 502, { error: "attach_failed" });
+      const att = attJson.data ?? {};
+      const url = att.permanent_url || att.view_url ||
+        (att.gid ? `https://app.asana.com/app/asana/-/get_asset?asset_id=${att.gid}` : "");
+      if (storyGid && url) {
+        try {
+          const st = await asana("GET", `/stories/${storyGid}?opt_fields=text`);
+          await asana("PUT", `/stories/${storyGid}`, { text: `${st.text}\n\nInspection PDF: ${url}` });
+        } catch { /* comment update is best-effort; the PDF is attached either way */ }
+      }
+      return j(headers, 200, { ok: true, url });
     }
 
     return j(headers, 400, { error: "unknown_action" });
