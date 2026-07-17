@@ -19,6 +19,8 @@ import { Hono } from "hono";
 
 const ASANA_PAT = Deno.env.get("ASANA_PAT") ?? "";
 const TEAM_KEY = Deno.env.get("SITE_VISIT_KEY") ?? "";
+const BUILDIUM_ID = Deno.env.get("BUILDIUM_CLIENT_ID") ?? "";
+const BUILDIUM_SECRET = Deno.env.get("BUILDIUM_CLIENT_SECRET") ?? "";
 const WORKSPACE = "706990140225747";
 const LEASING_LU_PROJECT = "1213171756304238";
 const UNIT_SETTINGS_PROJECT = "1213032009308835";
@@ -71,6 +73,31 @@ function addressFromTaskName(name: string): string {
   // "LU | 653 Myrtine St #A, Enumclaw - NOTES" -> "653 Myrtine St #A, Enumclaw"
   const afterBar = name.includes("|") ? name.split("|").slice(1).join("|").trim() : name.trim();
   return afterBar.split(" - ")[0].trim();
+}
+
+// Address normalization for matching typed addresses against Unit Settings task names
+// ("1003 SW 150th St #1, Burien" vs "1003 Southwest 150th Street #1, Burien")
+const ADDR_EXPAND: Record<string, string> = {
+  st: "street", ave: "avenue", av: "avenue", rd: "road", dr: "drive", blvd: "boulevard",
+  pl: "place", ct: "court", ln: "lane", ter: "terrace", hwy: "highway", pkwy: "parkway",
+  cir: "circle", n: "north", s: "south", e: "east", w: "west",
+  ne: "northeast", nw: "northwest", se: "southeast", sw: "southwest",
+};
+function normAddr(s: string): string {
+  return s.toLowerCase().replace(/[.,]/g, " ").split(/\s+/).filter(Boolean)
+    .map((w) => ADDR_EXPAND[w] ?? w).join(" ");
+}
+
+// Buildium bed/bath enums ("TwoBed", "OnePointFiveBath", "Studio") -> numbers
+function bedBathNum(s: string | null | undefined): number | null {
+  if (!s) return null;
+  if (/studio/i.test(s)) return 0;
+  const words: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9 };
+  const m = String(s).match(/^(one|two|three|four|five|six|seven|eight|nine)/i);
+  if (!m) return null;
+  let n = words[m[1].toLowerCase()];
+  if (/pointfive/i.test(s)) n += 0.5;
+  return n;
 }
 
 // "Tuesday 10-11am" / "Tues @ 2pm" -> 0-6 (Sunday-Saturday), or null if no weekday found
@@ -295,6 +322,44 @@ app.post("*", async (c) => {
       });
       if (!res.ok) return j(headers, 502, { error: "attach_failed" });
       return j(headers, 200, { ok: true });
+    }
+
+    // ---------- listing: pull unit details + listing copy from Buildium ----------
+    // Chain: typed address -> Unit Settings task (fuzzy match) -> Unit ID custom field
+    // -> Buildium unit record. Returns ONLY beds/baths/sqft/description; nothing else
+    // from Buildium ever crosses this proxy.
+    if (action === "listing") {
+      if (!BUILDIUM_ID || !BUILDIUM_SECRET) {
+        return j(headers, 500, { error: "buildium_not_configured", message: "Buildium keys are not set up yet." });
+      }
+      const address = String(body.address ?? "").trim();
+      if (!address) return j(headers, 400, { error: "missing_address" });
+      const units = await allUnits();
+      const target = normAddr(address);
+      const hit = units.find((u) => normAddr(u.address) === target) ??
+        units.find((u) => normAddr(u.address).startsWith(target)) ??
+        units.find((u) => target.startsWith(normAddr(u.address)));
+      if (!hit) {
+        return j(headers, 404, { error: "unit_not_found", message: "No managed unit matches that address. Check the spelling, or fill the fields by hand." });
+      }
+      const task = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+      const uid = (task.custom_fields ?? []).find((f: { name: string }) => /^unit id$/i.test(f.name))?.display_value;
+      if (!uid) {
+        return j(headers, 404, { error: "no_unit_id", message: `Found ${hit.address}, but its Settings task has no Unit ID. Add it in Asana, or fill the fields by hand.` });
+      }
+      const res = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(String(uid))}`, {
+        headers: { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET },
+      });
+      if (!res.ok) return j(headers, 502, { error: "buildium_failed", message: "Buildium didn't answer. Fill the fields by hand for now." });
+      const u = await res.json();
+      return j(headers, 200, {
+        ok: true,
+        matchedAddress: hit.address,
+        beds: bedBathNum(u.UnitBedrooms),
+        baths: bedBathNum(u.UnitBathrooms),
+        sqft: u.UnitSize ?? null,
+        description: String(u.Description ?? ""),
+      });
     }
 
     // ---------- pdf: attach the inspection PDF and link it in the checklist comment ----------
