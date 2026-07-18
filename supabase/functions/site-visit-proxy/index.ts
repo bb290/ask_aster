@@ -69,6 +69,18 @@ async function asana(method: string, path: string, body?: unknown) {
   return json.data;
 }
 
+// Post a story with clickable links: escape HTML, wrap URLs in anchors, send html_text.
+async function postStory(taskGid: string, text: string) {
+  const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const linked = escaped.replace(/https?:\/\/[^\s<]+/g, (u) => `<a href="${u}">${u}</a>`);
+  try {
+    return await asana("POST", `/tasks/${taskGid}/stories`, { html_text: `<body>${linked}</body>` });
+  } catch {
+    // fall back to plain text if Asana rejects the markup
+    return await asana("POST", `/tasks/${taskGid}/stories`, { text });
+  }
+}
+
 function addressFromTaskName(name: string): string {
   // "LU | 653 Myrtine St #A, Enumclaw - NOTES" -> "653 Myrtine St #A, Enumclaw"
   const afterBar = name.includes("|") ? name.split("|").slice(1).join("|").trim() : name.trim();
@@ -430,6 +442,7 @@ app.post("*", async (c) => {
       // latest site-visit checklist comment.
       let recentSubtasks: string[] = [];
       let siteVisitNote = "";
+      let siteVisitDate = "";
       let inspectionPdfUrl = "";
       const weekAgo = now - 7 * 86400000;
       const TEMPLATE = new RegExp([
@@ -449,9 +462,10 @@ app.post("*", async (c) => {
         recentSubtasks = (subs ?? []).filter(recentOnly).map(fmtSub());
         const insp = (subs ?? []).find((s: { name: string }) => /site\s*visit/i.test(s.name));
         if (insp) {
-          const stories = await asana("GET", `/tasks/${insp.gid}/stories?limit=100&opt_fields=type,text`);
+          const stories = await asana("GET", `/tasks/${insp.gid}/stories?limit=100&opt_fields=type,text,created_at`);
           const comments = (stories ?? []).filter((st: { type: string }) => st.type === "comment");
           if (comments.length) {
+            siteVisitDate = String(comments[comments.length - 1].created_at ?? "").slice(0, 10);
             // newest shareable inspection link, scanning back through recent comments
             // (Asana asset links are login-gated, so only storage links count)
             for (let ci = comments.length - 1; ci >= 0 && !inspectionPdfUrl; ci--) {
@@ -485,6 +499,7 @@ app.post("*", async (c) => {
       return j(headers, 200, {
         recentSubtasks,
         siteVisitNote,
+        siteVisitDate,
         inspectionPdfUrl,
         ok: true,
         name: t.name,
@@ -516,7 +531,7 @@ app.post("*", async (c) => {
           notes: "Recurring: one owner update per week, move-out to move-in. SOP: https://sagareus.getoutline.com/doc/email-owner-weekly-activity-report-VDE6GnaYef",
         });
       }
-      const story = await asana("POST", `/tasks/${war.gid}/stories`, { text: text.slice(0, 60000) });
+      const story = await postStory(war.gid, text.slice(0, 60000));
       // roll due date to next Tuesday (Seattle-ish day boundary)
       const local = new Date(Date.now() - 7 * 3600 * 1000);
       let add = (2 - local.getUTCDay() + 7) % 7;
@@ -552,7 +567,7 @@ app.post("*", async (c) => {
           notes: "PreListing report record. SOP: https://sagareus.getoutline.com/doc/lease-up-asana-sop-fro5kaDubB",
         });
       }
-      const story = await asana("POST", `/tasks/${pre.gid}/stories`, { text: text.slice(0, 60000) });
+      const story = await postStory(pre.gid, text.slice(0, 60000));
       return j(headers, 200, {
         ok: true,
         preGid: pre.gid,
