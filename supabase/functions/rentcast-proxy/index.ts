@@ -99,7 +99,7 @@ app.post("*", async (c) => {
     return new Response(JSON.stringify({ error: "rate_limited", message: "Daily lookup limit reached. Try again tomorrow, or request a proposal and we'll run the numbers for you." }), { status: 429, headers });
   }
 
-  const cacheKey = [address.toLowerCase(), propertyType, bedrooms ?? "", bathrooms ?? "", squareFootage ?? ""].join("|");
+  const cacheKey = [address.toLowerCase(), propertyType, bedrooms ?? "", bathrooms ?? "", squareFootage ?? "", "v2"].join("|");
   const { data: cacheRow } = await supabase
     .from("rentcast_cache").select("payload, created_at").eq("cache_key", cacheKey).maybeSingle();
 
@@ -118,7 +118,9 @@ app.post("*", async (c) => {
   }
 
   // Upstream call. /avm/rent/long-term bundles the value estimate AND comparables: one call per report.
-  const qs = new URLSearchParams({ address, compCount: "15" });
+  // daysOld=365 fetches a full year of comps in the single call; the widget tiers them
+  // into 3/6/12-month windows locally, so window switching costs zero extra quota.
+  const qs = new URLSearchParams({ address, compCount: "25", daysOld: "365" });
   if (propertyType) qs.set("propertyType", propertyType);
   if (bedrooms !== undefined) qs.set("bedrooms", String(bedrooms));
   if (bathrooms !== undefined) qs.set("bathrooms", String(bathrooms));
@@ -147,13 +149,15 @@ app.post("*", async (c) => {
     rent: raw.rent ?? null,
     rentRangeLow: raw.rentRangeLow ?? null,
     rentRangeHigh: raw.rentRangeHigh ?? null,
-    comparables: (Array.isArray(raw.comparables) ? raw.comparables : []).slice(0, 15).map((x: Record<string, unknown>) => ({
+    comparables: (Array.isArray(raw.comparables) ? raw.comparables : []).slice(0, 25).map((x: Record<string, unknown>) => ({
       address: x.formattedAddress ?? "",
       rent: x.price ?? null,
       bedrooms: x.bedrooms ?? null,
       bathrooms: x.bathrooms ?? null,
       squareFootage: x.squareFootage ?? null,
       distance: x.distance ?? null,
+      daysOld: x.daysOld ??
+        (x.lastSeenDate ? Math.max(0, Math.round((Date.now() - Date.parse(String(x.lastSeenDate))) / 86400000)) : null),
     })),
   };
 
