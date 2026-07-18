@@ -615,15 +615,16 @@ app.post("*", async (c) => {
         const supaUrl = Deno.env.get("SUPABASE_URL") ?? "";
         const supaKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
         if (supaUrl && supaKey) {
+          const sh = { "Authorization": `Bearer ${supaKey}`, "apikey": supaKey };
           await fetch(`${supaUrl}/storage/v1/bucket`, {
             method: "POST",
-            headers: { "Authorization": `Bearer ${supaKey}`, "Content-Type": "application/json" },
+            headers: { ...sh, "Content-Type": "application/json" },
             body: JSON.stringify({ id: "inspections", name: "inspections", public: true }),
           }).catch(() => null); // 409 when it already exists; fine
           const key = `${crypto.randomUUID()}/${filename}`;
           const up = await fetch(`${supaUrl}/storage/v1/object/inspections/${key}`, {
             method: "POST",
-            headers: { "Authorization": `Bearer ${supaKey}`, "Content-Type": "application/pdf" },
+            headers: { ...sh, "Content-Type": "application/pdf" },
             body: bytes,
           });
           if (up.ok) publicUrl = `${supaUrl}/storage/v1/object/public/inspections/${key}`;
