@@ -430,6 +430,7 @@ app.post("*", async (c) => {
       // latest site-visit checklist comment.
       let recentSubtasks: string[] = [];
       let siteVisitNote = "";
+      let inspectionPdfUrl = "";
       const weekAgo = now - 7 * 86400000;
       const TEMPLATE = new RegExp([
         "site\\s*visit", "inspection", "activity report", "speed to lead", "listing video",
@@ -439,20 +440,22 @@ app.post("*", async (c) => {
         // template subtasks all follow the "Verb | Thing" convention
         "^(email|update|review|confirm|schedule|assign|record|respond|decide|prepare|upload|receive|add|send|notify|cancel|deposit|conduct|request|go)\\s*\\|",
       ].join("|"), "i");
-      const fmtSub = (tag: string) => (s: { name: string; assignee?: { name: string } | null; due_on?: string | null }) => {
-        const bits = [s.assignee?.name ? `assigned ${s.assignee.name}` : "", s.due_on ? `due ${s.due_on}` : ""].filter(Boolean).join(", ");
-        return s.name + (bits ? ` (${bits})` : "") + tag;
-      };
+      // Owner-facing: ticket name only. No assignee, no due date (false expectations),
+      // and the " // address" suffix the site-visit tool appends is redundant here.
+      const fmtSub = () => (s: { name: string }) => String(s.name).split(" // ")[0].trim();
       const recentOnly = (s: { name: string; created_at: string }) => Date.parse(s.created_at) >= weekAgo && !TEMPLATE.test(s.name);
       try {
         const subs = await asana("GET", `/tasks/${taskGid}/subtasks?limit=100&opt_fields=name,created_at,assignee.name,due_on`);
-        recentSubtasks = (subs ?? []).filter(recentOnly).map(fmtSub(""));
+        recentSubtasks = (subs ?? []).filter(recentOnly).map(fmtSub());
         const insp = (subs ?? []).find((s: { name: string }) => /site\s*visit/i.test(s.name));
         if (insp) {
           const stories = await asana("GET", `/tasks/${insp.gid}/stories?limit=100&opt_fields=type,text`);
           const comments = (stories ?? []).filter((st: { type: string }) => st.type === "comment");
           if (comments.length) {
             let txt = String(comments[comments.length - 1].text ?? "");
+            const pdfm = txt.match(/(?:PDF|report):\s*(https?:\/\/\S+)/i);
+            // only share links an owner can actually open (Asana asset links are login-gated)
+            if (pdfm && !/app\.asana\.com/.test(pdfm[1])) inspectionPdfUrl = pdfm[1];
             const m = txt.match(/Notes:\s*([\s\S]*?)(?:\n\s*\n|$)/);
             const r = txt.match(/RESULT:[^\n]*/);
             if (m || r) txt = [(m ? m[1].trim() : ""), (r ? r[0] : "")].filter(Boolean).join("\n");
@@ -467,8 +470,8 @@ app.post("*", async (c) => {
         const to = (hits ?? []).find((x: { name: string }) => /^turn\s*over\s*\|/i.test(x.name) && (!streetNo || x.name.includes(streetNo)));
         if (to) {
           const tsubs = await asana("GET", `/tasks/${to.gid}/subtasks?limit=100&opt_fields=name,created_at,assignee.name,due_on`);
-          (tsubs ?? []).filter(recentOnly).forEach((s: { name: string; assignee?: { name: string } | null; due_on?: string | null }) => {
-            recentSubtasks.push(fmtSub(" [Turn Over]")(s));
+          (tsubs ?? []).filter(recentOnly).forEach((s: { name: string }) => {
+            recentSubtasks.push(fmtSub()(s));
           });
         }
       } catch { /* non-fatal */ }
@@ -476,6 +479,7 @@ app.post("*", async (c) => {
       return j(headers, 200, {
         recentSubtasks,
         siteVisitNote,
+        inspectionPdfUrl,
         ok: true,
         name: t.name,
         state,
@@ -601,8 +605,32 @@ app.post("*", async (c) => {
       const attJson = await res.json().catch(() => ({}));
       if (!res.ok) return j(headers, 502, { error: "attach_failed" });
       const att = attJson.data ?? {};
-      const url = att.permanent_url || att.view_url ||
+      const asanaUrl = att.permanent_url || att.view_url ||
         (att.gid ? `https://app.asana.com/app/asana/-/get_asset?asset_id=${att.gid}` : "");
+
+      // Public copy in Supabase storage so OWNERS can open the link (Asana asset
+      // links are login-gated). Unguessable path; bucket created on first use.
+      let publicUrl = "";
+      try {
+        const supaUrl = Deno.env.get("SUPABASE_URL") ?? "";
+        const supaKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+        if (supaUrl && supaKey) {
+          await fetch(`${supaUrl}/storage/v1/bucket`, {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${supaKey}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ id: "inspections", name: "inspections", public: true }),
+          }).catch(() => null); // 409 when it already exists; fine
+          const key = `${crypto.randomUUID()}/${filename}`;
+          const up = await fetch(`${supaUrl}/storage/v1/object/inspections/${key}`, {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${supaKey}`, "Content-Type": "application/pdf" },
+            body: bytes,
+          });
+          if (up.ok) publicUrl = `${supaUrl}/storage/v1/object/public/inspections/${key}`;
+        }
+      } catch { /* public copy is best-effort */ }
+
+      const url = publicUrl || asanaUrl;
       const label = String(body.label ?? "Inspection PDF").replace(/[^\w /-]/g, "").slice(0, 40) || "Inspection PDF";
       if (storyGid && url) {
         try {
