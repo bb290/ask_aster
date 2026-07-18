@@ -178,6 +178,27 @@ async function allVacancies(): Promise<Array<{ gid: string; address: string }>> 
     offset = json.next_page?.offset ?? "";
     if (!offset) break;
   }
+  // Active = lease not signed yet, OR lease signed but the MOVE-IN subtask is still open
+  // (weekly reports run move-out to move-in). Stale leased tasks drop out of the picker.
+  try {
+    const [leased, moveins] = await Promise.all([
+      asana("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LEASING_LU_PROJECT}&completed=false&custom_fields.1213987093740546.is_set=true&limit=100&opt_fields=name`),
+      asana("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LEASING_LU_PROJECT}&completed=false&text=${encodeURIComponent("move in")}&limit=100&opt_fields=name,parent.gid`),
+    ]);
+    const leasedSet = new Set<string>();
+    (leased ?? []).forEach((t: { gid: string; name: string }) => {
+      if (/^(LU|TP|PreLease)\s*\|/i.test(t.name)) leasedSet.add(t.gid);
+    });
+    const moveInOpen = new Set<string>();
+    (moveins ?? []).forEach((t: { name: string; parent?: { gid: string } | null }) => {
+      if (/^move[\s-]*in/i.test(t.name) && t.parent?.gid) moveInOpen.add(t.parent.gid);
+    });
+    if (leasedSet.size) {
+      const filtered = out.filter((v) => !leasedSet.has(v.gid) || moveInOpen.has(v.gid));
+      if (filtered.length) { out.length = 0; filtered.forEach((v) => out.push(v)); }
+    }
+  } catch { /* fail open: show the unfiltered list rather than an empty picker */ }
+
   out.sort((a, b) => a.address.localeCompare(b.address));
   luCache = { at: Date.now(), vacancies: out };
   return out;
