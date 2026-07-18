@@ -69,12 +69,15 @@ async function asana(method: string, path: string, body?: unknown) {
   return json.data;
 }
 
-// Post a story with clickable links: escape HTML, wrap URLs in anchors, send html_text.
-async function postStory(taskGid: string, text: string) {
+// Rich-text story body: escape HTML, wrap URLs in anchors so links are clickable.
+function storyHtml(text: string): string {
   const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const linked = escaped.replace(/https?:\/\/[^\s<]+/g, (u) => `<a href="${u}">${u}</a>`);
+  return `<body>${linked}</body>`;
+}
+async function postStory(taskGid: string, text: string) {
   try {
-    return await asana("POST", `/tasks/${taskGid}/stories`, { html_text: `<body>${linked}</body>` });
+    return await asana("POST", `/tasks/${taskGid}/stories`, { html_text: storyHtml(text) });
   } catch {
     // fall back to plain text if Asana rejects the markup
     return await asana("POST", `/tasks/${taskGid}/stories`, { text });
@@ -686,7 +689,12 @@ app.post("*", async (c) => {
       if (storyGid && url) {
         try {
           const st = await asana("GET", `/stories/${storyGid}?opt_fields=text`);
-          await asana("PUT", `/stories/${storyGid}`, { text: `${st.text}\n\n${label}: ${url}` });
+          const combined = `${st.text}\n\n${label}: ${url}`;
+          try {
+            await asana("PUT", `/stories/${storyGid}`, { html_text: storyHtml(combined) });
+          } catch {
+            await asana("PUT", `/stories/${storyGid}`, { text: combined });
+          }
         } catch { /* comment update is best-effort; the PDF is attached either way */ }
       }
       return j(headers, 200, { ok: true, url });
