@@ -533,6 +533,35 @@ app.post("*", async (c) => {
       });
     }
 
+    // ---------- prelistSubmit: post the PreListing text report to the LU task's PreListing subtask ----------
+    if (action === "prelistSubmit") {
+      const address = String(body.address ?? "").trim();
+      const text = String(body.text ?? "").trim();
+      if (!address || !text) return j(headers, 400, { error: "missing_fields" });
+      const vacancies = await allVacancies();
+      const m = matchUnit(vacancies, address);
+      const hit = m.hit;
+      if (!hit) {
+        return j(headers, 404, { error: "lu_not_found", message: "No leasing task matches that address. Copy the text and post it manually." });
+      }
+      const subtasks = await asana("GET", `/tasks/${hit.gid}/subtasks?limit=100&opt_fields=name`);
+      let pre = (subtasks ?? []).find((s: { name: string }) => /market rent.*prelisting|prelisting/i.test(s.name));
+      if (!pre) {
+        pre = await asana("POST", `/tasks/${hit.gid}/subtasks`, {
+          name: "Email | Owner - Market Rent & PreListing",
+          notes: "PreListing report record. SOP: https://sagareus.getoutline.com/doc/lease-up-asana-sop-fro5kaDubB",
+        });
+      }
+      const story = await asana("POST", `/tasks/${pre.gid}/stories`, { text: text.slice(0, 60000) });
+      return j(headers, 200, {
+        ok: true,
+        preGid: pre.gid,
+        preUrl: `https://app.asana.com/0/0/${pre.gid}`,
+        storyGid: story?.gid ?? null,
+        matchedAddress: hit.address,
+      });
+    }
+
     // ---------- listing: pull unit details + listing copy from Buildium ----------
     // Chain: typed address -> Unit Settings task (fuzzy match) -> Unit ID custom field
     // -> Buildium unit record. Returns ONLY beds/baths/sqft/description; nothing else
