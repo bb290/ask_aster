@@ -377,19 +377,23 @@ app.post("*", async (c) => {
       const story = await asana("POST", `/tasks/${inspection.gid}/stories`, { text: lines.join("\n") });
 
       // 7) bump the inspection subtask's due date to the next Slot 1 weekday.
-      //    Slot 1 is free text ("Tuesday 10-11am"); blank or no weekday = leave as is.
+      //    Slot 1 is free text ("Tuesday 10-11am"). Blank or no weekday = fall back
+      //    to visit date + 6 days (Brittany, 2026-07-18), so the cadence never stalls.
       let inspectionDueOn: string | null = null;
-      const wd = slot1 ? weekdayFromText(slot1) : null;
-      if (wd !== null) {
-        try {
-          const local = new Date(Date.now() - 7 * 3600 * 1000); // Seattle-ish day boundary
-          let add = (wd - local.getUTCDay() + 7) % 7;
+      try {
+        const local = new Date(Date.now() - 7 * 3600 * 1000); // Seattle-ish day boundary
+        const wd = slot1 ? weekdayFromText(slot1) : null;
+        let add: number;
+        if (wd !== null) {
+          add = (wd - local.getUTCDay() + 7) % 7;
           if (add === 0) add = 7; // visit happened today; due date is NEXT week's slot
-          local.setUTCDate(local.getUTCDate() + add);
-          inspectionDueOn = local.toISOString().slice(0, 10);
-          await asana("PUT", `/tasks/${inspection.gid}`, { due_on: inspectionDueOn });
-        } catch { inspectionDueOn = null; /* non-fatal */ }
-      }
+        } else {
+          add = 6; // no Slot 1 on the property: push out 6 days
+        }
+        local.setUTCDate(local.getUTCDate() + add);
+        inspectionDueOn = local.toISOString().slice(0, 10);
+        await asana("PUT", `/tasks/${inspection.gid}`, { due_on: inspectionDueOn });
+      } catch { inspectionDueOn = null; /* non-fatal */ }
 
       return j(headers, 200, {
         ok: true,
