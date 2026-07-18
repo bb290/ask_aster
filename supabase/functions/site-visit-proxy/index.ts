@@ -635,6 +635,7 @@ app.post("*", async (c) => {
         beds: bedBathNum(u.UnitBedrooms),
         baths: bedBathNum(u.UnitBathrooms),
         sqft: u.UnitSize ?? null,
+        previousRent: typeof u.MarketRent === "number" && u.MarketRent > 0 ? u.MarketRent : null,
         description: String(u.Description ?? ""),
       });
     }
