@@ -365,6 +365,72 @@ app.post("*", async (c) => {
       return j(headers, 200, { ok: true });
     }
 
+    // ---------- war: everything the Weekly Activity Report widget needs from the LU task ----------
+    if (action === "war") {
+      const taskGid = String(body.taskGid ?? "").trim();
+      if (!taskGid) return j(headers, 400, { error: "missing_task" });
+      const t = await asana("GET", `/tasks/${taskGid}?opt_fields=name,custom_fields.name,custom_fields.display_value`);
+      const cf = (t.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
+      const get = (re: RegExp) => cf.find((f) => re.test(f.name))?.display_value ?? "";
+      const listDate = get(/list date/i);
+      const leaseSigned = get(/lease signed date/i);
+      const moveIn = get(/move in date/i);
+      let priceHistory: unknown = null;
+      try { priceHistory = JSON.parse(get(/price history/i) || "null"); } catch { /* unparseable */ }
+      // state per the Email | Owner - Weekly Activity Report SOP
+      const now = Date.now();
+      let state = "turnover";
+      if (leaseSigned) state = "premovein";
+      else if (listDate && Date.parse(listDate) <= now) state = "leasing";
+      const daysOnMarket = listDate ? Math.max(0, Math.floor((now - Date.parse(listDate)) / 86400000)) : null;
+      return j(headers, 200, {
+        ok: true,
+        name: t.name,
+        state,
+        daysOnMarket,
+        listDate: listDate ? String(listDate).slice(0, 10) : null,
+        moveIn: moveIn ? String(moveIn).slice(0, 10) : null,
+        leaseSigned: leaseSigned ? String(leaseSigned).slice(0, 10) : null,
+        ownerName: get(/owner name/i),
+        slot1: get(/preferred showing slot 1/i),
+        zillow: get(/zillow/i),
+        redfin: get(/redfin/i),
+        sagareusUrl: get(/sagareus listing link/i),
+        priceHistory,
+      });
+    }
+
+    // ---------- warSubmit: post the report to the recurring WAR subtask, roll due date ----------
+    if (action === "warSubmit") {
+      const taskGid = String(body.taskGid ?? "").trim();
+      const text = String(body.text ?? "").trim();
+      if (!taskGid || !text) return j(headers, 400, { error: "missing_fields" });
+      const subtasks = await asana("GET", `/tasks/${taskGid}/subtasks?limit=100&opt_fields=name`);
+      let war = (subtasks ?? []).find((s: { name: string }) => /weekly activity report/i.test(s.name)) ??
+                (subtasks ?? []).find((s: { name: string }) => /activity report/i.test(s.name));
+      if (!war) {
+        war = await asana("POST", `/tasks/${taskGid}/subtasks`, {
+          name: "Send weekly activity report",
+          notes: "Recurring: one owner update per week, move-out to move-in. SOP: https://sagareus.getoutline.com/doc/email-owner-weekly-activity-report-VDE6GnaYef",
+        });
+      }
+      const story = await asana("POST", `/tasks/${war.gid}/stories`, { text: text.slice(0, 60000) });
+      // roll due date to next Tuesday (Seattle-ish day boundary)
+      const local = new Date(Date.now() - 7 * 3600 * 1000);
+      let add = (2 - local.getUTCDay() + 7) % 7;
+      if (add === 0) add = 7;
+      local.setUTCDate(local.getUTCDate() + add);
+      const dueOn = local.toISOString().slice(0, 10);
+      try { await asana("PUT", `/tasks/${war.gid}`, { due_on: dueOn }); } catch { /* non-fatal */ }
+      return j(headers, 200, {
+        ok: true,
+        warGid: war.gid,
+        warUrl: `https://app.asana.com/0/0/${war.gid}`,
+        storyGid: story?.gid ?? null,
+        dueOn,
+      });
+    }
+
     // ---------- listing: pull unit details + listing copy from Buildium ----------
     // Chain: typed address -> Unit Settings task (fuzzy match) -> Unit ID custom field
     // -> Buildium unit record. Returns ONLY beds/baths/sqft/description; nothing else
@@ -445,10 +511,11 @@ app.post("*", async (c) => {
       const att = attJson.data ?? {};
       const url = att.permanent_url || att.view_url ||
         (att.gid ? `https://app.asana.com/app/asana/-/get_asset?asset_id=${att.gid}` : "");
+      const label = String(body.label ?? "Inspection PDF").replace(/[^\w /-]/g, "").slice(0, 40) || "Inspection PDF";
       if (storyGid && url) {
         try {
           const st = await asana("GET", `/stories/${storyGid}?opt_fields=text`);
-          await asana("PUT", `/stories/${storyGid}`, { text: `${st.text}\n\nInspection PDF: ${url}` });
+          await asana("PUT", `/stories/${storyGid}`, { text: `${st.text}\n\n${label}: ${url}` });
         } catch { /* comment update is best-effort; the PDF is attached either way */ }
       }
       return j(headers, 200, { ok: true, url });
