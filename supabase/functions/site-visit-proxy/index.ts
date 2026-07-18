@@ -364,7 +364,8 @@ app.post("*", async (c) => {
       for (const it of items) {
         const sec = String(it.section ?? "CHECKLIST");
         const mark = it.answer === "yes" ? (it.pf ? "(PASS)" : "(Y)") :
-                     it.answer === "no" ? (it.pf ? "(FAIL)" : "(N)") : "(na)";
+                     it.answer === "no" ? (it.pf ? "(FAIL)" : "(N)") :
+                     it.answer === "task" ? "(TASK)" : "(na)";
         const note = String(it.note ?? "").trim();
         (bySection[sec] = bySection[sec] || []).push(
           `${mark} ${it.item}${note ? ` -- ${note}` : ""}${it.ticket ? " [ticket created]" : ""}`);
