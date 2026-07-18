@@ -424,7 +424,58 @@ app.post("*", async (c) => {
       if (leaseSigned) state = "premovein";
       else if (listDate && Date.parse(listDate) <= now) state = "leasing";
       const daysOnMarket = listDate ? Math.max(0, Math.floor((now - Date.parse(listDate)) / 86400000)) : null;
+
+      // Turnover/Pre-Move-In prefills: subtasks created in the last 7 days on the LU
+      // task AND the property's Turn Over task (excluding template subtasks), plus the
+      // latest site-visit checklist comment.
+      let recentSubtasks: string[] = [];
+      let siteVisitNote = "";
+      const weekAgo = now - 7 * 86400000;
+      const TEMPLATE = new RegExp([
+        "site\\s*visit", "inspection", "activity report", "speed to lead", "listing video",
+        "zillow listing", "floor plan", "bd listing", "schedule photo", "market rent",
+        "go live", "property listed", "occupied showings", "brandtegic", "move out cleaning",
+        "^={2,}", // section headers
+        // template subtasks all follow the "Verb | Thing" convention
+        "^(email|update|review|confirm|schedule|assign|record|respond|decide|prepare|upload|receive|add|send|notify|cancel|deposit|conduct|request|go)\\s*\\|",
+      ].join("|"), "i");
+      const fmtSub = (tag: string) => (s: { name: string; assignee?: { name: string } | null; due_on?: string | null }) => {
+        const bits = [s.assignee?.name ? `assigned ${s.assignee.name}` : "", s.due_on ? `due ${s.due_on}` : ""].filter(Boolean).join(", ");
+        return s.name + (bits ? ` (${bits})` : "") + tag;
+      };
+      const recentOnly = (s: { name: string; created_at: string }) => Date.parse(s.created_at) >= weekAgo && !TEMPLATE.test(s.name);
+      try {
+        const subs = await asana("GET", `/tasks/${taskGid}/subtasks?limit=100&opt_fields=name,created_at,assignee.name,due_on`);
+        recentSubtasks = (subs ?? []).filter(recentOnly).map(fmtSub(""));
+        const insp = (subs ?? []).find((s: { name: string }) => /site\s*visit/i.test(s.name));
+        if (insp) {
+          const stories = await asana("GET", `/tasks/${insp.gid}/stories?limit=100&opt_fields=type,text`);
+          const comments = (stories ?? []).filter((st: { type: string }) => st.type === "comment");
+          if (comments.length) {
+            let txt = String(comments[comments.length - 1].text ?? "");
+            const m = txt.match(/Notes:\s*([\s\S]*?)(?:\n\s*\n|$)/);
+            const r = txt.match(/RESULT:[^\n]*/);
+            if (m || r) txt = [(m ? m[1].trim() : ""), (r ? r[0] : "")].filter(Boolean).join("\n");
+            siteVisitNote = txt.slice(0, 1500);
+          }
+        }
+        // Turn Over task subtasks too
+        const addr = addressFromTaskName(t.name);
+        const hits = await asana("GET",
+          `/workspaces/${WORKSPACE}/typeahead?resource_type=task&query=${encodeURIComponent("Turn Over | " + addr.slice(0, 40))}&count=5&opt_fields=name`);
+        const streetNo = (addr.match(/^\d+/) ?? [""])[0];
+        const to = (hits ?? []).find((x: { name: string }) => /^turn\s*over\s*\|/i.test(x.name) && (!streetNo || x.name.includes(streetNo)));
+        if (to) {
+          const tsubs = await asana("GET", `/tasks/${to.gid}/subtasks?limit=100&opt_fields=name,created_at,assignee.name,due_on`);
+          (tsubs ?? []).filter(recentOnly).forEach((s: { name: string; assignee?: { name: string } | null; due_on?: string | null }) => {
+            recentSubtasks.push(fmtSub(" [Turn Over]")(s));
+          });
+        }
+      } catch { /* non-fatal */ }
+
       return j(headers, 200, {
+        recentSubtasks,
+        siteVisitNote,
         ok: true,
         name: t.name,
         state,
