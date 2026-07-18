@@ -512,6 +512,7 @@ app.post("*", async (c) => {
         moveIn: moveIn ? String(moveIn).slice(0, 10) : null,
         leaseSigned: leaseSigned ? String(leaseSigned).slice(0, 10) : null,
         ownerName: get(/owner name/i),
+        ownerEmail: get(/owner e-?mail/i).replace(/;/g, ",").trim(),
         slot1: get(/preferred showing slot 1/i),
         zillow: get(/zillow/i),
         redfin: get(/redfin/i),
@@ -562,6 +563,11 @@ app.post("*", async (c) => {
       if (!hit) {
         return j(headers, 404, { error: "lu_not_found", message: "No leasing task matches that address. Copy the text and post it manually." });
       }
+      let ownerEmail = "";
+      try {
+        const lu = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+        ownerEmail = String(((lu.custom_fields ?? []).find((f: { name: string }) => /owner e-?mail/i.test(f.name)) ?? {}).display_value ?? "").replace(/;/g, ",").trim();
+      } catch { /* non-fatal */ }
       const subtasks = await asana("GET", `/tasks/${hit.gid}/subtasks?limit=100&opt_fields=name`);
       let pre = (subtasks ?? []).find((s: { name: string }) => /market rent.*prelisting|prelisting/i.test(s.name));
       if (!pre) {
@@ -577,6 +583,7 @@ app.post("*", async (c) => {
         preUrl: `https://app.asana.com/0/0/${pre.gid}`,
         storyGid: story?.gid ?? null,
         matchedAddress: hit.address,
+        ownerEmail,
       });
     }
 
