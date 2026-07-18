@@ -154,6 +154,35 @@ function addressFromSettingsName(name: string): string {
   return name.split("//").slice(1).join("//").trim();
 }
 
+// Leasing vacancies via paged project listing, NOT workspace search: search caps at 100
+// results by recent modification, so bot-driven bulk edits push the real LU/TP/PreLease
+// tasks out of the window and the picker mysteriously shrinks (seen 2026-07-18).
+let luCache: { at: number; vacancies: Array<{ gid: string; address: string }> } | null = null;
+
+async function allVacancies(): Promise<Array<{ gid: string; address: string }>> {
+  if (luCache && Date.now() - luCache.at < 2 * 60 * 1000) return luCache.vacancies;
+  const out: Array<{ gid: string; address: string }> = [];
+  let offset = "";
+  for (let page = 0; page < 10; page++) {
+    const res = await fetch(
+      `${ASANA}/projects/${LEASING_LU_PROJECT}/tasks?completed_since=now&limit=100&opt_fields=name${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+      { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(`asana lu page ${page} -> ${res.status}`);
+    for (const t of (json.data ?? []) as Array<{ gid: string; name: string }>) {
+      if (/^(LU|TP|PreLease)\s*\|/i.test(t.name)) {
+        const address = addressFromTaskName(t.name);
+        if (address && !address.includes("<")) out.push({ gid: t.gid, address });
+      }
+    }
+    offset = json.next_page?.offset ?? "";
+    if (!offset) break;
+  }
+  out.sort((a, b) => a.address.localeCompare(b.address));
+  luCache = { at: Date.now(), vacancies: out };
+  return out;
+}
+
 // The unit list barely changes; cache it in the warm instance so the picker loads fast.
 let unitCache: { at: number; units: Array<{ gid: string; address: string }> } | null = null;
 
@@ -201,16 +230,7 @@ app.post("*", async (c) => {
   try {
     // ---------- vacancies: open leasing tasks + every managed unit ----------
     if (action === "vacancies") {
-      const [tasks, units] = await Promise.all([
-        asana("GET",
-          `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LEASING_LU_PROJECT}&completed=false&limit=100&opt_fields=name`),
-        allUnits(),
-      ]);
-      const vacancies = (tasks ?? [])
-        .filter((t: { name: string }) => /^(LU|TP|PreLease)\s*\|/i.test(t.name))
-        .map((t: { gid: string; name: string }) => ({ gid: t.gid, address: addressFromTaskName(t.name) }))
-        .filter((v: { address: string }) => v.address && !v.address.includes("<"))
-        .sort((a: { address: string }, b: { address: string }) => a.address.localeCompare(b.address));
+      const [vacancies, units] = await Promise.all([allVacancies(), allUnits()]);
       return j(headers, 200, { vacancies, units });
     }
 
