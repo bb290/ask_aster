@@ -452,10 +452,16 @@ app.post("*", async (c) => {
           const stories = await asana("GET", `/tasks/${insp.gid}/stories?limit=100&opt_fields=type,text`);
           const comments = (stories ?? []).filter((st: { type: string }) => st.type === "comment");
           if (comments.length) {
+            // newest shareable inspection link, scanning back through recent comments
+            // (Asana asset links are login-gated, so only storage links count)
+            for (let ci = comments.length - 1; ci >= 0 && !inspectionPdfUrl; ci--) {
+              const ms = String(comments[ci].text ?? "").match(/(?:PDF|report):\s*(https?:\/\/\S+)/gi) ?? [];
+              for (const mm of ms.reverse()) {
+                const u = (mm.match(/https?:\/\/\S+/) ?? [""])[0];
+                if (u && !/app\.asana\.com/.test(u)) { inspectionPdfUrl = u; break; }
+              }
+            }
             let txt = String(comments[comments.length - 1].text ?? "");
-            const pdfm = txt.match(/(?:PDF|report):\s*(https?:\/\/\S+)/i);
-            // only share links an owner can actually open (Asana asset links are login-gated)
-            if (pdfm && !/app\.asana\.com/.test(pdfm[1])) inspectionPdfUrl = pdfm[1];
             const m = txt.match(/Notes:\s*([\s\S]*?)(?:\n\s*\n|$)/);
             const r = txt.match(/RESULT:[^\n]*/);
             if (m || r) txt = [(m ? m[1].trim() : ""), (r ? r[0] : "")].filter(Boolean).join("\n");
