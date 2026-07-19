@@ -473,7 +473,7 @@ app.post("*", async (c) => {
       // Owner-facing: ticket name only. No assignee, no due date (false expectations),
       // and the " // address" suffix the site-visit tool appends is redundant here.
       const fmtSub = () => (s: { name: string }) => String(s.name).split(" // ")[0].split(" | ")[0].trim();
-      const recentOnly = (s: { name: string; created_at: string }) => Date.parse(s.created_at) >= weekAgo && !TEMPLATE.test(s.name);
+      const recentOnly = (s: { name: string; created_at: string }) => Date.parse(s.created_at) >= weekAgo && !TEMPLATE.test(s.name) && String(s.name).length <= 120;
       try {
         const subs = await asana("GET", `/tasks/${taskGid}/subtasks?limit=100&opt_fields=name,created_at,assignee.name,due_on`);
         recentSubtasks = (subs ?? []).filter(recentOnly).map(fmtSub());
