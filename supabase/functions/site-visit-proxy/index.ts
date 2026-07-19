@@ -492,11 +492,10 @@ app.post("*", async (c) => {
                 if (u && !/app\.asana\.com/.test(u)) { inspectionPdfUrl = u; break; }
               }
             }
+            // full checklist comment, verbatim (minus the tool tag), for the owner report
             let txt = String(comments[comments.length - 1].text ?? "");
-            const m = txt.match(/Notes:\s*([\s\S]*?)(?:\n\s*\n|$)/);
-            const r = txt.match(/RESULT:[^\n]*/);
-            if (m || r) txt = [(m ? m[1].trim() : ""), (r ? r[0] : "")].filter(Boolean).join("\n");
-            siteVisitNote = txt.slice(0, 1500);
+            txt = txt.replace(/\s*\(via [^)]*\)/i, "");
+            siteVisitNote = txt.trim().slice(0, 6000);
           }
         }
         // Turn Over task subtasks too
