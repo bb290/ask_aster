@@ -349,14 +349,21 @@ app.post("*", async (c) => {
         if (!it.ticket) continue;
         const label = String(it.item ?? "Issue");
         const note = String(it.note ?? "").trim();
-        const name = `${note ? note : label} // ${address}`.slice(0, 250);
+        const issues = Array.isArray(it.issues) ? it.issues.map((x: unknown) => String(x).trim()).filter(Boolean) : [];
+        const name = `${label} | ${address}`.slice(0, 250);
+        const bodyLines = [`Found on site visit (${today.toISOString().slice(0, 10)}).`];
+        if (issues.length) bodyLines.push("", "Issues:", ...issues.map((x) => `- ${x}`));
+        if (note) bodyLines.push("", `Agent comment: ${note}`);
+        bodyLines.push("", "Photos for this item are attached here; the full set lives on the site visit subtask.");
+        if (assignee) { if (assignee === DEFAULT_MAINT) bodyLines.push("", "Assigned to the default maintenance coordinator; reroute if this property has someone else."); }
+        else bodyLines.push("", "No Turn Over task found for this property. Assign to your Turn Over Coordinator.");
         const sub = await asana("POST", `/tasks/${anchorGid}/subtasks`, {
           name,
           ...(assignee ? { assignee: assignee.gid } : {}),
           due_on: dueOn,
-          notes: `Found on site visit (${today.toISOString().slice(0, 10)}).\nChecklist item: ${label}${note ? `\nNote: ${note}` : ""}\nPhotos on the site visit subtask.${assignee ? assignee === DEFAULT_MAINT ? "\nAssigned to the default maintenance coordinator; reroute if this property has someone else." : "" : "\nNo Turn Over task found for this property. Assign to your Turn Over Coordinator."}`,
+          notes: bodyLines.join("\n"),
         });
-        created.push({ gid: sub.gid, name: sub.name, url: `https://app.asana.com/0/0/${sub.gid}` });
+        created.push({ gid: sub.gid, name: sub.name, url: `https://app.asana.com/0/0/${sub.gid}`, idx: it.idx ?? null });
       }
 
       // 6) post the checklist comment on the inspection subtask
@@ -367,8 +374,10 @@ app.post("*", async (c) => {
                      it.answer === "no" ? (it.pf ? "(FAIL)" : "(N)") :
                      it.answer === "task" ? "(TASK)" : "(na)";
         const note = String(it.note ?? "").trim();
+        const issues = Array.isArray(it.issues) ? it.issues.map((x: unknown) => String(x).trim()).filter(Boolean) : [];
+        const extra = [issues.join(", "), note].filter(Boolean).join(" | ");
         (bySection[sec] = bySection[sec] || []).push(
-          `${mark} ${it.item}${note ? ` -- ${note}` : ""}${it.ticket ? " [ticket created]" : ""}`);
+          `${mark} ${it.item}${extra ? ` -- ${extra}` : ""}${it.ticket ? " [ticket created]" : ""}`);
       }
       const lines: string[] = [`SITE VISIT -- ${today.toISOString().slice(0, 10)} (via site visit tool)`, ""];
       for (const sec of Object.keys(bySection)) { lines.push(sec); lines.push(...bySection[sec]); lines.push(""); }
