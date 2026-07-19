@@ -379,10 +379,10 @@ app.post("*", async (c) => {
         (bySection[sec] = bySection[sec] || []).push(
           `${mark} ${it.item}${extra ? ` -- ${extra}` : ""}${it.ticket ? " [ticket created]" : ""}`);
       }
-      const lines: string[] = [`SITE VISIT -- ${today.toISOString().slice(0, 10)} (via site visit tool)`, ""];
+      const lines: string[] = [`SITE VISIT -- ${today.toISOString().slice(0, 10)}`, ""];
       for (const sec of Object.keys(bySection)) { lines.push(sec); lines.push(...bySection[sec]); lines.push(""); }
       if (generalNote) { lines.push("Notes:"); lines.push(generalNote); lines.push(""); }
-      lines.push(`RESULT: ${created.length ? `${created.length} issue subtask(s) created${assignee ? `, assigned to ${assignee.name}` : ""}` : "All good, no issues found"}`);
+      lines.push(`RESULT: ${created.length ? `${created.length} issue ticket(s) created` : "All good, no issues found"}`);
       const story = await asana("POST", `/tasks/${inspection.gid}/stories`, { text: lines.join("\n") });
 
       // 7) bump the inspection subtask's due date to the next Slot 1 weekday.
