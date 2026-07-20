@@ -158,6 +158,7 @@ app.post("*", async (c) => {
       distance: x.distance ?? null,
       daysOld: x.daysOld ??
         (x.lastSeenDate ? Math.max(0, Math.round((Date.now() - Date.parse(String(x.lastSeenDate))) / 86400000)) : null),
+      status: x.status ?? null,
     })),
   };
 
