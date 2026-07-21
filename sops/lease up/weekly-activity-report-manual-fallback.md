@@ -13,7 +13,7 @@ created_but_never_updated: false
 
 > **Situation:** The Activity Report tool (https://www.sagareus.com/field) is down. The owner still gets their report by **Tuesday 12pm**; this is the by-hand version of everything the tool automates.
 
-Process and cadence: [Email | Owner - Weekly Activity Report](email-owner-weekly-activity-report.md). Templates: [Weekly Activity Report // Email Templates](https://sagareus.getoutline.com/doc/weekly-activity-report-email-templates-Nbjth1yCLc). Thresholds: [Weekly Activity Report // Activity Thresholds & Low Activity Checklist](https://sagareus.getoutline.com/doc/weekly-activity-report-activity-thresholds-low-activity-checklist-yeNwW446dM).
+Process and cadence: [Email | Owner - Weekly Activity Report](email-owner-weekly-activity-report.md). Thresholds: [Weekly Activity Report // Activity Thresholds & Low Activity Checklist](https://sagareus.getoutline.com/doc/weekly-activity-report-activity-thresholds-low-activity-checklist-yeNwW446dM).
 
 ---
 
@@ -37,7 +37,7 @@ Process and cadence: [Email | Owner - Weekly Activity Report](email-owner-weekly
 
 ### 2 — Build the Report
 
-Copy the matching state template from [Weekly Activity Report // Email Templates](https://sagareus.getoutline.com/doc/weekly-activity-report-email-templates-Nbjth1yCLc) and fill it in. Check the week's numbers against the [activity thresholds](https://sagareus.getoutline.com/doc/weekly-activity-report-activity-thresholds-low-activity-checklist-yeNwW446dM): below target means run the low-activity checklist and put the resulting recommendations in the report.
+Copy the matching state template from the Email Templates section below and fill it in. Check the week's numbers against the [activity thresholds](https://sagareus.getoutline.com/doc/weekly-activity-report-activity-thresholds-low-activity-checklist-yeNwW446dM): below target means run the low-activity checklist and put the resulting recommendations in the report.
 
 ### 3 — Post to Asana
 
@@ -49,3 +49,90 @@ Copy the matching state template from [Weekly Activity Report // Email Templates
 1. Send to the owner with the template's subject line. **Turnover state: CC the Turn Over Coordinator.**
 2. New agents, or when designated by the Team Lead: send to the Leasing Team Lead for review before the owner.
 3. Update the listing in Buildium based on current activity per [Updating Active Listings](https://sagareus.getoutline.com/doc/updating-active-listings-aytdYiWQoa).
+
+---
+
+## Email Templates
+
+Three states, three templates. (Canonical copy, kept in step with the tool: [Weekly Activity Report // Email Templates](https://sagareus.getoutline.com/doc/weekly-activity-report-email-templates-Nbjth1yCLc).)
+
+### Turnover (between move-out and list date)
+
+**CC the Turn Over Coordinator on every Turnover-state report.**
+
+:::info
+**Subject:** Site Visit | [Date Range] | [Property Address]
+
+Hi [Owner Name],
+
+**Site Visit: [Date Visited]**
+
+* What you saw during the site visit (observations only; the Turn Over Coordinator, CC'd, reports turnover progress)
+* List any sub tasks added from the visit
+
+[attach at least 2 photos]
+:::
+
+### Leasing (list date to lease signed)
+
+:::info
+**Subject:** Leasing Activity | [Date Range] | [Property Address]
+
+Hi [Owner Name],
+
+**Listing** [Property Address] (hyperlinked to Zillow listing) | [##] Days on Market
+
+**Activity**
+
+Number of Inquiries: [#]
+
+Number of Showings: [#]
+
+Number of Applications: [#]
+
+**Feedback**
+
+[Direct comments from prospects: positive first, then concerns]
+
+**Updates**
+
+[Listing updates made this week: Zillow and Redfin verified, photos refreshed, comps and pricing reviewed, price changes, tickets created]
+
+**Price History**
+
+[Listed [date] at $[amount], then each change: [date] reduced to $[amount]]
+
+**Rent Comp Snapshot**
+
+[3 to 5 nearby comps, one per line: Address | $[rent] | [bd]/[ba] bd/ba | [sqft] sqft | $[x.xx]/sqft | [x.x] mi | Active listing or Off market, each with a Zillow link]
+
+**Recommendations**
+
+[Only items relevant to this listing that have not already been tried: pricing (hold or reduce), listing changes (pet policy, rent credit, last month's rent, security deposit, income requirement, credit requirement), photo refresh, upgrades]
+
+**Agent Comments**
+
+[Required, at least 2 sentences: your read on the week and what happens next]
+
+**Listing Links**
+
+[Zillow] [Buildium/Sagareus]
+:::
+
+### Pre-Move-In (between lease signed and move-in)
+
+:::info
+**Subject:** Site Visit | [Property Address]
+
+Hi [Owner Name],
+
+**Move In Scheduled:** [Date]
+
+**Site Visit:** [Date Visited]
+
+**Move-In Readiness**
+
+* Cleaning: scheduled or completed
+* Open punch list items and their status
+* Anything new found this week and the subtasks created to address it
+:::
