@@ -797,6 +797,42 @@ app.post("*", async (c) => {
       return j(headers, 502, { error: "llm_failed", message: "Copy generation is unavailable right now. Draft manually for this one." });
     }
 
+    // ---------- postListing: push the draft listing text to the Buildium unit record ----------
+    // Deliberately updates ONLY the unit Description. Creating/updating the listing itself
+    // (rent, deposit, dates) stays with the Go Live step so nothing syndicates by accident.
+    if (action === "postListing") {
+      if (!BUILDIUM_ID || !BUILDIUM_SECRET) {
+        return j(headers, 500, { error: "buildium_not_configured", message: "Buildium keys are not set up yet." });
+      }
+      const uid = String(body.unitId ?? "").trim();
+      const desc = String(body.description ?? "").trim();
+      if (!/^\d+$/.test(uid)) return j(headers, 400, { error: "bad_unit_id", message: "Populate from a Unit ID first; posting needs to know which Buildium unit to update." });
+      if (!desc || desc.length < 40) return j(headers, 400, { error: "empty_draft", message: "The draft listing looks empty. Build it first, then post." });
+      if (desc.length > 60000) return j(headers, 400, { error: "draft_too_long" });
+      const BH = { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET };
+      const r0 = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}`, { headers: BH });
+      if (!r0.ok) return j(headers, 502, { error: "buildium_failed", message: "Buildium didn't answer. Copy the listing and paste it manually." });
+      const u = await r0.json();
+      // PUT wants the full unit body; send everything back unchanged except Description.
+      const putBody = {
+        UnitNumber: u.UnitNumber,
+        UnitSize: u.UnitSize,
+        MarketRent: u.MarketRent,
+        Address: u.Address,
+        UnitBedrooms: u.UnitBedrooms,
+        UnitBathrooms: u.UnitBathrooms,
+        Description: desc,
+      };
+      const r1 = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}`, {
+        method: "PUT",
+        headers: { ...BH, "Content-Type": "application/json" },
+        body: JSON.stringify(putBody),
+      });
+      if (r1.status === 403) return j(headers, 502, { error: "buildium_no_scope", message: "Buildium hasn't granted edit access yet. Copy the listing and paste it manually for now." });
+      if (!r1.ok) return j(headers, 502, { error: "buildium_failed", message: "Buildium rejected the update. Copy the listing and paste it manually." });
+      return j(headers, 200, { ok: true, unitId: uid, chars: desc.length });
+    }
+
     return j(headers, 400, { error: "unknown_action" });
   } catch (e) {
     console.error(e);
