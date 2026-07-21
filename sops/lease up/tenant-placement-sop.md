@@ -21,7 +21,7 @@ Tenant Placement is a fee-for-service, one-time leasing transaction. Sagareus ha
 
 Duties are assigned by role, not person; one person may hold both roles.
 
-* **Biz Dev Agent** — commercial and administrative side: TP Service Agreement, onboarding (welcome email, JotForm follow-up, Buildium / Drive / Asana setup, Welcome Home Letter creation), and all invoicing (50% onboarding invoice, final invoice, showing overage billing).
+* **Biz Dev Agent** — commercial and administrative side: TP Service Agreement, onboarding (welcome email, JotForm follow-up, Buildium / Drive / Asana setup, Welcome Home Letter creation), and all invoicing (50% onboarding invoice bundled with the TP Service Agreement and collected at signing, final invoice, showing overage billing).
 * **Approved Leasing Agent** — leasing side: pre-listing prep, marketing, showings, applications, lease review, move-in, and file ownership through close-out.
 * **Leasing Assistants** — lease drafting, Welcome Home Letter delivery, Underwriting File assembly, admin close-out.
 

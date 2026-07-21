@@ -11,32 +11,26 @@ tags: [tenant-placement, onboarding, jotform, pandadoc, hubspot]
 created_but_never_updated: false
 ---
 
-Trigger: Tenant Placement Service Agreement signed in PandaDoc. Owners: Biz Dev Agent (lead execution) + Approved Leasing Agent (handoff recipient). Phase complete when: JotForm submitted + 50% invoice paid + Asana TP Task Template applied + Buildium record created + Google Drive folder auto-created by JotForm + HubSpot deal moved to "TP Onboarding" + Approved Leasing Agent notified. Part of the [Tenant Placement SOP](https://sagareus.getoutline.com/doc/tenant-placement-sop-0Ho4i49zol).
+Trigger: Tenant Placement Service Agreement signed in PandaDoc. The 50% onboarding invoice is bundled with the agreement, so the first payment is collected at signing (per the fee schedule in the Tenant Placement Program Overview). Owners: Biz Dev Agent (lead execution) + Approved Leasing Agent (handoff recipient). Phase complete when: JotForm submitted + 50% invoice paid + Asana TP Task Template applied + Buildium record created + Google Drive folder auto-created by JotForm + HubSpot deal moved to "TP Onboarding" + Approved Leasing Agent notified. Part of the [Tenant Placement SOP](https://sagareus.getoutline.com/doc/tenant-placement-sop-0Ho4i49zol).
 
 ## Workflow
 
-1.1 — PandaDoc signature received (Day 0). Monitor the signed notification. The client is automatically redirected from PandaDoc to the JotForm Tenant Placement Onboarding Form after signature.
+1.1 — PandaDoc signature received (Day 0). The agreement package includes the 50% onboarding invoice; the first payment is collected with the signed agreement. Monitor the signed notification. The client is automatically redirected from PandaDoc to the JotForm Tenant Placement Onboarding Form after signature.
 
-1.2 — Send Welcome Email + 50% invoice (Day 0, within 2 hours). Use the TP Welcome + Onboarding Invoice template below. Must include: confirmation of the signed agreement, the JotForm link, the 50% invoice (manual send), and a note that listing prep begins once the form is complete and the 50% is received.
+1.2 — Send Welcome Email (Day 0, within 2 hours). Use the TP Welcome template below. Must include: confirmation of the signed agreement and the onboarding payment collected at signing, the JotForm link, and a note that listing prep begins once the form is complete.
 
-## Email Template — TP Welcome + Onboarding Invoice
+## Email Template — TP Welcome
 
 :::info
-**Attachment:** 50% onboarding invoice
-
 **Subject:** Welcome to Sagareus Tenant Placement // [Property Address]
 
 Hi [Owner Name],
 
-Thank you for signing the Tenant Placement Service Agreement. We're excited to get [Property Address] leased for you.
+Thank you for signing the Tenant Placement Service Agreement. We're excited to get [Property Address] leased for you. Your 50% onboarding payment was collected with the agreement, so you're all set there. The remaining 50% is invoiced at close-out, after your new Resident moves in.
 
-Two quick items to get started:
+One quick item to get started: please complete the [Tenant Placement Onboarding Form](https://form.jotform.com/260593354075157). This gives us everything we need about the property, your leasing preferences, and how move-in funds should be made out to you.
 
-1. Onboarding form: please complete the [Tenant Placement Onboarding Form](https://form.jotform.com/260593354075157). This gives us everything we need about the property, your leasing preferences, and how move-in funds should be made out to you.
-
-2. Onboarding invoice: your 50% onboarding invoice is attached. The remaining 50% is invoiced at close-out, after your new Resident moves in.
-
-Listing prep begins as soon as the form is complete and the onboarding invoice is paid. From there, your Leasing Agent will confirm the property is rent ready, schedule professional photography, and take the listing live. Once the listing is active, you'll receive a weekly activity report every Tuesday with showings, inquiries, and feedback.
+Listing prep begins as soon as the form is complete. From there, your Leasing Agent will confirm the property is rent ready, schedule professional photography, and take the listing live. Once the listing is active, you'll receive a weekly activity report every Tuesday with showings, inquiries, and feedback.
 
 If anything in the form is unclear, just reply here and we're glad to help.
 
@@ -46,7 +40,7 @@ If anything in the form is unclear, just reply here and we're glad to help.
 
 1.4 — Process JotForm submission: review for completeness and chase missing fields; migrate property and owner data into Buildium; verify the Drive folder auto-created; save the signed agreement PDF and JotForm PDF to the folder; create the Asana task in the Leasing Project with the TP Task Template; create the Welcome Home Letter populated from the JotForm (rent payment platform, move-in fund instructions - cashier's check or money order only, maintenance contact, utility info, owner-specific instructions).
 
-1.5 — Confirm 50% payment received. Phase 1 cannot close until BOTH the form is submitted AND the 50% is received.
+1.5 — Confirm the 50% payment collected at signing has cleared. If the agreement was signed but the payment did not complete, chase immediately; listing prep does not begin without it. Phase 1 cannot close until BOTH the form is submitted AND the 50% is received.
 
 1.6 — Update HubSpot: move the deal to "TP Onboarding". The deal stays in HubSpot post-placement for nurture and full PM conversion.
 
