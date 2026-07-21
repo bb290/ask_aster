@@ -642,12 +642,14 @@ app.post("*", async (c) => {
       let previousRent: number | null = null;
       let leaseHistory: boolean | null = null; // null = leases API not accessible (scope not granted)
       try {
-        const lr = await fetch(`https://api.buildium.com/v1/leases?unitids=${encodeURIComponent(String(uid))}&limit=100`, {
+        // NOTE: /v1/leases silently ignores unitids/unitid filters; propertyids works. Filter to the unit in code.
+        const lr = await fetch(`https://api.buildium.com/v1/leases?propertyids=${encodeURIComponent(String(u.PropertyId ?? ""))}&limit=500`, {
           headers: { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET },
         });
         if (lr.ok) {
           const leases = await lr.json().catch(() => []);
           const rents = (Array.isArray(leases) ? leases : [])
+            .filter((l: { UnitId?: number }) => String(l?.UnitId ?? "") === String(uid))
             .map((l: { LeaseFromDate?: string; AccountDetails?: { Rent?: number | { Amount?: number } } }) => {
               const r = l?.AccountDetails?.Rent;
               const amt = typeof r === "number" ? r : (typeof (r as { Amount?: number })?.Amount === "number" ? (r as { Amount: number }).Amount : null);
