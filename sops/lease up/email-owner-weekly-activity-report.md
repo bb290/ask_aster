@@ -4,9 +4,9 @@ service_line: lease up
 sop_owner: brittany@sagareus.com
 outline_url: https://sagareus.getoutline.com/doc/email-owner-weekly-activity-report-VDE6GnaYef
 status: active
-last_reviewed: 2026-07-19
+last_reviewed: 2026-07-21
 visibility_tier: ic
-version: 5
+version: 6
 tags: [leasing, owner-communication, weekly-report, lease-up, operation-no-drama]
 created_but_never_updated: false
 ---
@@ -20,6 +20,7 @@ What changed (2026-07-15): Leasing Agents visit the property at least weekly fro
 * [Weekly Activity Report // Email Templates](https://sagareus.getoutline.com/doc/weekly-activity-report-email-templates-Nbjth1yCLc) — the three state-based email templates: Turnover, Leasing, Pre-Move-In.
 * [Weekly Activity Report // Activity Thresholds & Low Activity Checklist](https://sagareus.getoutline.com/doc/weekly-activity-report-activity-thresholds-low-activity-checklist-yeNwW446dM) — the inquiry/showing thresholds, the low-activity triple-check, and the standard recommendations to increase activity.
 * [Updating Active Listings](https://sagareus.getoutline.com/doc/updating-active-listings-aytdYiWQoa) — weekly Buildium listing updates, rent reductions, move-in specials, and the after-update Asana documentation steps.
+* [Weekly Activity Report // Manual Fallback](weekly-activity-report-manual-fallback.md) — build and send the report by hand when the tool is down. Same deadline, same format.
 
 ## Report Preparation
 

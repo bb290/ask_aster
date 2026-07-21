@@ -4,9 +4,9 @@ service_line: lease up
 sop_owner: brittany@sagareus.com
 outline_url: https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC
 status: active
-last_reviewed: 2026-07-19
+last_reviewed: 2026-07-21
 visibility_tier: ic
-version: 7
+version: 8
 tags: [leasing, site-visit, vacant-unit, move-in, turnover, documentation, operation-no-drama, leasing-3.0, site-visit-tool]
 created_but_never_updated: false
 ---
@@ -25,7 +25,7 @@ Site visits run through the **Site Visit tool** on the Team Hub: **https://www.s
 4. **Close Out:** add photos (the camera opens directly; **at least 2 per visit**, more when anything looks off), capture any open-ended work with **Add Task** (each becomes a real assigned ticket), and write your visit notes. The quality documentation standard below applies to these notes.
 5. Tap **SUBMIT**. One tap posts the marked-up checklist as a comment on the property's **Weekly Site Visit / Inspection** subtask; creates a **ticket for every Fail and every added task**, named `Item | Address`, with the picked issues and your comment in the description and that item's photos attached, assigned to the **Turn Over Coordinator** (occupied properties route to the lead maintenance coordinator instead) with a due date that respects the 72-hour Accountability Rule; attaches your photos plus a full **inspection PDF** with a shareable link in the same comment; and rolls the inspection subtask's **due date to your next Slot 1 day**. No Slot 1 on the property? The due date pushes out **6 days** automatically so the cadence never stalls.
 
-Tool down or no signal? Your checklist answers save on your phone automatically; resubmit when you have bars. Worst case, fall back to the manual checklist below: copy it into a comment, mark it up, attach photos, and create the subtasks yourself per the Asana SOP (every subtask gets an assignee and a due date; if it is not in Asana, it does not exist).
+Tool down or no signal? Your checklist answers save on your phone automatically; resubmit when you have bars. Worst case, follow [Weekly Site Visit // Manual Fallback](weekly-site-visit-manual-fallback.md): the same checklist, tickets, and documentation, done by hand (every subtask gets an assignee and a due date; if it is not in Asana, it does not exist).
 
 ## Common Move-In Issues to Look For
 
@@ -50,34 +50,9 @@ Every Lease Up task carries a dedicated subtask: **Weekly Site Visit / Inspectio
 
 The Site Visit tool (https://www.sagareus.com/field) posts everything here automatically, and creates the subtask itself if a property doesn't have one yet. You should not need to copy or paste anything.
 
-## Manual Fallback Checklist
+## Manual Fallback
 
-Only needed if the tool is unavailable. Copy into a comment, mark each line, attach at least 2 photos, and create an assigned subtask with a due date for every N.
-
-```
-SITE VISIT — [date]
-
-ESSENTIALS (if these pass, someone can move in)
-( ) 3 Front Keys — each tested in the door, rekeyed since last resident
-( ) 2 Mailbox Keys — each tested, box empty
-( ) Photo Clean — lights on, blinds open, counters clear, showing-ready
-( ) Move-In Clean — no odor, scrubbed, cabinets/closets empty, zero prior resident items
-( ) Smoke & CO Detectors — each bedroom + common area, CO per floor, no chirps
-( ) Pests + Mold — kitchen first; sills, grout, under sink, behind washer
-
-APPLIANCES + SYSTEMS (run every single one)
-( ) Refrigerator   ( ) Oven + Stove   ( ) Microwave   ( ) Dishwasher
-( ) Disposal       ( ) Washer         ( ) Dryer       ( ) Heat & A/C
-
-MOVE-IN READY (the last mile before handoff)
-( ) Quick Clean   ( ) Landscaping   ( ) Garage Remote   ( ) Plumbing & Lights
-
-RESULT
-( ) All good, photos attached
-( ) Issues found, tickets created: [Item | Address, ...]
-
-Photos attached: [#]
-```
+Only needed if the tool is unavailable. The full by-hand procedure, checklist included, lives at [Weekly Site Visit // Manual Fallback](weekly-site-visit-manual-fallback.md).
 
 ## Site Visit Notes
 
