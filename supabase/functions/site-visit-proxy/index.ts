@@ -637,6 +637,28 @@ app.post("*", async (c) => {
       if (res.status === 404) return j(headers, 404, { error: "buildium_unit_not_found", message: "Buildium has no unit with that ID. Double-check it on the Unit Settings task." });
       if (!res.ok) return j(headers, 502, { error: "buildium_failed", message: "Buildium didn't answer. Fill the fields by hand for now." });
       const u = await res.json();
+      // Previous lease rent comes from actual lease history, never from the MarketRent field
+      // (MarketRent is a hand-typed asking figure and exists even for never-leased units).
+      let previousRent: number | null = null;
+      let leaseHistory: boolean | null = null; // null = leases API not accessible (scope not granted)
+      try {
+        const lr = await fetch(`https://api.buildium.com/v1/leases?unitids=${encodeURIComponent(String(uid))}&limit=100`, {
+          headers: { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET },
+        });
+        if (lr.ok) {
+          const leases = await lr.json().catch(() => []);
+          const rents = (Array.isArray(leases) ? leases : [])
+            .map((l: { LeaseFromDate?: string; AccountDetails?: { Rent?: number | { Amount?: number } } }) => {
+              const r = l?.AccountDetails?.Rent;
+              const amt = typeof r === "number" ? r : (typeof (r as { Amount?: number })?.Amount === "number" ? (r as { Amount: number }).Amount : null);
+              return { from: String(l?.LeaseFromDate ?? ""), rent: amt };
+            })
+            .filter((x: { rent: number | null }) => x.rent != null && x.rent > 0)
+            .sort((a: { from: string }, b: { from: string }) => b.from.localeCompare(a.from));
+          leaseHistory = rents.length > 0;
+          if (rents.length) previousRent = rents[0].rent;
+        }
+      } catch { /* leases unavailable; leave nulls */ }
       // full address for the comps lookup: line1 (+ unit #), city, state, zip
       const a = u.Address ?? {};
       let line1 = String(a.AddressLine1 ?? "").trim();
@@ -655,7 +677,9 @@ app.post("*", async (c) => {
         beds: bedBathNum(u.UnitBedrooms),
         baths: bedBathNum(u.UnitBathrooms),
         sqft: u.UnitSize ?? null,
-        previousRent: typeof u.MarketRent === "number" && u.MarketRent > 0 ? u.MarketRent : null,
+        previousRent,
+        leaseHistory,
+        marketRent: typeof u.MarketRent === "number" && u.MarketRent > 0 ? u.MarketRent : null,
         description: String(u.Description ?? ""),
       });
     }
