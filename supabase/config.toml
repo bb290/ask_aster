@@ -22,3 +22,9 @@ verify_jwt = false
 # Internal site-visit widget: auth = origin allowlist + shared team key header
 # (x-sv-key) checked inside the function; Asana PAT stays server-side.
 verify_jwt = false
+
+[functions.onboard-proxy]
+# Owner-facing onboarding form: auth = signed single-property token inside the
+# function ("link" generation stays team-key gated). Disable gateway JWT so the
+# public page can reach it.
+verify_jwt = false
