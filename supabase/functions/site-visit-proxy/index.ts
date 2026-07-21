@@ -721,6 +721,53 @@ app.post("*", async (c) => {
       return j(headers, 200, { ok: true, url });
     }
 
+    // ---------- draftCopy: generate Zillow-ready listing copy (internal, /wt pilot) ----------
+    // Prompt condensed from ask-aster/skills/listing-copywriter/SKILL.md (canonical voice).
+    // OpenRouter for now (Brittany, 2026-07-21); revisit direct Anthropic key if generation spreads.
+    if (action === "draftCopy") {
+      const OR_KEY = Deno.env.get("OPENROUTER_API_KEY") ?? "";
+      if (!OR_KEY) return j(headers, 500, { error: "server_not_configured", message: "No LLM key on the server." });
+      const facts = [
+        `Address: ${String(body.address ?? "")}`,
+        body.propertyType ? `Property type: ${body.propertyType}` : "",
+        body.beds ? `Bedrooms: ${body.beds}` : "",
+        body.baths ? `Bathrooms: ${body.baths}` : "",
+        body.sqft ? `Square feet: ${body.sqft}` : "",
+        body.rent ? `Asking rent: $${body.rent}/mo` : "",
+        body.previousRent ? `Previous list price: $${body.previousRent}/mo (context only, do not print)` : "",
+      ].filter(Boolean).join("\n");
+      const existing = String(body.existingCopy ?? "").slice(0, 4000);
+      const SYSTEM = [
+        "You are the Sagareus listing copywriter: a calm, professional marketing editor producing Zillow-ready rental listing copy.",
+        "STRUCTURE (always exactly 5 paragraphs, 120-250 words total):",
+        "1. Opener: start with \"You'll love this...\" or \"Welcome to your next home in [Neighborhood].\"",
+        "2. Unit features: 2-4 sentences, VERIFIED interior features only.",
+        "3. Property highlights: 2-4 sentences, verifiable property-level amenities only.",
+        "4. Location highlights: 2-4 sentences. You have NO web access here: use only well-known, stable facts about the neighborhood (major parks, transit lines, commute corridors). Prefer ranges over precise minute claims. Never invent specifics.",
+        "5. Call to action: exactly \"Don't wait, schedule your tour today!\" or \"Showings by appointment only, schedule today!\"",
+        "VOICE RULES (non-negotiable): never use em dashes. Short sentences, active voice. No emojis. No unverifiable subjective adjectives (stunning, luxury). NO tenant-targeting language of any kind: never describe who should live there (Fair Housing). No marketing filler.",
+        "If the verified facts are thin, still produce the best compliant draft and use [verify: detail] placeholders sparingly rather than refusing.",
+        "If the input copy contains discriminatory or tenant-targeting language, silently drop it.",
+        "OUTPUT: the 5 paragraphs only, then ONE final line starting exactly with \"Note:\" flagging anything the agent must verify before the listing goes live (location facts always count). No sources line. No preamble.",
+      ].join("\n");
+      const userMsg = existing
+        ? `Rewrite the existing listing copy below to the required format. Keep verified content, drop anything unverifiable or non-compliant.\n\nVerified facts:\n${facts}\n\nExisting copy:\n${existing}`
+        : `Write listing copy from these verified facts:\n${facts}`;
+      for (const model of ["anthropic/claude-sonnet-5", "anthropic/claude-sonnet-4.5", "anthropic/claude-3.7-sonnet"]) {
+        try {
+          const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${OR_KEY}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ model, max_tokens: 700, messages: [{ role: "system", content: SYSTEM }, { role: "user", content: userMsg }] }),
+          });
+          const jr = await r.json().catch(() => ({}));
+          const text = jr?.choices?.[0]?.message?.content;
+          if (r.ok && text) return j(headers, 200, { copy: String(text).trim(), model });
+        } catch { /* try next model */ }
+      }
+      return j(headers, 502, { error: "llm_failed", message: "Copy generation is unavailable right now. Draft manually for this one." });
+    }
+
     return j(headers, 400, { error: "unknown_action" });
   } catch (e) {
     console.error(e);
