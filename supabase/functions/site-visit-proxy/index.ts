@@ -746,11 +746,11 @@ app.post("*", async (c) => {
         "4. Location highlights: 2-4 sentences with SPECIFIC named places and real distances: nearest major freeway(s), at least one notable park, and a shopping or dining area, each with an approximate drive/walk time or mileage from your research. If research fails for a place, name it without a number rather than inventing one.",
         "5. Call to action: exactly \"Don't wait, schedule your tour today!\" or \"Showings by appointment only, schedule today!\"",
         "SENTENCE CRAFT: vary sentence openings. Never start two consecutive sentences with the same word. Use \"The home\" at most once in the entire listing. Short sentences, active voice.",
-        "VOICE RULES (non-negotiable): never use em dashes. No emojis. No unverifiable subjective adjectives (stunning, luxury). NO tenant-targeting language of any kind: never describe who should live there (Fair Housing). No marketing filler beyond the approved closing line.",
+        "VOICE RULES (non-negotiable): never use em dashes. No emojis. No unverifiable subjective adjectives (stunning, luxury). NO tenant-targeting language of any kind: never describe who should live there or who the home suits (Fair Housing). Banned words in any form: family, families, kids, children, couples, professionals, students, seniors, \"perfect for\", \"ideal for\". Describe the property, never the people. No marketing filler beyond the approved closing line.",
         "If the verified facts are thin, still produce the best compliant draft and use [verify: detail] placeholders sparingly rather than refusing.",
         "If the input copy contains discriminatory or tenant-targeting language, silently drop it.",
         "SELF-CHECK before you output: exactly 5 paragraphs? Opener has a hook sentence? CTA line present and exact? 140-250 words? No repeated sentence openers? Location paragraph names a freeway, a park, and shopping with distances? Fix anything failing, then output.",
-        "OUTPUT: the 5 paragraphs only, then ONE final line starting exactly with \"Note:\" listing what the agent must verify before publishing plus the research source domains (domains only). No preamble, nothing after the Note line.",
+        "OUTPUT: plain text only, no markdown, no asterisks, no bullet symbols, no links, no inline citations (sources go in the Note line as domains only). The 5 paragraphs only, then ONE final line starting exactly with \"Note:\" listing what the agent must verify before publishing plus the research source domains (domains only). No preamble, nothing after the Note line.",
       ].join("\n");
       const userMsg = existing
         ? `Rewrite the existing listing copy below to the required format. Keep verified content, drop anything unverifiable or non-compliant.\n\nVerified facts:\n${facts}\n\nExisting copy:\n${existing}`
@@ -764,7 +764,7 @@ app.post("*", async (c) => {
           });
           const jr = await r.json().catch(() => ({}));
           const text = jr?.choices?.[0]?.message?.content;
-          if (r.ok && text) return j(headers, 200, { copy: String(text).trim(), model });
+          if (r.ok && text) return j(headers, 200, { copy: String(text).replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\*\*/g, "").trim(), model });
         } catch { /* try next model */ }
       }
       return j(headers, 502, { error: "llm_failed", message: "Copy generation is unavailable right now. Draft manually for this one." });
