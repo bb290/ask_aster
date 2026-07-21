@@ -4,14 +4,14 @@ service_line: lease up
 sop_owner: brittany@sagareus.com
 outline_url: https://sagareus.getoutline.com/doc/tenant-placement-phase-4-showings-applications-d3ZRpIkVgw
 status: active
-last_reviewed: 2026-07-16
+last_reviewed: 2026-07-21
 visibility_tier: ic
 version: 1
 tags: [tenant-placement, showings, applications, showing-limit, screening]
 created_but_never_updated: false
 ---
 
-Trigger: Phase 3 complete, listing live. Owner: Nicole (Leasing Agent). Part of the [Tenant Placement SOP](https://sagareus.getoutline.com/doc/tenant-placement-sop-0Ho4i49zol). Showing and application procedures inherit from the standard Lease Up SOP (Conduct Showings, Speed to Lead, Follow Up & Secure Application, Lease Up Policies). TP-specific rules:
+Trigger: Phase 3 complete, listing live. Owner: Approved Leasing Agent. Part of the [Tenant Placement SOP](https://sagareus.getoutline.com/doc/tenant-placement-sop-0Ho4i49zol). Showing and application procedures inherit from the standard Lease Up SOP (Conduct Showings, Speed to Lead, Follow Up & Secure Application, Lease Up Policies). TP-specific rules:
 
 ## Showing Limit
 
@@ -30,6 +30,10 @@ The owner receives the running showing count in the [Weekly Activity Report](htt
 ## Approaching the 25-Showing Limit
 
 At showing #20, the Leasing Agent notifies the owner the property is approaching the included-showings limit.
+
+## Answering Prospect Questions
+
+TP-specific: be clear with prospects that Sagareus handles the leasing process only. After move-in, the owner manages the property directly; maintenance, rent payment, and lease questions after move-in go to the owner. Do not present the property as Sagareus-managed housing. Screening criteria and application processing are identical to standard Lease Up.
 
 ## Applications
 

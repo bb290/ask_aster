@@ -4,14 +4,14 @@ service_line: lease up
 sop_owner: brittany@sagareus.com
 outline_url: https://sagareus.getoutline.com/doc/tenant-placement-phases-2-3-pre-listing-prep-marketing-douZpEy2uz
 status: active
-last_reviewed: 2026-07-16
+last_reviewed: 2026-07-21
 visibility_tier: ic
 version: 1
 tags: [tenant-placement, pre-listing, marketing, turnover, photography]
 created_but_never_updated: false
 ---
 
-Trigger: Phase 1 complete; owner informs Nicole the property is ready for leasing. Owner: Nicole (Leasing Agent). Part of the [Tenant Placement SOP](https://sagareus.getoutline.com/doc/tenant-placement-sop-0Ho4i49zol). Both phases inherit from the standard Lease Up SOP; only TP-specific modifications below.
+Trigger: Phase 1 complete; owner informs the Approved Leasing Agent the property is ready for leasing. Owner: Approved Leasing Agent. Part of the [Tenant Placement SOP](https://sagareus.getoutline.com/doc/tenant-placement-sop-0Ho4i49zol). Both phases inherit from the standard Lease Up SOP; only TP-specific modifications below.
 
 ## Phase 2 — Pre-Listing Prep: TP-Specific Rules
 

@@ -4,14 +4,14 @@ service_line: lease up
 sop_owner: brittany@sagareus.com
 outline_url: https://sagareus.getoutline.com/doc/tenant-placement-phase-6-move-in-JNpJHPplE7
 status: active
-last_reviewed: 2026-07-16
+last_reviewed: 2026-07-21
 visibility_tier: ic
 version: 1
 tags: [tenant-placement, move-in, move-in-funds, fedex, inspection]
 created_but_never_updated: false
 ---
 
-Trigger: Phase 5 complete, lease fully signed. Owner: Nicole (Leasing Agent). Part of the [Tenant Placement SOP](https://sagareus.getoutline.com/doc/tenant-placement-sop-0Ho4i49zol).
+Trigger: Phase 5 complete, lease fully signed. Owner: Approved Leasing Agent. Part of the [Tenant Placement SOP](https://sagareus.getoutline.com/doc/tenant-placement-sop-0Ho4i49zol).
 
 Financial distinction, critical: Sagareus does NOT hold or deposit any owner or tenant funds. All move-in funds flow directly from the tenant to the owner via FedEx.
 
@@ -27,7 +27,7 @@ Financial distinction, critical: Sagareus does NOT hold or deposit any owner or 
 
 6.5 — Documentation (CYA): photo of funds on the Inspection Report (the tenant's receipt); photo of funds + key + FedEx tracking receipt together; FedEx tracking number recorded in Asana and provided to the owner.
 
-6.6 — Ship funds to the owner via FedEx overnight, personally. Same day if time permits, next business day morning at the latest. Nicole goes to FedEx herself; this is not delegated.
+6.6 — Ship funds to the owner via FedEx overnight, personally. Same day if time permits, next business day morning at the latest. The Approved Leasing Agent goes to FedEx personally; this is not delegated.
 
 ## Error Protocols
 
