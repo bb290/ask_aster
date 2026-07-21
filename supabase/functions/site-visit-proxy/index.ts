@@ -797,6 +797,46 @@ app.post("*", async (c) => {
       return j(headers, 502, { error: "llm_failed", message: "Copy generation is unavailable right now. Draft manually for this one." });
     }
 
+    // ---------- warComments: draft the Agent Comments for a weekly leasing report ----------
+    if (action === "warComments") {
+      const OR_KEY = Deno.env.get("OPENROUTER_API_KEY") ?? "";
+      if (!OR_KEY) return j(headers, 500, { error: "llm_not_configured" });
+      const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
+      const arr = (v: unknown) => (Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean).slice(0, 20) : []);
+      const facts = [
+        `Property: ${String(body.address ?? "").slice(0, 120)}`,
+        `This week: ${n(body.inquiries)} inquiries, ${n(body.showings)} showings, ${n(body.applications)} applications.`,
+        body.daysOnMarket != null ? `Days on market: ${n(body.daysOnMarket)}.` : "",
+        body.marketRent != null ? `Estimated market rent from comps: $${n(body.marketRent)}/mo.` : "",
+        arr(body.priceHistory).length ? `Price history: ${arr(body.priceHistory).join("; ")}` : "",
+        arr(body.feedback).length ? `Prospect feedback: ${arr(body.feedback).join("; ")}` : "Prospect feedback: none recorded this week.",
+        arr(body.updates).length ? `Listing updates made this week: ${arr(body.updates).join("; ")}` : "Listing updates made this week: none.",
+        arr(body.recommendations).length ? `Recommendations going to the owner: ${arr(body.recommendations).join("; ")}` : "",
+      ].filter(Boolean).join("\n");
+      const SYSTEM = [
+        "You write the AGENT COMMENTS section of a weekly leasing activity report that a Sagareus leasing agent sends to a property owner.",
+        "Write in first person as the leasing agent. 2 to 4 sentences, 30 to 80 words. Plain text only: no markdown, no bullets, no emojis, never an em dash.",
+        "The raw numbers already appear in the report above your comments, so interpret rather than recite: what the week's activity means, what was done about it, and what happens next.",
+        "Ground every claim in the provided facts. Never invent activity, feedback, showings, or plans that are not in the facts.",
+        "Target benchmark for a healthy week: 10+ inquiries or 5+ showings. Below that, acknowledge activity is below target and point to the response (the updates made or the recommendations).",
+        "Tone: professional, direct, steady. No hype, no apologies, no filler like 'I will keep you posted'. End with the concrete next step.",
+        "OUTPUT: the comments only. No heading, no preamble, nothing after.",
+      ].join("\n");
+      for (const model of ["anthropic/claude-sonnet-5", "anthropic/claude-sonnet-4.5", "anthropic/claude-3.7-sonnet"]) {
+        try {
+          const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${OR_KEY}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ model, max_tokens: 300, messages: [{ role: "system", content: SYSTEM }, { role: "user", content: facts }] }),
+          });
+          const jr = await r.json().catch(() => ({}));
+          const text = jr?.choices?.[0]?.message?.content;
+          if (r.ok && text) return j(headers, 200, { comments: String(text).replace(/\*\*/g, "").trim(), model });
+        } catch { /* try next model */ }
+      }
+      return j(headers, 502, { error: "llm_failed", message: "Comment drafting is unavailable right now. Write them manually." });
+    }
+
     // ---------- postListing: push the draft listing text to the Buildium unit record ----------
     // Deliberately updates ONLY the unit Description. Creating/updating the listing itself
     // (rent, deposit, dates) stays with the Go Live step so nothing syndicates by accident.
