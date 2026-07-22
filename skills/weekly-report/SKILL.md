@@ -20,6 +20,10 @@ The ONLY exception: the agent already named a specific property in their opening
 
 Do not narrate what the skill is about to do, that it has three states, or that it pulls from Asana. Just ask the two questions, get the answers, pull the worklist, and go.
 
+## Backup Role (2026-07-22)
+
+The **Activity Report tool** on https://www.sagareus.com/field is the standard path for weekly reports. This skill is the **backup** for when the tool is down. The report structure below matches the tool's output exactly: data sections carry data only, and the agent's judgment lives solely in AGENT COMMENTS. Never insert automatic commentary like "activity is healthy."
+
 ## What this is
 
 The leasing agent's weekly owner-update composer, covering the whole vacancy from **move-out to move-in**. The report changes shape with the property's state, three states, three templates (per the Email | Owner - Weekly Activity Report SOP):
@@ -384,12 +388,12 @@ The photos line is a promise the agent fulfills in Gmail; always remind them at 
 <p>Thanks,</p>
 ```
 
-### Leasing template (list date to lease signed) — the original flow, unchanged
+### Leasing template (list date to lease signed) — matches the Activity Report tool output
 
 **Subject:**
 
 ```
-Weekly Leasing Update | [Property Address] | Week ending [Date]
+Leasing Activity | [Date Range] | [Property Address]
 ```
 
 **HTML body template (Leasing):**
@@ -397,50 +401,42 @@ Weekly Leasing Update | [Property Address] | Week ending [Date]
 ```html
 <p>Hi <<Owner First Name>>,</p>
 
-<p>Quick update on <<Property Address>> for the week ending <<Date>>.</p>
+<p><b><u>Listing</u></b><br>
+<a href="<<Zillow URL>>"><<Property Address>></a> | <<days>> Days on Market</p>
 
-<p><b><u>This Week's Activity</u></b></p>
+<p><b><u>Activity</u></b></p>
 <ul>
-  <li>Inquiries: <<count>></li>
-  <li>Showings: <<count>></li>
-  <li>Applications: <<count>></li>
-  <li>Days on market: <<days>></li>
+  <li>Number of Inquiries: <<count>></li>
+  <li>Number of Showings: <<count>></li>
+  <li>Number of Applications: <<count>></li>
 </ul>
 
-<p><<Optional: prospect feedback or agent observations from the batched answer. Omit this paragraph if the agent skipped this field.>></p>
+<p><b><u>Feedback</u></b><br>
+<<Prospect feedback from the batched answer: positive first, then concerns. "No feedback given" if none.>></p>
 
-<p><b><u>Market Context</u></b></p>
-<p>Comparable rentals:</p>
+<p><b><u>Updates</u></b></p>
 <ul>
-  <li><<Comp 1 summary>>. <a href="<<Comp 1 link>>"><<Comp 1 link>></a></li>
-  <li><<Comp 2 summary, if provided>>. <a href="<<Comp 2 link>>"><<Comp 2 link>></a></li>
+  <li><<Listing updates made this week: Zillow / Redfin verified, listing revised, pricing review completed, price changes, tickets created. "No listing changes this week." if none.>></li>
 </ul>
 
-<<Omit Market Context entirely if zero comps were provided.>>
-
-<p><b><u>Listing Update</u></b></p>
-
-<<Pick the form that matches activity:>>
-
-<<If activity is adequate (>10 inquiries OR >5 showings):>>
-<p>Holding price another week. Activity is healthy.</p>
-
-<<If activity is soft (<=10 inquiries AND <=5 showings):>>
-<p>We're dropping the asking rent by $<<delta>> to drive activity.</p>
-
-<<If the agent picked any additional strategies, include this block:>>
-<p>We also recommend the following moves, pending your approval:</p>
+<p><b><u>Price History</u></b></p>
 <ul>
-  <li><<Strategy 1 in plain language, e.g. "Decreasing the security deposit to half of one month's rent.">></li>
-  <li><<Strategy 2 in plain language>></li>
-  <li><<Strategy 3 in plain language>></li>
+  <li>Listed <<date>> at $<<amount>></li>
+  <li><<Each change: date, reduced to $amount. "No price changes recorded since listing." if none.>></li>
 </ul>
-<p>Reply with which of these you'd like us to implement.</p>
 
-<<If conversion problem (>10 inquiries AND <5 showings):>>
-<p>Plenty of inquiries this week but showings didn't keep pace. Reviewing how we respond to leads to make sure prospects are getting on the calendar quickly.</p>
+<p><b><u>Rent Comp Snapshot</u></b></p>
+<ul>
+  <li><<3 to 5 comps, one per line: Address | $rent | bd/ba | sqft | $/sqft | distance | Active listing or Off market, address linked to Zillow. Omit the section if no comps are available.>></li>
+</ul>
 
-<p>Next update: Tuesday, <<next Tuesday's date>>.</p>
+<p><b><u>Recommendations</u></b></p>
+<ul>
+  <li><<Only items relevant to this listing that have not already been tried, from the strategy menu: pricing (hold or reduce), listing changes (pet policy, rent credit, last month rent, security deposit, income requirement, credit requirement), photo or video refresh, upgrades. Presented as recommendations, never as decisions already made.>></li>
+</ul>
+
+<p><b><u>Agent Comments</u></b><br>
+<<REQUIRED, at least 2 sentences: the agent's read on the week and the concrete next step. Draft this for the agent from the week's numbers, feedback, updates, and recommendations (interpret, don't recite; acknowledge below-target weeks: target is 10+ inquiries or 5+ showings), then let the agent edit and approve. Never send without it.>></p>
 
 <p><b><u>Listing Links</u></b></p>
 <ul>
@@ -451,6 +447,8 @@ Weekly Leasing Update | [Property Address] | Week ending [Date]
 
 <p>Thanks,</p>
 ```
+
+**Data-only rule:** every section above except Agent Comments carries data, dates, and facts. No editorial sentences in data sections, no automatic "activity was soft/healthy" commentary anywhere. Strategy threshold logic (earlier in this skill) decides what goes in Recommendations and informs the drafted Agent Comments; it never writes its own paragraphs into the email.
 
 ### Plain-text fallback (for the Gmail `body` field)
 

@@ -15,7 +15,7 @@ Zillow-ready rental listing copy in the strict Sagareus 5-paragraph format: hook
 
 ## When to Use
 
-Say "write a listing for [address]," "rewrite this listing," or invoke /listing-copywriter. Also runs inside /listing-prep, and the PreListing tool's Generate Draft Listing button runs this same engine inside the widget (auto-attaching Lease Details and disclosures).
+Say "write a listing for [address]," "rewrite this listing," or invoke /listing-copywriter. Also runs inside /listing-prep, and the PreListing tool's Generate Draft Listing button runs this same engine inside the widget (auto-attaching Lease Details and disclosures). This skill is the backup for when the tool is down and matches the widget's copy rules exactly: narrative only, no address, beds, baths, or sqft in the copy.
 
 ## How It Works
 

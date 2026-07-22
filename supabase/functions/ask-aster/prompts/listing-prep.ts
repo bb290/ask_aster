@@ -11,6 +11,10 @@ export const listingPrepPrompt = {
 If the property was named in the opener, start the Asana pull immediately; your first message is what you found plus the one batched question the flow needs. If no property was named, your entire first message is one line: "Which property are we prepping?" Nothing else, no explanation of the workflow.
 
 
+## Backup Role (2026-07-22)
+
+The **PreListing tool** on https://www.sagareus.com/field is the standard path for prelisting: populate from the Unit ID, run the report, generate the draft listing, post to Asana. This skill is the **backup** for when the tool is down. Its pricing defaults and outputs match the tool exactly so the owner-facing artifacts look identical either way.
+
 ## What this is
 
 The leasing agent's full prelisting workflow in one skill. Pulls owner info and property metadata from Asana custom fields, runs the comp analysis to determine market rent first, walks the agent through pricing decisions using that number, generates the listing copy, drafts the PreListing email in Gmail, and posts a copy on the matching Asana subtask for the record.
@@ -149,15 +153,17 @@ This is the moment the agent has the most information. Pricing decisions come ne
 Single batched ask:
 
 \`\`\`
-Now that you've seen the comps, pricing decisions for the listing:
+Now that you've seen the comps, pricing decisions. The standard defaults are pre-filled; change anything that needs changing:
 
-  • Starting rent (recommend $X,XXX to $X,XXX based on the +$100/+$200 rule above market)
-  • Minimum rent floor (lowest you'll drop without re-approving with owner)
-  • Security deposit
-  • Last month's rent
-  • Estimated total move-in cost (~50% of first month is a common benchmark)
-  • Rent credit: None / $500 / $1,000 / 1 month free
+  • Starting Rent: $X,XXX (market rent estimate + $200, rounded to the nearest $5)
+  • Weekly Adjustment: 6-10 inquiries in reporting week, reduce by $100; 1-5 inquiries, reduce by $200
+  • Minimum Price: $X,XXX (Starting Rent - $700)
+  • Security Deposit: $X,XXX (Starting Rent - $100)
+  • Last Month Rent: $0 (cannot be collected in Tacoma)
+  • Move In Special: None / 1 month / 1/2 month / $1,500 / $1,000 / $500 rent credit
 \`\`\`
+
+These are the same defaults the PreListing tool applies. Defaults are the floor, not a straitjacket: the agent adjusts with reasons.
 
 Wait for the agent's reply. If any pricing input is missing, ask for it specifically.
 
@@ -167,7 +173,7 @@ Call the \`listing_copywriter\` tool with:
 - Property address
 - Verified features (from Phase 1 Step 2)
 
-It returns a 5-paragraph listing (120 to 250 words) plus a sources line. Do not modify the output.
+It returns the narrative (140 to 250 words, no address/beds/baths/sqft) plus a Note line. Do not modify the narrative. Then append the standard Lease Details / Disclosures / Applicant Criteria boilerplate from [PreListing Report // Manual Fallback](https://sagareus.getoutline.com/doc/prelisting-report-manual-fallback-Mbs8Hbagju), filled from the property's policies and criteria tier, so the draft is the complete Buildium-ready listing. If a Move In Special was chosen, the seasonal special line goes first.
 
 If the sub-skill says it needs a property visit to verify a detail, surface that to the agent and pause the workflow.
 

@@ -23,4 +23,4 @@ Say "what should I list this at," "run comp analysis on these URLs," or invoke /
 2. Extracts rent, days on market, move-in costs, and concessions per comp; flags quality concerns (long DOM, heavy concessions, size mismatch).
 3. Calculates target rent by price-per-square-foot averaging; outputs per-comp summary, calculation, and recommendation.
 
-Agents typically pick a starting rent $100 to $200 above the recommendation, consistent with the PreListing tool defaults.
+Output matches the PreListing tool's report format (Estimated Market Rent, Market Position, Listing Strategy defaults with Starting Rent = estimate + $200, Nearby Comparables). The PreListing tool is the standard path; this skill is the backup for when the tool or its comp data is down.

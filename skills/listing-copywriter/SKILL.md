@@ -10,6 +10,10 @@ description: Produces Zillow-ready rental listing copy for Sagareus team members
 If the opener includes the property or inputs, go straight to drafting. If inputs are missing, ask for ALL of them in one short message, once. Never explain the 5-paragraph structure before showing a draft.
 
 
+## Backup Role (2026-07-22)
+
+The **PreListing tool** on https://www.sagareus.com/field is the standard path: its Generate Draft Listing button runs this same engine and auto-attaches the Lease Details / Disclosures sections. This skill is the **backup** for when the tool is down, and a quick standalone rewrite path. Output must match the tool's format exactly so listings look identical either way.
+
 ## What this is
 
 Produces Zillow-ready rental listing copy for a Sagareus property. 5 paragraphs, 120 to 250 words, accurate location research, no invented details. The output is what gets pasted into Zillow / Buildium for the property.
@@ -75,59 +79,52 @@ Do NOT list or identify specifically what's missing. Assume the agent is trained
 
 ## Output template (strict, always 5 paragraphs)
 
-### Paragraph 1 — Opener / Headline
+**Never include the street address, bed count, bath count, or square footage anywhere in the copy.** Those display in the listing's data fields; the description is pure narrative.
 
-Start with one of the approved Zillow-style intros:
+### Paragraph 1 — Opener (two sentences)
+
+Start with one of the approved intros, then ONE hook sentence that sells the property's single most compelling verified feature:
 
 - "You'll love this..."
 - "Welcome to your next home in [Neighborhood]."
 
-Pick whichever fits the property's voice better. The opening sentence sets the rhythm for the rest.
+### Paragraph 2 — Living Experience
 
-### Paragraph 2 — Unit Features
+2 to 4 sentences on **verified interior features only**, written as the experience of living with them, not a list. Cook on the gas range, unwind by the fireplace, spread out in the bonus room.
 
-2 to 4 sentences describing **verified unit features only**. No assumptions. Cover the interior: layout, flooring, appliances, in-unit amenities (W/D, dishwasher, AC, etc.), upgrades, condition notes the agent confirmed.
+### Paragraph 3 — Comfort and Convenience
 
-### Paragraph 3 — Property Highlights
-
-2 to 4 sentences summarizing **verifiable property amenities**. Cover the building or property as a whole: parking, common areas, exterior features, pet policy if known, secure entry, storage, etc.
+2 to 4 sentences on verified property-level perks (A/C, laundry, parking, included services), framed as what they make easy.
 
 ### Paragraph 4 — Location Highlights
 
-2 to 4 sentences from live research, with **accurate minute-based travel times**. Lead with the most differentiated feature of the neighborhood (transit access, walkability, schools, dining), then layer in commute times to the nearest major destinations.
-
-Examples of phrasing:
-- "Light rail to downtown in 12 minutes from the Mount Baker station, a 6-minute walk away."
-- "Greenwood's restaurant strip is a 10-minute walk, and Green Lake Park is a 7-minute bike ride."
-- "Easy commute to South Lake Union, 15 minutes by car or 25 by bus."
+2 to 4 sentences from live research with SPECIFIC named places and real distances: the nearest major freeway(s), at least one notable park, and a shopping or dining area, each with an approximate drive/walk time or mileage. If research fails for a place, name it without a number rather than inventing one.
 
 ### Paragraph 5 — Call to Action
 
-One of the approved closing lines:
+Exactly one of:
 
 - "Don't wait, schedule your tour today!"
 - "Showings by appointment only, schedule today!"
 
-Pick whichever matches the property's showing approach.
+### Move-In Special first line (conditional)
 
-### Final line (separate from the 5 paragraphs)
+If a rent credit / move-in special is being offered, add a first line ABOVE paragraph 1, advertised as a seasonal special based on the current date: "[Season] Special! [amount] Rent Credit applied at lease signing!" (Holiday for Dec-Jan, Winter for Feb, Spring for Mar-May, Summer for Jun-Jul, End of Summer for Aug-Sep, Fall for Oct-Nov.)
 
-A sources line listing the **domains** used in research, comma-separated. Never include full URLs.
+### Final line (separate from the paragraphs)
 
-Example:
-```
-Sources: google.com, soundtransit.org, seattle.gov
-```
+One line starting exactly with "Note:" listing what the agent must verify before publishing plus the research source domains (domains only, never full URLs).
 
 ## Hard formatting rules (non-negotiable)
 
-- **Word count: 120 to 250 words** (excluding the sources line). Count the body, not the sources line.
-- Short sentences, active voice.
-- No em dashes.
-- No emojis.
-- No unverifiable subjective adjectives.
-- No tenant-targeting language.
-- Sources line: domains only.
+- **Word count: 140 to 250 words** (excluding the Note line).
+- **No address, beds, baths, or sqft in the copy. Ever.**
+- **Sentence craft**: vary sentence openings; never start two consecutive sentences with the same word; use "The home" at most once in the entire listing. Sell, don't inventory: every feature gets a benefit or a moment, never a bare spec.
+- Warm, evocative adjectives are encouraged when anchored to a real feature (gleaming refinished hardwoods, a chef-worthy Bertazzoni range). Avoid absolute or unverifiable claims (best, luxury, one-of-a-kind).
+- **Fair Housing**: describe the property and the lifestyle it offers, never the people. Banned words in any form: family, families, kids, children, couples, professionals, students, seniors, "perfect for", "ideal for". Second person (you, your) is fine.
+- Short sentences, active voice. No em dashes. No emojis.
+- Plain text only: no markdown, no asterisks, no bullet symbols, no links, no inline citations.
+- If construction is planned on site, append: "Please note: construction is planned on site during the lease term. A $200/mo rent credit applies for each month of the construction period." and flag the detail gap in the Note line.
 
 ## Rewrite mode
 

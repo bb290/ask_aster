@@ -15,7 +15,7 @@ Composes the weekly owner update emails for your vacancies, move-out to move-in,
 
 ## When to Use
 
-Say "weekly report" or invoke /weekly-report. Weekly per vacancy; agent send-day is Tuesday. Run the No Drama Check first and the reports write themselves. The Activity Report tool on sagareus.com/field is the standard path; this skill is the conversational alternative.
+Say "weekly report" or invoke /weekly-report. Weekly per vacancy; agent send-day is Tuesday. Run the No Drama Check first and the reports write themselves. The Activity Report tool on sagareus.com/field is the standard path; this skill is the backup for when the tool is down, and its output matches the tool's report format exactly.
 
 ## How It Works
 

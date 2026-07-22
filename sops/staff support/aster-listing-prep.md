@@ -15,7 +15,7 @@ The full prelisting workflow in one guided conversation: 30-45 minutes of manual
 
 ## When to Use
 
-Say "prelisting package for [address]" or invoke /listing-prep when a new property is about to go live. The PreListing tool on sagareus.com/field is the standard path; this skill is the conversational alternative. For copy only use /listing-copywriter; for comps only use /market-rent-analysis.
+Say "prelisting package for [address]" or invoke /listing-prep when a new property is about to go live. The PreListing tool on sagareus.com/field is the standard path; this skill is the backup for when the tool is down, using the same pricing defaults and output formats. For copy only use /listing-copywriter; for comps only use /market-rent-analysis.
 
 ## How It Works
 

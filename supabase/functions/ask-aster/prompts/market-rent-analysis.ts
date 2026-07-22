@@ -11,6 +11,10 @@ export const marketRentAnalysisPrompt = {
 If the property or comp links are in the opener, run immediately. If nothing was given, your entire first message is one line: "Which property, and paste any comp links you already have. I'll pull the rest." Nothing else.
 
 
+## Backup Role (2026-07-22)
+
+The **PreListing tool** on https://www.sagareus.com/field is the standard path: it pulls comps automatically and computes market rent, market position, and the strategy defaults. This skill is the **backup** for when the tool or its comp data is down, per [PreListing Report // Manual Fallback](https://sagareus.getoutline.com/doc/prelisting-report-manual-fallback-Mbs8Hbagju). Output must match the tool's report format so the numbers slot straight into the same workflow.
+
 ## What this is
 
 Establishes a defensible market rent number from three Zillow comparable listings. The output is what the agent uses to anchor the listing price decision, plus what gets pasted into the PreListing email for the owner to see.
@@ -138,47 +142,50 @@ If there are no flags, say so: "No quality concerns. Comps are well-matched and 
 
 ### Step 5: output
 
-Return all of:
+Return the report in the PreListing tool's format, in this order:
 
-**1. Per-comp summary table:**
-
-\`\`\`
-Comp 1: [address/neighborhood]
-  Rent: $X,XXX
-  Beds / Baths / Sqft: X / X / XXX
-  Days on market: XX
-  Total move-in cost: $X,XXX
-  Concessions: [details or "none"]
-  URL: [Zillow link]
-
-Comp 2: [...]
-
-Comp 3: [...]
-\`\`\`
-
-**2. Subject property recap:**
+**1. ESTIMATED MARKET RENT**
 
 \`\`\`
-Subject: [address]
-  Beds / Baths / Sqft: X / X / XXX
-  Condition: [notes]
-  Key amenities: [list]
+ESTIMATED MARKET RENT
+$X,XXX/mo (range $X,XXX to $X,XXX)
+X bd | X ba | X,XXX sqft | $X.XX/sqft
+Previous lease rent: $X,XXX  (or "No lease history: first lease for this unit" — from Buildium lease history if provided; never use the Market Rent field)
 \`\`\`
 
-**3. Calculation:** the price-per-square-foot math, shown explicitly.
+The estimate is the $/sqft calculation result rounded to the nearest $25. The range is the lowest to highest comp-implied figure.
 
-**4. Recommended market rent:** a single number, rounded to nearest $25.
-
-**5. Quality flags:** any concerns from Step 4, or "no quality concerns" if none.
-
-**6. Note on starting rent:**
+**2. MARKET POSITION**
 
 \`\`\`
-Starting rent for the listing is typically $100 to $200 above this
-market rent figure, picked by you based on the property and the
-owner's situation. The market rent above is the anchor, not the
-listing price.
+MARKET POSITION
+Median $X,XXX | Mean $X,XXX | Percentile: XXth
+The $X,XXX estimate sits at the XXth percentile of N nearby comps (median $X,XXX).
 \`\`\`
+
+**3. LISTING STRATEGY (the standard defaults, stated as the starting point)**
+
+\`\`\`
+LISTING STRATEGY
+Starting Rent: $X,XXX        (estimate + $200, rounded to the nearest $5)
+Weekly Adjustment: If 6-10 inquiries in reporting week, reduce rent by $100. If 1-5 inquiries, reduce by $200.
+Minimum Price: $X,XXX        (Starting Rent - $700)
+Security Deposit: $X,XXX     (Starting Rent - $100)
+Last Month Rent: $0
+Move In Special: None
+\`\`\`
+
+**4. NEARBY COMPARABLES** — one block per comp:
+
+\`\`\`
+[Address]
+$X,XXX | X/X bd/ba | X,XXX sqft | $X.XX/sqft | X.X mi | Active listing or Off market
+[Zillow URL]
+\`\`\`
+
+**5. Calculation:** the price-per-square-foot math, shown explicitly.
+
+**6. Quality flags:** any concerns from Step 4, or "no quality concerns" if none.
 
 ## Voice rules
 
