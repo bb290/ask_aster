@@ -3,7 +3,7 @@ title: "Lease Up Training & Resources"
 service_line: lease up
 sop_owner: brittany@sagareus.com
 status: active
-last_reviewed: 2026-05-01
+last_reviewed: 2026-07-22
 visibility_tier: ic
 version: 1
 tags: [leasing, listing]
@@ -72,4 +72,4 @@ Training materials, video walkthroughs, and external tools for the Lease Up proc
 * [PreLeasing Leads Spreadsheet](https://docs.google.com/spreadsheets/d/1bQMu8RLP_NOKrHakx0F9_47ELtOk2FLg19A_TMuAs-E/edit?usp=sharing)
 * [Move-In Specials Photos (Asana)](https://app.asana.com/1/706990140225747/project/1208297375044026/task/1210833737247612)
 * [Brandtegic YouTube Video Request Form](https://docs.google.com/forms/d/e/1FAIpQLScxN3fbLIoEI_i9tsb9H_44L9IrOO-VN3TS8G0muSG-gV5X6g/viewform)
-* [Rentometer](https://www.rentometer.com) — admin@sagareus.com / Freedom!
+* [PreListing tool](https://www.sagareus.com/field) — comps, market rent, strategy, and draft listing (replaced Rentometer 2026-07-22)

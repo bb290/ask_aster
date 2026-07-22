@@ -66,7 +66,7 @@ Nothing to fix in Buildium. Email Zillow (template above) and ask them to consol
 Properties with 25+ units are covered by a Zillow marketing agreement and **do not syndicate from Buildium**. Manage these listings manually on Zillow.com.
 
 * [Video Tutorial — How to list/delist on Zillow](https://www.loom.com/share/01d4394670b54963b2ad1ab2d8b830ca)
-* Log in: `leasing@sagareus.com` / PW: `Zer0zer0?`
+* Log in: `leasing@sagareus.com` — password in 1Password
 * Account Manager: Brian — [brianlo@zillowgroup.com](mailto:brianlo@zillowgroup.com)
 
 ## Zillow Support Contacts
