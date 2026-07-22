@@ -202,23 +202,31 @@ async function allVacancies(includeLeased = false): Promise<Array<{ gid: string;
   }
   out.sort((a, b) => a.address.localeCompare(b.address));
   const all = out.slice();
-  // Active = lease not signed yet, OR lease signed but the MOVE-IN subtask is still open
-  // (weekly reports run move-out to move-in). Stale leased tasks drop out of the picker.
+  // Weekly reports run move-out to move-in, so a signed lease alone is not enough
+  // to drop a task: drop only on positive evidence move-in happened — 🙌 Move in
+  // Date already past, and no MOVE-IN subtask still open. The old rule dropped any
+  // leased task lacking an open MOVE-IN subtask, which hid tasks that simply have
+  // no MOVE-IN subtask yet (522 N 117th missing from the WAR picker, 2026-07-22).
   try {
     const [leased, moveins] = await Promise.all([
-      asana("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LEASING_LU_PROJECT}&completed=false&custom_fields.1213987093740546.is_set=true&limit=100&opt_fields=name`),
+      asana("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LEASING_LU_PROJECT}&completed=false&custom_fields.1213987093740546.is_set=true&limit=100&opt_fields=name,custom_fields.gid,custom_fields.display_value`),
       asana("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LEASING_LU_PROJECT}&completed=false&text=${encodeURIComponent("move in")}&limit=100&opt_fields=name,parent.gid`),
     ]);
-    const leasedSet = new Set<string>();
-    (leased ?? []).forEach((t: { gid: string; name: string }) => {
-      if (/^(LU|TP|PreLease)\s*\|/i.test(t.name)) leasedSet.add(t.gid);
-    });
     const moveInOpen = new Set<string>();
     (moveins ?? []).forEach((t: { name: string; parent?: { gid: string } | null }) => {
       if (/^move[\s-]*in/i.test(t.name) && t.parent?.gid) moveInOpen.add(t.parent.gid);
     });
-    if (leasedSet.size) {
-      const filtered = out.filter((v) => !leasedSet.has(v.gid) || moveInOpen.has(v.gid));
+    const today = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10); // Seattle-ish
+    const movedIn = new Set<string>();
+    (leased ?? []).forEach((t: { gid: string; name: string; custom_fields?: Array<{ gid: string; display_value?: string | null }> }) => {
+      if (!/^(LU|TP|PreLease)\s*\|/i.test(t.name)) return;
+      const mi = (t.custom_fields ?? []).find((f) => f.gid === "1213183520317831")?.display_value; // 🙌 Move in Date
+      if (!mi) return;
+      const d = new Date(mi);
+      if (!isNaN(d.getTime()) && d.toISOString().slice(0, 10) < today && !moveInOpen.has(t.gid)) movedIn.add(t.gid);
+    });
+    if (movedIn.size) {
+      const filtered = out.filter((v) => !movedIn.has(v.gid));
       if (filtered.length) { out.length = 0; filtered.forEach((v) => out.push(v)); }
     }
   } catch { /* fail open: show the unfiltered list rather than an empty picker */ }
