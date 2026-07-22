@@ -2,15 +2,20 @@
 title: "Market Rent & Listing Strategy"
 service_line: lease up
 sop_owner: brittany@sagareus.com
+outline_url: https://sagareus.getoutline.com/doc/market-rent-listing-strategy-qMikxE9WOV
 status: active
-last_reviewed: 2026-05-01
+last_reviewed: 2026-07-22
 visibility_tier: ic
-version: 1
-tags: [leasing, showing, application, vacant-unit, listing, buildium, leasing-2.0]
-created_but_never_updated: true
+version: 2
+tags: [leasing, showing, application, vacant-unit, listing, buildium, leasing-2.0, prelisting, field-tools]
+created_but_never_updated: false
 ---
 
 Methodology for pricing a rental and building a listing strategy. Referenced in step 2 of the Lease Up Asana SOP.
+
+:::info
+**Changed 2026-07-22:** Rentometer is retired. Market rent now runs through the **PreListing tool** on the Team Hub (https://www.sagareus.com/field): comps, market position, strategy defaults, and the draft listing in one place. Tool down? [PreListing Report // Manual Fallback](prelisting-report-manual-fallback.md).
+:::
 
 ## Market Rent
 
@@ -25,71 +30,37 @@ Market rent is the amount a property could reasonably command in the open market
 * **Vacancy rates and demand** — low vacancy drives rents up; oversupply drives them down
 * **Incentives and concessions** — move-in specials affect *effective* rent
 
-
----
-
 ## How to Establish Market Rent
 
-
 :::info
-**Step 1 — Generate a Rentometer Report**
+**Step 1 — Run the PreListing Tool**
 
-Rentometer provides a quick market snapshot — it's one data point, not a final answer.
+Open the PreListing tool at https://www.sagareus.com/field, enter the Unit ID, tap Populate, then Run Report. The tool pulls nearby comps, computes the estimate, range, $/sqft, and market position (median, mean, percentile), and shows the previous lease rent so you know the price point the departing Resident paid.
 
-* Log in: Username `admin@sagareus.com` / PW: `Freedom!`
-* Use the last 3 months of data; expand to 6–12 months if results are limited.
-* Select "Apartment" or "House" as appropriate.
-* Enter the correct number of bedrooms.
-* Download PDF.
-
+The full workflow lives in [2 — Email | Owner - Market Rent & PreListing](2-email-owner-market-rent-prelisting.md).
 :::
 
-
 :::info
-**Step 2 — Review Comparable Listings on Zillow**
+**Step 2 — Judge the Comp Set**
 
-* Find **three comparable active listings** that match size, quality, and amenities.
-* Note:
-  * Days on Market
-  * Estimated inquiries or showing activity
-  * Any incentives or move-in specials
+The estimate is only as good as its comps. Review the Nearby Comparables table and x out anything that does not belong: wrong size class, wrong condition tier, wrong micro-location. The estimate, market position, and strategy defaults recalculate as you prune.
 
-Longer market times or concessions = possible overpricing. Multiple applications = strong demand.
-
+Then sanity-check against active Zillow listings: days on market, activity, and incentives on the three closest matches. Longer market times or concessions = possible overpricing. Multiple applications = strong demand.
 :::
 
-
 :::info
-**Step 3 — Cross-Reference Internal Data (optional)**
+**Step 3 — Cross-Reference Internal Data**
 
-* Review current rent in Buildium.
-* Check when the unit was last leased and at what rate.
-* Evaluate the percentage increase — confirm it's justified by comps.
-* If comparable units increased 5%, avoid pushing 10% without condition-based justification.
-
+The tool shows the previous lease rent automatically. Evaluate the percentage increase against the comp set — if comparable units increased 5%, avoid pushing 10% without condition-based justification.
 :::
 
-
 :::info
-**Step 4 — Analyze Price Per Square Foot (optional)**
+**Step 4 — Finalize the Recommendation**
 
-From the Rentometer report, identify the three closest comps.
-
-Formula: (Comp 1 $/sf + Comp 2 $/sf + Comp 3 $/sf) ÷ 3 × Subject sf = Target Rent
-
+Override the Estimated Market Rent in the tool if your judgment differs; the market position, strategy defaults, and draft listing update automatically. Confirm the Listing Strategy fields, copy the draft listing into Buildium, and send the PreListing Email to the owner per [2 — Email | Owner - Market Rent & PreListing](2-email-owner-market-rent-prelisting.md).
 :::
 
-
-:::info
-**Step 5 — Finalize Recommendation**
-
-* Input recommended market rent in the Buildium unit listing draft.
-* Complete the PreListing Email to owner for documentation.
-
-:::
-
-
----
+**Manual fallback:** if the tool is down, pull comps by hand and run the same math per [PreListing Report // Manual Fallback](prelisting-report-manual-fallback.md), including the $/sqft cross-check: (Comp 1 $/sf + Comp 2 $/sf + Comp 3 $/sf) ÷ 3 × Subject sf = Target Rent.
 
 ## Listing Strategy
 
@@ -97,15 +68,12 @@ Listing strategy is the intentional plan to bring a rental to market at the best
 
 **Core components:**
 
-* **Pricing Position** — where rent is set on day one (aggressive, market, or speed-focused). Balances monthly income vs. total days vacant.
-* **Audience Targeting** — who is most likely to rent this home. Adjust photos, headline, and opening copy to speak to that demographic. Always Fair Housing compliant.
-* **Complete and Accurate Listing** — all details are present, all amenities checked.
+* **Pricing Position** — where rent is set on day one (aggressive, market, or speed-focused). Balances monthly income vs. total days vacant. The tool's default: start at market rent + $200, weekly review, reduce $100 to $200 when activity is below target.
+* **Audience Targeting** — adjust photos, headline, and opening copy to the property's strengths. Always Fair Housing compliant: sell the property and lifestyle, never the people.
+* **Complete and Accurate Listing** — all details present, all amenities checked.
 * **Multi-Channel Distribution** — listing syndication plus video walk-through for social media.
 * **Lead Capture and Response Plan** — how fast inquiries are answered, how showings are scheduled, how prospects are moved toward application. Slow response = more vacancy days = lost rent.
 * **Adjustment Timeline** — pre-planned checkpoints for price adjustments, new photos, new headline, or promotions. We do not sit and wait.
-
-
----
 
 ## Adjusting to Client Priorities
 
