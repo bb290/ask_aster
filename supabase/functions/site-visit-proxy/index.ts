@@ -797,6 +797,110 @@ app.post("*", async (c) => {
       return j(headers, 502, { error: "llm_failed", message: "Copy generation is unavailable right now. Draft manually for this one." });
     }
 
+    // ---------- warListing: current Buildium listing + description for the WAR listing-update flow ----------
+    if (action === "warListing") {
+      if (!BUILDIUM_ID || !BUILDIUM_SECRET) return j(headers, 500, { error: "buildium_not_configured" });
+      const address = String(body.address ?? "").trim();
+      if (!address) return j(headers, 400, { error: "missing_address" });
+      const units = await allUnits();
+      const m = matchUnit(units, address);
+      if (m.ambiguous) return j(headers, 404, { error: "ambiguous", message: `Multiple units match (${m.ambiguous.join(", ")}). Listing updates need a single unit.` });
+      if (!m.hit) return j(headers, 404, { error: "unit_not_found", message: "No Unit Settings task matches this address, so there is no Buildium unit to update." });
+      const task = await asana("GET", `/tasks/${m.hit.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+      const uid = String((task.custom_fields ?? []).find((f: { name: string }) => /^unit id$/i.test(f.name))?.display_value ?? "").trim();
+      if (!/^\d+$/.test(uid)) return j(headers, 404, { error: "no_unit_id", message: "The Unit Settings task has no Unit ID; add it in Asana to enable listing updates." });
+      const BH = { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET };
+      const ru = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}`, { headers: BH });
+      if (!ru.ok) return j(headers, 502, { error: "buildium_failed", message: "Buildium didn't answer for that unit." });
+      const u = await ru.json();
+      let listing: Record<string, unknown> | null = null;
+      const rl = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}/listing`, { headers: BH });
+      if (rl.ok) {
+        const L = await rl.json();
+        listing = {
+          rent: L.Rent ?? null,
+          deposit: L.Deposit ?? null,
+          availableDate: L.AvailableDate ?? null,
+          leaseTerms: L.LeaseTerms ?? null,
+          contactId: L?.Contact?.Id ?? null,
+          listingDate: L.ListingDate ?? null,
+        };
+      }
+      return j(headers, 200, {
+        ok: true,
+        unitId: uid,
+        beds: bedBathNum(u.UnitBedrooms),
+        baths: bedBathNum(u.UnitBathrooms),
+        sqft: u.UnitSize ?? null,
+        description: String(u.Description ?? ""),
+        listed: !!listing,
+        listing,
+      });
+    }
+
+    // ---------- listingPush: apply WAR listing updates to Buildium (description + rent + availability) ----------
+    if (action === "listingPush") {
+      if (!BUILDIUM_ID || !BUILDIUM_SECRET) return j(headers, 500, { error: "buildium_not_configured" });
+      const uid = String(body.unitId ?? "").trim();
+      if (!/^\d+$/.test(uid)) return j(headers, 400, { error: "bad_unit_id" });
+      const desc = body.description == null ? null : String(body.description).trim();
+      const rent = body.rent == null ? null : Number(body.rent);
+      const availableDate = body.availableDate == null ? null : String(body.availableDate).trim();
+      if (rent != null && (!Number.isFinite(rent) || rent < 100 || rent > 50000)) return j(headers, 400, { error: "bad_rent" });
+      if (availableDate != null && !/^\d{4}-\d{2}-\d{2}$/.test(availableDate)) return j(headers, 400, { error: "bad_date" });
+      if (desc != null && desc.length > 60000) return j(headers, 400, { error: "desc_too_long" });
+      const BH = { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET };
+      const updated: Record<string, boolean> = { description: false, rent: false, availableDate: false };
+      const warnings: string[] = [];
+      if (desc != null && desc.length >= 40) {
+        const r0 = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}`, { headers: BH });
+        if (!r0.ok) return j(headers, 502, { error: "buildium_failed", message: "Buildium didn't answer for that unit." });
+        const u = await r0.json();
+        const r1 = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}`, {
+          method: "PUT",
+          headers: { ...BH, "Content-Type": "application/json" },
+          body: JSON.stringify({
+            UnitNumber: u.UnitNumber, UnitSize: u.UnitSize, MarketRent: u.MarketRent, Address: u.Address,
+            UnitBedrooms: u.UnitBedrooms, UnitBathrooms: u.UnitBathrooms, Description: desc,
+          }),
+        });
+        if (!r1.ok) {
+          const et = await r1.text().catch(() => "");
+          return j(headers, 502, { error: "desc_failed", message: `Buildium rejected the description update (${r1.status}). ${et.slice(0, 160)}` });
+        }
+        updated.description = true;
+      }
+      if (rent != null || availableDate != null) {
+        const rl = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}/listing`, { headers: BH });
+        if (rl.status === 404) {
+          warnings.push("No active Buildium listing on this unit; rent and availability were not changed.");
+        } else if (!rl.ok) {
+          warnings.push("Could not read the current listing; rent and availability were not changed.");
+        } else {
+          const L = await rl.json();
+          const putBody: Record<string, unknown> = {
+            Rent: rent != null ? rent : L.Rent,
+            Deposit: L.Deposit,
+            AvailableDate: availableDate != null ? availableDate : L.AvailableDate,
+            LeaseTerms: L.LeaseTerms,
+          };
+          if (L?.Contact?.Id != null) putBody.ContactId = L.Contact.Id;
+          const r2 = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}/listing`, {
+            method: "PUT",
+            headers: { ...BH, "Content-Type": "application/json" },
+            body: JSON.stringify(putBody),
+          });
+          if (!r2.ok) {
+            const et = await r2.text().catch(() => "");
+            return j(headers, 502, { error: "listing_failed", message: `Buildium rejected the listing update (${r2.status}). ${et.slice(0, 200)}`, updated, warnings });
+          }
+          if (rent != null) updated.rent = true;
+          if (availableDate != null) updated.availableDate = true;
+        }
+      }
+      return j(headers, 200, { ok: true, updated, warnings });
+    }
+
     // ---------- warComments: draft the Agent Comments for a weekly leasing report ----------
     if (action === "warComments") {
       const OR_KEY = Deno.env.get("OPENROUTER_API_KEY") ?? "";
