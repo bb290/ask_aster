@@ -172,10 +172,16 @@ function addressFromSettingsName(name: string): string {
 // Leasing vacancies via paged project listing, NOT workspace search: search caps at 100
 // results by recent modification, so bot-driven bulk edits push the real LU/TP/PreLease
 // tasks out of the window and the picker mysteriously shrinks (seen 2026-07-18).
-let luCache: { at: number; vacancies: Array<{ gid: string; address: string }> } | null = null;
+//
+// includeLeased=true returns EVERY open leasing task, skipping the leased filter.
+// Site visits run until the task closes (lease signed but move-in pending still gets
+// weekly visits), and the move-in-subtask heuristic misses tasks with no MOVE-IN
+// subtask — which is how a visit for an open LU task fell through to the manual
+// path and landed in Property Settings (522 N 117th, seen 2026-07-22).
+let luCache: { at: number; all: Array<{ gid: string; address: string }>; active: Array<{ gid: string; address: string }> } | null = null;
 
-async function allVacancies(): Promise<Array<{ gid: string; address: string }>> {
-  if (luCache && Date.now() - luCache.at < 2 * 60 * 1000) return luCache.vacancies;
+async function allVacancies(includeLeased = false): Promise<Array<{ gid: string; address: string }>> {
+  if (luCache && Date.now() - luCache.at < 2 * 60 * 1000) return includeLeased ? luCache.all : luCache.active;
   const out: Array<{ gid: string; address: string }> = [];
   let offset = "";
   for (let page = 0; page < 10; page++) {
@@ -193,6 +199,8 @@ async function allVacancies(): Promise<Array<{ gid: string; address: string }>> 
     offset = json.next_page?.offset ?? "";
     if (!offset) break;
   }
+  out.sort((a, b) => a.address.localeCompare(b.address));
+  const all = out.slice();
   // Active = lease not signed yet, OR lease signed but the MOVE-IN subtask is still open
   // (weekly reports run move-out to move-in). Stale leased tasks drop out of the picker.
   try {
@@ -214,9 +222,8 @@ async function allVacancies(): Promise<Array<{ gid: string; address: string }>> 
     }
   } catch { /* fail open: show the unfiltered list rather than an empty picker */ }
 
-  out.sort((a, b) => a.address.localeCompare(b.address));
-  luCache = { at: Date.now(), vacancies: out };
-  return out;
+  luCache = { at: Date.now(), all, active: out };
+  return includeLeased ? all : out;
 }
 
 // The unit list barely changes; cache it in the warm instance so the picker loads fast.
@@ -283,7 +290,13 @@ app.post("*", async (c) => {
 
   try {
     // ---------- vacancies: open leasing tasks + every managed unit ----------
+    // scope "visit" (site visit widget): ALL open leasing tasks, leased included —
+    // visits anchor to the Leasing parent task for as long as it stays open.
     if (action === "vacancies") {
+      if (body.scope === "visit") {
+        const [vacancies, units] = await Promise.all([allVacancies(true), allUnits()]);
+        return j(headers, 200, { vacancies, units });
+      }
       const [vacancies, units] = await Promise.all([allVacancies(), allUnits()]);
       return j(headers, 200, { vacancies, units });
     }
@@ -291,12 +304,23 @@ app.post("*", async (c) => {
     // ---------- submit: comment + tickets ----------
     if (action === "submit") {
       const address = String(body.address ?? "").trim();
-      const source = body.source === "unit" ? "unit" : body.source === "manual" ? "manual" : "lu";
-      const taskGid = source === "manual" ? "" : String(body.taskGid ?? "");
+      let source = body.source === "unit" ? "unit" : body.source === "manual" ? "manual" : "lu";
+      let taskGid = source === "manual" ? "" : String(body.taskGid ?? "");
       const generalNote = String(body.generalNote ?? "").trim();
       const items = Array.isArray(body.items) ? body.items as Array<Record<string, unknown>> : [];
       if (!items.length || (source === "manual" ? !address : !taskGid)) {
         return j(headers, 400, { error: "missing_fields" });
+      }
+
+      // Visits belong on the Leasing parent task whenever one is open for this
+      // address — never on a Settings task or a standalone Property Settings task.
+      // Rescue manual/unit submits whose address matches an open leasing task
+      // (leased included), so a picker miss can't file the visit in the wrong place.
+      if (source !== "lu") {
+        try {
+          const m = matchUnit(await allVacancies(true), address);
+          if (m.hit) { source = "lu"; taskGid = m.hit.gid; }
+        } catch { /* non-fatal: fall through to the picked/manual anchor */ }
       }
 
       // 1) the anchor task and site-visit subtask.
@@ -991,6 +1015,20 @@ app.post("*", async (c) => {
       if (r1.status === 403) return j(headers, 502, { error: "buildium_no_scope", message: "Buildium hasn't granted edit access yet. Copy the listing and paste it manually for now." });
       if (!r1.ok) return j(headers, 502, { error: "buildium_failed", message: "Buildium rejected the update. Copy the listing and paste it manually." });
       return j(headers, 200, { ok: true, unitId: uid, chars: desc.length });
+    }
+
+    // TEMP: identity probe (remove after PAT swap verification)
+    if (action === "whoami") {
+      const out: Record<string, string> = {};
+      for (const [label, tok] of [["ASANA_PAT", Deno.env.get("ASANA_PAT")], ["ASANA_API_TOKEN", Deno.env.get("ASANA_API_TOKEN")]] as Array<[string, string | undefined]>) {
+        if (!tok) { out[label] = "(not set)"; continue; }
+        try {
+          const r = await fetch("https://app.asana.com/api/1.0/users/me?opt_fields=name,email", { headers: { "Authorization": `Bearer ${tok}` } });
+          const jj = await r.json().catch(() => ({}));
+          out[label] = r.ok ? `${jj.data?.name} <${jj.data?.email}>` : `(invalid: ${r.status})`;
+        } catch { out[label] = "(error)"; }
+      }
+      return j(headers, 200, out);
     }
 
     return j(headers, 400, { error: "unknown_action" });
