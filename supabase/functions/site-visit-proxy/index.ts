@@ -25,6 +25,7 @@ const WORKSPACE = "706990140225747";
 const LEASING_LU_PROJECT = "1213171756304238";
 const UNIT_SETTINGS_PROJECT = "1213032009308835";
 const PROPERTY_SETTINGS_PROJECT = "1211134623744906";
+const PROPERTY_SETTINGS_PROJECT = "1211134623744906";
 // Lead maintenance coordinator; default assignee for occupied-unit and manual-address
 // tickets until per-property routing exists (Brittany, 2026-07-17).
 const DEFAULT_MAINT = { gid: "1201894870325840", name: "Joylyn De Castro" };
@@ -221,17 +222,16 @@ async function allVacancies(): Promise<Array<{ gid: string; address: string }>> 
 
 // The unit list barely changes; cache it in the warm instance so the picker loads fast.
 let unitCache: { at: number; units: Array<{ gid: string; address: string }> } | null = null;
-
-async function allUnits(): Promise<Array<{ gid: string; address: string }>> {
-  if (unitCache && Date.now() - unitCache.at < 5 * 60 * 1000) return unitCache.units;
+let propCache: { at: number; units: Array<{ gid: string; address: string }> } | null = null;
+async function settingsTasks(project: string): Promise<Array<{ gid: string; address: string }>> {
   const units: Array<{ gid: string; address: string }> = [];
   let offset = "";
   for (let page = 0; page < 12; page++) {
     const res = await fetch(
-      `${ASANA}/projects/${UNIT_SETTINGS_PROJECT}/tasks?completed_since=now&limit=100&opt_fields=name${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+      `${ASANA}/projects/${project}/tasks?completed_since=now&limit=100&opt_fields=name${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
       { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
     const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(`asana units page ${page} -> ${res.status}`);
+    if (!res.ok) throw new Error(`asana settings page ${page} -> ${res.status}`);
     for (const t of (json.data ?? []) as Array<{ gid: string; name: string }>) {
       if (/^settings\s*\/\//i.test(t.name)) units.push({ gid: t.gid, address: addressFromSettingsName(t.name) });
     }
@@ -239,8 +239,27 @@ async function allUnits(): Promise<Array<{ gid: string; address: string }>> {
     if (!offset) break;
   }
   units.sort((a, b) => a.address.localeCompare(b.address));
+  return units;
+}
+async function allUnits(): Promise<Array<{ gid: string; address: string }>> {
+  if (unitCache && Date.now() - unitCache.at < 5 * 60 * 1000) return unitCache.units;
+  const units = await settingsTasks(UNIT_SETTINGS_PROJECT);
   unitCache = { at: Date.now(), units };
   return units;
+}
+// Single-unit properties have no Unit Settings task; their Unit ID lives on the
+// Property Settings task instead (same "Settings // <address>" naming, same field).
+async function allPropSettings(): Promise<Array<{ gid: string; address: string }>> {
+  if (propCache && Date.now() - propCache.at < 5 * 60 * 1000) return propCache.units;
+  const units = await settingsTasks(PROPERTY_SETTINGS_PROJECT);
+  propCache = { at: Date.now(), units };
+  return units;
+}
+// Unit Settings first (multi-unit); Property Settings fallback (single-unit).
+async function matchSettings(address: string): Promise<{ hit?: { gid: string; address: string }; ambiguous?: string[] }> {
+  let m = matchUnit(await allUnits(), address);
+  if (!m.hit && !m.ambiguous) m = matchUnit(await allPropSettings(), address);
+  return m;
 }
 
 app.options("*", (c) => new Response(null, { status: 204, headers: corsHeaders(c.req.header("origin")) }));
@@ -617,8 +636,7 @@ app.post("*", async (c) => {
       if (!uid) {
         const address = String(body.address ?? "").trim();
         if (!address) return j(headers, 400, { error: "missing_address" });
-        const units = await allUnits();
-        const m = matchUnit(units, address);
+        const m = await matchSettings(address);
         if (m.ambiguous) {
           return j(headers, 404, { error: "ambiguous", message: `Multiple units match that address (${m.ambiguous.join(", ")}). Add the unit number and pull again.` });
         }
@@ -802,8 +820,7 @@ app.post("*", async (c) => {
       if (!BUILDIUM_ID || !BUILDIUM_SECRET) return j(headers, 500, { error: "buildium_not_configured" });
       const address = String(body.address ?? "").trim();
       if (!address) return j(headers, 400, { error: "missing_address" });
-      const units = await allUnits();
-      const m = matchUnit(units, address);
+      const m = await matchSettings(address);
       if (m.ambiguous) return j(headers, 404, { error: "ambiguous", message: `Multiple units match (${m.ambiguous.join(", ")}). Listing updates need a single unit.` });
       if (!m.hit) return j(headers, 404, { error: "unit_not_found", message: "No Unit Settings task matches this address, so there is no Buildium unit to update." });
       const task = await asana("GET", `/tasks/${m.hit.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
