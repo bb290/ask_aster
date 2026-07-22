@@ -25,6 +25,7 @@ const WORKSPACE = "706990140225747";
 const LEASING_LU_PROJECT = "1213171756304238";
 const UNIT_SETTINGS_PROJECT = "1213032009308835";
 const PROPERTY_SETTINGS_PROJECT = "1211134623744906";
+const CLIENT_RELATIONS_PROJECT = "1208917007356847";
 // Lead maintenance coordinator; default assignee for occupied-unit and manual-address
 // tickets until per-property routing exists (Brittany, 2026-07-17).
 const DEFAULT_MAINT = { gid: "1201894870325840", name: "Joylyn De Castro" };
@@ -268,6 +269,37 @@ async function matchSettings(address: string): Promise<{ hit?: { gid: string; ad
   return m;
 }
 
+// Client Relations 2.0: one open task per property, named "<address> // <owner>"
+// or "(CLIENT) <address> / <owner>". Occupied-unit and manual site visits anchor
+// here (Brittany, 2026-07-22) — Settings projects are programmatic configuration
+// and visit subtasks there confuse agents.
+function addressFromCrName(name: string): string {
+  let s = name.replace(/^\s*\([^)]*\)\s*/, "").trim();
+  s = s.split("//")[0].split(" / ")[0].trim();
+  return /^\d/.test(s) ? s : "";
+}
+let crCache: { at: number; props: Array<{ gid: string; address: string }> } | null = null;
+async function allClientRelations(): Promise<Array<{ gid: string; address: string }>> {
+  if (crCache && Date.now() - crCache.at < 5 * 60 * 1000) return crCache.props;
+  const props: Array<{ gid: string; address: string }> = [];
+  let offset = "";
+  for (let page = 0; page < 12; page++) {
+    const res = await fetch(
+      `${ASANA}/projects/${CLIENT_RELATIONS_PROJECT}/tasks?completed_since=now&limit=100&opt_fields=name${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+      { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(`asana client-relations page ${page} -> ${res.status}`);
+    for (const t of (json.data ?? []) as Array<{ gid: string; name: string }>) {
+      const address = addressFromCrName(t.name);
+      if (address) props.push({ gid: t.gid, address });
+    }
+    offset = json.next_page?.offset ?? "";
+    if (!offset) break;
+  }
+  crCache = { at: Date.now(), props };
+  return props;
+}
+
 app.options("*", (c) => new Response(null, { status: 204, headers: corsHeaders(c.req.header("origin")) }));
 
 app.post("*", async (c) => {
@@ -324,28 +356,57 @@ app.post("*", async (c) => {
       }
 
       // 1) the anchor task and site-visit subtask.
-      //    lu: "Weekly Site Visit / Inspection" subtask per SOP. unit: "Site Visits"
-      //    subtask on the Settings task. manual: property isn't in Asana yet, so
-      //    create a standalone "Site Visit // <address>" task in Property Settings
-      //    and everything (comment, tickets) hangs off it.
+      //    lu: "Weekly Site Visit / Inspection" subtask per SOP on the Leasing task.
+      //    unit/manual (occupied, no open leasing task): "Site Visits // <address>"
+      //    subtask on the property's Client Relations task. Last resorts: manual with
+      //    no Client Relations match creates a standalone "Site Visit // <address>"
+      //    task in Client Relations; unit with no match keeps the Settings subtask.
       let anchorGid = taskGid;
       let inspection;
-      if (source === "manual") {
-        inspection = await asana("POST", "/tasks", {
-          name: `Site Visit // ${address}`.slice(0, 250),
-          projects: [PROPERTY_SETTINGS_PROJECT],
-          notes: "Created from the site visit tool. This address wasn't in Unit Settings when visited (new onboarding, or not under management). If the property gets a Settings task, fold this into it.",
-        });
-        anchorGid = inspection.gid;
-      } else {
+      if (source === "lu") {
         const subtasks = await asana("GET", `/tasks/${taskGid}/subtasks?limit=100&opt_fields=name`);
         inspection = (subtasks ?? []).find((s: { name: string }) => /site\s*visit/i.test(s.name)) ??
                      (subtasks ?? []).find((s: { name: string }) => /inspect/i.test(s.name));
         if (!inspection) {
           inspection = await asana("POST", `/tasks/${taskGid}/subtasks`, {
-            name: source === "unit" ? "Site Visits" : "Weekly Site Visit / Inspection",
+            name: "Weekly Site Visit / Inspection",
             notes: "Site visit documentation lives here. Every visit: one comment with the marked-up checklist and photos. SOP: https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC",
           });
+        }
+      } else {
+        let cr: { gid: string; address: string } | null = null;
+        try { cr = matchUnit(await allClientRelations(), address).hit ?? null; } catch { /* non-fatal */ }
+        if (cr) {
+          anchorGid = cr.gid;
+          const want = normAddr(address);
+          const subtasks = await asana("GET", `/tasks/${cr.gid}/subtasks?limit=100&opt_fields=name`);
+          const visits = (subtasks ?? []).filter((s: { name: string }) => /^site\s*visits?/i.test(s.name));
+          inspection = visits.find((s: { name: string }) =>
+            s.name.includes("//") && normAddr(s.name.split("//").slice(1).join("//")) === want) ??
+            visits.find((s: { name: string }) => !s.name.includes("//"));
+          if (!inspection) {
+            inspection = await asana("POST", `/tasks/${cr.gid}/subtasks`, {
+              name: `Site Visits // ${address}`.slice(0, 250),
+              notes: "Site visit documentation for this unit lives here. Every visit: one comment with the marked-up checklist and photos. SOP: https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC",
+            });
+          }
+        } else if (source === "manual") {
+          inspection = await asana("POST", "/tasks", {
+            name: `Site Visit // ${address}`.slice(0, 250),
+            projects: [CLIENT_RELATIONS_PROJECT],
+            notes: "Created from the site visit tool. This address has no open Leasing task and no Client Relations property task (new onboarding, or not under management). If the property gets a Client Relations task, fold this into it.",
+          });
+          anchorGid = inspection.gid;
+        } else {
+          const subtasks = await asana("GET", `/tasks/${taskGid}/subtasks?limit=100&opt_fields=name`);
+          inspection = (subtasks ?? []).find((s: { name: string }) => /site\s*visit/i.test(s.name)) ??
+                       (subtasks ?? []).find((s: { name: string }) => /inspect/i.test(s.name));
+          if (!inspection) {
+            inspection = await asana("POST", `/tasks/${taskGid}/subtasks`, {
+              name: "Site Visits",
+              notes: "Site visit documentation lives here. Every visit: one comment with the marked-up checklist and photos. SOP: https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC",
+            });
+          }
         }
       }
 
@@ -947,6 +1008,13 @@ app.post("*", async (c) => {
       if (!OR_KEY) return j(headers, 500, { error: "llm_not_configured" });
       const n = (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0);
       const arr = (v: unknown) => (Array.isArray(v) ? v.map((x) => String(x)).filter(Boolean).slice(0, 20) : []);
+      // Polish mode (Brittany, 2026-07-22): the agent writes their own comment first
+      // (widget gates the button on 12+ words); the model revises THEIR words instead
+      // of drafting from the report data, which just repeated the report in paragraphs.
+      const draft = String(body.draft ?? "").trim().slice(0, 2000);
+      if ((draft.match(/\S+/g) ?? []).length < 12) {
+        return j(headers, 400, { error: "draft_too_short", message: "Write at least 12 words of your own comment first, then polish." });
+      }
       const facts = [
         `Property: ${String(body.address ?? "").slice(0, 120)}`,
         `This week: ${n(body.inquiries)} inquiries, ${n(body.showings)} showings, ${n(body.applications)} applications.`,
@@ -958,27 +1026,27 @@ app.post("*", async (c) => {
         arr(body.recommendations).length ? `Recommendations going to the owner: ${arr(body.recommendations).join("; ")}` : "",
       ].filter(Boolean).join("\n");
       const SYSTEM = [
-        "You write the AGENT COMMENTS section of a weekly leasing activity report that a Sagareus leasing agent sends to a property owner.",
-        "Write in first person as the leasing agent. 2 to 4 sentences, 30 to 80 words. Plain text only: no markdown, no bullets, no emojis, never an em dash.",
-        "The raw numbers already appear in the report above your comments, so interpret rather than recite: what the week's activity means, what was done about it, and what happens next.",
-        "Ground every claim in the provided facts. Never invent activity, feedback, showings, or plans that are not in the facts.",
-        "Target benchmark for a healthy week: 10+ inquiries or 5+ showings. Below that, acknowledge activity is below target and point to the response (the updates made or the recommendations).",
-        "Tone: professional, direct, steady. No hype, no apologies, no filler like 'I will keep you posted'. End with the concrete next step.",
-        "OUTPUT: the comments only. No heading, no preamble, nothing after.",
+        "You polish the AGENT COMMENTS a Sagareus leasing agent wrote for the weekly activity report that goes to a property owner.",
+        "The agent's draft is the source of truth: keep every fact, observation, and intention they wrote, and keep their first-person voice. Fix grammar, spelling, and clarity; tighten rambling; make the tone professional, direct, steady.",
+        "Do not add information the agent did not write. The week's numbers, feedback, and updates already appear in the report above the comments (given to you as context) — never pad the comment by reciting them. Only pull a specific from context when the agent's draft clearly alludes to it and needs it to make sense.",
+        "Length: roughly the agent's length, 2 to 5 sentences, 90 words max. Plain text only: no markdown, no bullets, no emojis, never an em dash.",
+        "If the draft clearly implies a next step, sharpen the final sentence into it; otherwise keep the agent's ending.",
+        "OUTPUT: the polished comment only. No heading, no preamble, nothing after.",
       ].join("\n");
+      const USER = `AGENT'S DRAFT COMMENT:\n${draft}\n\nREPORT CONTEXT (already shown in the report; do not recite):\n${facts}`;
       for (const model of ["anthropic/claude-sonnet-5", "anthropic/claude-sonnet-4.5", "anthropic/claude-3.7-sonnet"]) {
         try {
           const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
             headers: { "Authorization": `Bearer ${OR_KEY}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ model, max_tokens: 300, messages: [{ role: "system", content: SYSTEM }, { role: "user", content: facts }] }),
+            body: JSON.stringify({ model, max_tokens: 300, messages: [{ role: "system", content: SYSTEM }, { role: "user", content: USER }] }),
           });
           const jr = await r.json().catch(() => ({}));
           const text = jr?.choices?.[0]?.message?.content;
           if (r.ok && text) return j(headers, 200, { comments: String(text).replace(/\*\*/g, "").trim(), model });
         } catch { /* try next model */ }
       }
-      return j(headers, 502, { error: "llm_failed", message: "Comment drafting is unavailable right now. Write them manually." });
+      return j(headers, 502, { error: "llm_failed", message: "Polishing is unavailable right now. Your comment is fine to send as written." });
     }
 
     // ---------- postListing: push the draft listing text to the Buildium unit record ----------
