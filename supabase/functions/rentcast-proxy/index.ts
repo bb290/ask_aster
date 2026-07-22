@@ -25,6 +25,11 @@ const supabase = createClient(
 const RENTCAST_API_KEY = Deno.env.get("RENTCAST_API_KEY") ?? "";
 const DAILY_CAP = parseInt(Deno.env.get("RENTCAST_DAILY_CAP") ?? "30", 10);
 const IP_DAILY_CAP = parseInt(Deno.env.get("RENTCAST_IP_DAILY_CAP") ?? "20", 10);
+// Internal team tools (PreListing, Activity Report comps) send the shared team key.
+// Team requests skip the per-IP cap (agents behind one office IP hit 20 in a normal
+// workday, seen 2026-07-22) and get a higher daily budget than the public widget.
+const TEAM_KEY = Deno.env.get("SITE_VISIT_KEY") ?? "";
+const TEAM_DAILY_CAP = parseInt(Deno.env.get("RENTCAST_TEAM_DAILY_CAP") ?? "150", 10);
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const ALLOWED_ORIGINS = (Deno.env.get("ALLOWED_ORIGINS") ??
   "https://www.sagareus.com,https://sagareus.com")
@@ -46,7 +51,7 @@ function corsHeaders(origin: string | undefined): Record<string, string> {
   return {
     "Access-Control-Allow-Origin": allowed ? origin! : ALLOWED_ORIGINS[0],
     "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Access-Control-Allow-Headers": "content-type",
+    "Access-Control-Allow-Headers": "content-type, x-sv-key",
     "Vary": "Origin",
   };
 }
@@ -92,10 +97,12 @@ app.post("*", async (c) => {
 
   const today = new Date().toISOString().slice(0, 10);
   const ip = (c.req.header("x-forwarded-for") ?? "unknown").split(",")[0].trim();
+  const isTeam = Boolean(TEAM_KEY) && c.req.header("x-sv-key") === TEAM_KEY;
 
   // Per-IP cap (counts every request, cached or not; deters scripted abuse).
-  const { data: ipCount, error: ipErr } = await supabase.rpc("rentcast_increment", { p_day: today, p_scope: `ip:${ip}` });
-  if (!ipErr && typeof ipCount === "number" && ipCount > IP_DAILY_CAP) {
+  // Team requests are counted for visibility but never blocked by the IP cap.
+  const { data: ipCount, error: ipErr } = await supabase.rpc("rentcast_increment", { p_day: today, p_scope: isTeam ? `team:${ip}` : `ip:${ip}` });
+  if (!isTeam && !ipErr && typeof ipCount === "number" && ipCount > IP_DAILY_CAP) {
     return new Response(JSON.stringify({ error: "rate_limited", message: "Daily lookup limit reached. Try again tomorrow, or request a proposal and we'll run the numbers for you." }), { status: 429, headers });
   }
 
@@ -107,14 +114,16 @@ app.post("*", async (c) => {
     return new Response(JSON.stringify({ ...cacheRow.payload, cached: true, stale: false }), { status: 200, headers: { ...headers, "X-Cache": "HIT" } });
   }
 
-  // Global daily budget for upstream RentCast calls.
+  // Global daily budget for upstream RentCast calls. The public widget stops at
+  // DAILY_CAP; team requests keep going up to TEAM_DAILY_CAP, so public scraping
+  // can never starve the internal tools.
   const { data: globalRow } = await supabase
     .from("rentcast_usage").select("count").eq("day", today).eq("scope", "global").maybeSingle();
-  if ((globalRow?.count ?? 0) >= DAILY_CAP) {
+  if ((globalRow?.count ?? 0) >= (isTeam ? TEAM_DAILY_CAP : DAILY_CAP)) {
     if (cacheRow) {
       return new Response(JSON.stringify({ ...cacheRow.payload, cached: true, stale: true }), { status: 200, headers: { ...headers, "X-Cache": "STALE" } });
     }
-    return new Response(JSON.stringify({ error: "budget_reached", message: "We've hit today's lookup limit. Request a proposal and we'll send your full report." }), { status: 429, headers });
+    return new Response(JSON.stringify({ error: "budget_reached", message: isTeam ? "The team's daily RentCast budget is used up. Ask Brittany to raise RENTCAST_TEAM_DAILY_CAP if this keeps happening." : "We've hit today's lookup limit. Request a proposal and we'll send your full report." }), { status: 429, headers });
   }
 
   // Upstream call. /avm/rent/long-term bundles the value estimate AND comparables: one call per report.
