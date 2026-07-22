@@ -1,52 +1,33 @@
 ---
-title: "12 — Confirm | Zillow Listing Active (2 days after listing)"
+title: "12 — Verify + Update | Zillow + Redfin Active"
 service_line: lease up
 sop_owner: brittany@sagareus.com
 status: active
-last_reviewed: 2026-05-01
+last_reviewed: 2026-07-22
 visibility_tier: ic
-version: 1
+version: 2
 tags: [leasing, showing, listing, buildium, leasing-2.0]
-created_but_never_updated: true
+created_but_never_updated: false
 ---
 
-Verify the listing is syndicated to Zillow and is showing correctly, approximately 2 days after Go Live.
-
+Verify the listing is live and accurate on Zillow AND Redfin approximately 2 days after Go Live, and load the listing links into the task's custom fields.
 
 :::info
-Zillow syndication has periodic hiccups. This step catches silent failures early, before the owner notices.
-
+Syndication has periodic hiccups. This step catches silent failures early, before the owner notices, and the links you save here power the one-tap Verify Listings buttons on the Activity Report tool for the rest of the vacancy.
 :::
 
+## Purpose
 
----
+A listing that posts in Buildium but fails to syndicate costs real inquiries; Zillow is the dominant rental search channel. A quick 2-day check protects days-on-market and owner trust, and capturing the links once makes every weekly verification a one-tap job.
 
-### Purpose
+## When This Runs
 
-A listing that posts in Buildium but fails to syndicate to Zillow costs real inquiries -- Zillow is the dominant rental search channel. A quick 2-day check protects days-on-market and owner trust.
+2 days after [7 — Go Live | Buildium Listing & Update list_date metric](7-go-live-buildium-listing-update-list-date-metric.md). Assigned to the Leasing Assistant as a +2 subtask during step 8.
 
+## Procedure
 
----
-
-### When This Runs
-
-2 days after [7 — Go Live | Buildium Listing & Update list_date metric](lease-up-asana-sop.md). Assigned to Leasing Assistant as a +2 subtask during [8 — Assign | Task to Agent & Move to Active Section](lease-up-asana-sop.md).
-
-
----
-
-### Procedure
-
-
-1. Search the property address on [Zillow.com](https://www.zillow.com/).
-2. Confirm the listing appears and details match Buildium (rent, beds/baths, photos, description).
-3. If the listing is **not appearing** or details are wrong, see [Zillow Troubleshooting](zillow-troubleshooting.md) for syndication fixes.
-4. Mark task complete once verified.
-
-
----
-
-### Related
-
-* [Zillow Troubleshooting](zillow-troubleshooting.md)
-* [Rental Listing Standards](rental-listing-standards.md)
+1. Search the property address on Zillow and Redfin.
+2. Confirm the listing appears on both and details match Buildium: rent, beds/baths, photos, description, availability.
+3. **Paste the listing URLs into the Lease Up task's custom fields: 🙌 Zillow and 🙌 Redfin.** These feed the Verify Listings buttons in the Activity Report tool (https://www.sagareus.com/field).
+4. If the listing is not appearing or details are wrong: check the common issues, fix what is on our side in Buildium, then email Zillow per [Zillow Troubleshooting](zillow-troubleshooting.md). They fix syndication on their end.
+5. Mark the subtask complete once both listings are verified and both links are saved.

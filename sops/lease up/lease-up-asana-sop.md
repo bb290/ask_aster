@@ -29,7 +29,7 @@ Pre-listing steps (1–2) are handled by the Leasing Team Lead. Active listing s
  9. [9 — Email | Owner - Property Listed Notification](9-email-owner-property-listed-notification.md) — formally notify the owner the listing is live
 10. [10 — Record | Listing Video](10-record-listing-video.md) — capture walk-through video and upload to Google Drive
 11. [11 — Respond | ⚡ Speed to Lead](11-respond-speed-to-lead.md) — respond to every inquiry within minutes
-12. [12 — Confirm | Zillow Listing Active (2 days after listing)](12-confirm-zillow-listing-active-2-days-after-listing.md) — verify Zillow syndication 2 days after Go Live
+12. [12 — Verify + Update | Zillow + Redfin Active](12-confirm-zillow-listing-active-2-days-after-listing.md) — verify Zillow + Redfin 2 days after Go Live and save the listing links to the 🙌 custom fields
 13. [13 — Request | Video from Brandtegic](13-request-video-from-brandtegic.md) — submit the Brandtegic YouTube Video Request Form
 14. [14 — Update | # of Inquiries, # of showings, # of applications metrics](14-update-of-inquiries-of-showings-of-applications-metrics.md) — update funnel metrics on the Asana task (TODO cadence)
 
