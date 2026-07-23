@@ -174,23 +174,24 @@ function addressFromSettingsName(name: string): string {
 // results by recent modification, so bot-driven bulk edits push the real LU/TP/PreLease
 // tasks out of the window and the picker mysteriously shrinks (seen 2026-07-18).
 //
-// includeLeased=true is the SITE VISIT list: every open leasing task, PLUS tasks
-// closed within the past 30 days whose 🙌 Move in Date hasn't passed (no date =
-// keep for the 30-day window). Lease signed -> the LU/PreLease task closes, but
-// pre-move-in site visits keep reporting to its Weekly Site Visit / Inspection
-// subtask until the resident moves in (Brittany, 2026-07-22; 404 21st Ave #B
-// fell through to Client Relations because its PreLease task was completed).
+// One list for BOTH the Site Visit and Activity Report pickers (Brittany,
+// 2026-07-22): every open LU/TP/PreLease task, PLUS tasks closed within the past
+// 60 days. The 🙌 Move in Date field is the guide — any task (open or closed)
+// whose move-in date has passed drops out, unless a MOVE-IN subtask is still
+// open (delayed move-in). Lease signed -> the task closes, but site visits and
+// weekly reports keep running to its subtasks until the resident moves in
+// (activity continues in the Move In // task). No date = keep for the window.
 // When an open and a recently-closed task share an address, the open one wins.
 let luCache: { at: number; all: Array<{ gid: string; address: string }>; active: Array<{ gid: string; address: string }> } | null = null;
 
 async function allVacancies(includeLeased = false): Promise<Array<{ gid: string; address: string }>> {
   if (luCache && Date.now() - luCache.at < 2 * 60 * 1000) return includeLeased ? luCache.all : luCache.active;
-  const since = new Date(Date.now() - 30 * 86400000).toISOString();
+  const since = new Date(Date.now() - 60 * 86400000).toISOString();
   const today = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10); // Seattle-ish
-  const out: Array<{ gid: string; address: string }> = [];
-  const closedRecent: Array<{ gid: string; address: string }> = [];
+  type Cand = { gid: string; address: string; completed: boolean; miPassed: boolean };
+  const cands: Cand[] = [];
   let offset = "";
-  for (let page = 0; page < 10; page++) {
+  for (let page = 0; page < 12; page++) {
     const res = await fetch(
       `${ASANA}/projects/${LEASING_LU_PROJECT}/tasks?completed_since=${encodeURIComponent(since)}&limit=100&opt_fields=name,completed,custom_fields.gid,custom_fields.display_value${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
       { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
@@ -200,53 +201,36 @@ async function allVacancies(includeLeased = false): Promise<Array<{ gid: string;
       if (!/^(LU|TP|PreLease)\s*\|/i.test(t.name)) continue;
       const address = addressFromTaskName(t.name);
       if (!address || address.includes("<")) continue;
-      if (!t.completed) { out.push({ gid: t.gid, address }); continue; }
-      // closed within 30 days (guaranteed by completed_since): keep until move-in passes
       const mi = (t.custom_fields ?? []).find((f) => f.gid === "1213183520317831")?.display_value; // 🙌 Move in Date
+      let miPassed = false;
       if (mi) {
         const d = new Date(mi);
-        if (!isNaN(d.getTime()) && d.toISOString().slice(0, 10) < today) continue; // moved in: drop
+        miPassed = !isNaN(d.getTime()) && d.toISOString().slice(0, 10) < today;
       }
-      closedRecent.push({ gid: t.gid, address });
+      cands.push({ gid: t.gid, address, completed: Boolean(t.completed), miPassed });
     }
     offset = json.next_page?.offset ?? "";
     if (!offset) break;
   }
-  out.sort((a, b) => a.address.localeCompare(b.address));
-  const openAddrs = new Set(out.map((v) => normAddr(v.address)));
-  const all = out.concat(closedRecent.filter((v) => !openAddrs.has(normAddr(v.address))))
-    .sort((a, b) => a.address.localeCompare(b.address));
-  // Weekly reports run move-out to move-in, so a signed lease alone is not enough
-  // to drop a task: drop only on positive evidence move-in happened — 🙌 Move in
-  // Date already past, and no MOVE-IN subtask still open. The old rule dropped any
-  // leased task lacking an open MOVE-IN subtask, which hid tasks that simply have
-  // no MOVE-IN subtask yet (522 N 117th missing from the WAR picker, 2026-07-22).
+  // Delayed move-in keep signal: an open MOVE-IN subtask keeps the task listed
+  // even when the Move in Date field is already past.
+  const moveInOpen = new Set<string>();
   try {
-    const [leased, moveins] = await Promise.all([
-      asana("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LEASING_LU_PROJECT}&completed=false&custom_fields.1213987093740546.is_set=true&limit=100&opt_fields=name,custom_fields.gid,custom_fields.display_value`),
-      asana("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LEASING_LU_PROJECT}&completed=false&text=${encodeURIComponent("move in")}&limit=100&opt_fields=name,parent.gid`),
-    ]);
-    const moveInOpen = new Set<string>();
+    const moveins = await asana("GET",
+      `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LEASING_LU_PROJECT}&completed=false&text=${encodeURIComponent("move in")}&limit=100&opt_fields=name,parent.gid`);
     (moveins ?? []).forEach((t: { name: string; parent?: { gid: string } | null }) => {
       if (/^move[\s-]*in/i.test(t.name) && t.parent?.gid) moveInOpen.add(t.parent.gid);
     });
-    const today = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10); // Seattle-ish
-    const movedIn = new Set<string>();
-    (leased ?? []).forEach((t: { gid: string; name: string; custom_fields?: Array<{ gid: string; display_value?: string | null }> }) => {
-      if (!/^(LU|TP|PreLease)\s*\|/i.test(t.name)) return;
-      const mi = (t.custom_fields ?? []).find((f) => f.gid === "1213183520317831")?.display_value; // 🙌 Move in Date
-      if (!mi) return;
-      const d = new Date(mi);
-      if (!isNaN(d.getTime()) && d.toISOString().slice(0, 10) < today && !moveInOpen.has(t.gid)) movedIn.add(t.gid);
-    });
-    if (movedIn.size) {
-      const filtered = out.filter((v) => !movedIn.has(v.gid));
-      if (filtered.length) { out.length = 0; filtered.forEach((v) => out.push(v)); }
-    }
-  } catch { /* fail open: show the unfiltered list rather than an empty picker */ }
-
-  luCache = { at: Date.now(), all, active: out };
-  return includeLeased ? all : out;
+  } catch { /* fail open: nothing extra dropped */ }
+  const live = cands.filter((c) => !c.miPassed || moveInOpen.has(c.gid));
+  const open = live.filter((c) => !c.completed);
+  const openAddrs = new Set(open.map((v) => normAddr(v.address)));
+  const list = open
+    .concat(live.filter((c) => c.completed && !openAddrs.has(normAddr(c.address))))
+    .map((c) => ({ gid: c.gid, address: c.address }))
+    .sort((a, b) => a.address.localeCompare(b.address));
+  luCache = { at: Date.now(), all: list, active: list };
+  return list;
 }
 
 // The unit list barely changes; cache it in the warm instance so the picker loads fast.
