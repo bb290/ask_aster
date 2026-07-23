@@ -416,13 +416,10 @@ app.post("*", async (c) => {
         }
       }
 
-      // 2) move-in date (72-hour rule) + Preferred Showing Slot 1 (next visit due date)
-      let moveIn: Date | null = null;
+      // 2) Preferred Showing Slot 1 (drives the next visit's due date)
       let slot1 = "";
       if (source !== "manual") try {
         const lu = await asana("GET", `/tasks/${taskGid}?opt_fields=custom_fields.name,custom_fields.display_value`);
-        const mi = (lu.custom_fields ?? []).find((f: { name: string }) => /move in date/i.test(f.name));
-        if (mi?.display_value) moveIn = new Date(mi.display_value);
         const s1 = (lu.custom_fields ?? []).find((f: { name: string }) => /preferred showing slot 1/i.test(f.name));
         if (s1?.display_value) slot1 = String(s1.display_value);
       } catch { /* non-fatal */ }
@@ -438,16 +435,10 @@ app.post("*", async (c) => {
         if (to?.assignee) toCoordinator = { gid: to.assignee.gid, name: to.assignee.name };
       } catch { /* non-fatal */ }
 
-      // 4) due date: default +3 days; if move-in is near, land 3+ days before it (never before tomorrow)
+      // 4) due date: every ticket is due the NEXT DAY (Brittany, 2026-07-22).
+      //    Always inside the 72-hour Accountability Rule, however close move-in is.
       const today = new Date();
-      let due = new Date(today.getTime() + 3 * 86400000);
-      if (moveIn && !isNaN(moveIn.getTime())) {
-        const cutoff = new Date(moveIn.getTime() - 3 * 86400000);
-        if (cutoff < due) due = cutoff;
-        const tomorrow = new Date(today.getTime() + 86400000);
-        if (due < tomorrow) due = tomorrow;
-      }
-      const dueOn = due.toISOString().slice(0, 10);
+      const dueOn = new Date(Date.now() - 7 * 3600 * 1000 + 86400000).toISOString().slice(0, 10); // Seattle-ish tomorrow
 
       // 5) create a maintenance subtask per flagged item, on the anchor task.
       //    Assignee: TO Coordinator when a turnover exists; otherwise Joylyn (default

@@ -28,7 +28,7 @@ Process and cadence: [Weekly Site Visit](weekly-site-visit.md).
 ## Procedure
 
 1. Walk the property with the checklist below. Copy it into a comment on the property's **Weekly Site Visit / Inspection** subtask (create the subtask under the Lease Up task if it is missing), mark each line, and attach at least 2 photos.
-2. For **every N and every open-ended task you spot**: create a ticket named `Item | Address`, put the issue detail in the description, attach that item's photos, assign it to the **Turn Over Coordinator** (occupied properties: the lead maintenance coordinator), and set a due date that respects the 72-hour Accountability Rule.
+2. For **every N and every open-ended task you spot**: create a ticket named `Item | Address`, put the issue detail in the description, attach that item's photos, assign it to the **Turn Over Coordinator** (occupied properties: the lead maintenance coordinator), and set the due date to the next day (always inside the 72-hour Accountability Rule).
 3. Write your visit notes in the same comment: **minimum 3 full sentences**. What did you observe? What did you check or test? Anything worth noting outside? See the quality documentation standard in [Weekly Site Visit](weekly-site-visit.md).
 4. Move the inspection subtask's due date to your next Slot 1 day (no Slot 1 on the property: push it 6 days) so the cadence never stalls.
 
