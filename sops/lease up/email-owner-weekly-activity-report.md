@@ -6,7 +6,7 @@ outline_url: https://sagareus.getoutline.com/doc/email-owner-weekly-activity-rep
 status: active
 last_reviewed: 2026-07-22
 visibility_tier: ic
-version: 7
+version: 8
 tags: [leasing, owner-communication, weekly-report, lease-up, operation-no-drama]
 created_but_never_updated: false
 ---
@@ -17,9 +17,9 @@ Send the owner a weekly update **every Tuesday by 12pm**, from move-out to move-
 **The weekly report covers the entire vacancy, not just the leasing phase.** It starts at move-out (Turnover), continues while listed (Leasing) and after lease signing (Pre-Move-In), and closes only at move-in.
 :::
 
-**Recent changes**
+## Recent Changes
 
-* **2026-07-22** — Activity Report tool: Verify Listings comes first, live rent comps, listing updates (description, rent, availability date) push straight to Buildium from the Listing Preview, and Polish Comment cleans up your Agent Comments instead of writing them for you.
+* **2026-07-22** — Activity Report tool: Verify Listings comes first, live rent comps, listing updates (description, rent, availability date) push straight to Buildium from the Listing Preview, and Polish Comment cleans up Agent Comments.
 * **2026-07-15** — [Weekly Site Visits](https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC) run move-out to move-in; every visit posts a marked-up checklist comment with notes and photos.
 
 Companion docs: [Scheduling Preferred Slots](https://sagareus.getoutline.com/doc/scheduling-preferred-slots-pa5dv5TXHb) and [Operation: No Drama](https://sagareus.getoutline.com/doc/operation-no-drama-1KiDctsybm).
@@ -36,22 +36,28 @@ A weekly activity report goes to the owner in **every phase** of the vacancy, no
 
 Reports run through the **Activity Report tool** on the Team Hub: **https://www.sagareus.com/field** (changed 2026-07-19; it replaces manual template copy/paste and builds the same three state-based reports).
 
-1. Open the tool, **type part of the address**, and tap the property. The tool detects the report state (Turnover / Leasing / Pre-Move-In) from Asana and pre-fills what it can: days on market, price history, listing links, tickets created this week, the latest site visit checklist, and the inspection PDF link.
-2. **Verify Listings** (leasing state, first card): tap the **Zillow** and **Redfin** buttons to open the live listings and confirm price, photos, description, and availability are accurate. Each button turns green once checked. Listing missing or wrong? Tap **?** and follow [Zillow Troubleshooting](https://sagareus.getoutline.com/doc/zillow-troubleshooting-AZPJKBA9A7).
-3. Enter the **Leasing Activity** numbers: # of inquiries, # of showings, # of applications.
-4. Pick **Feedback** from the dropdowns (positive first, then concerns; **Add Feedback** for more, **x** to remove) and write **Agent Comments**: your own read on the week, at least 12 words. The tool will not build the report without them. Once you have written them, **Polish Comment** appears: it cleans up your grammar and tone but keeps your facts and voice. It will not write the comments for you.
-5. Pull **Rent Comps**: one tap pulls live comparables for the address. Remove bad comps with the **x**, pick the 3/6/12-month window, and tap **Include Comps** to add the snapshot to the report.
-6. Mark **Listing Updates** (tap to select: Listing Revised, Pricing Review, Hold Price, List Price, pet policy, rent credit, deposits, criteria; the detail field appears when a selection needs one) and **Recommendations** (suggested upgrades with sub-options and a comments box).
+* Open the tool, **type part of the address**, and tap the property. The tool detects the report state (Turnover / Leasing / Pre-Move-In) from Asana and pre-fills what it can: days on market, price history, listing links, tickets created this week, the latest site visit checklist, and the inspection PDF link.
+
+### Leasing Activity Report
+
+1. **Verify Listings** (leasing state, first card): tap the **Zillow** and **Redfin** buttons to open the live listings and confirm price, photos, description, and availability are accurate. Each button turns green once checked. Listing missing or wrong? Tap **?** and follow [Zillow Troubleshooting](https://sagareus.getoutline.com/doc/zillow-troubleshooting-AZPJKBA9A7).
+2. Enter the **Leasing Activity** numbers: # of inquiries, # of showings, # of applications.
+3. Pick **Feedback** from the dropdowns (positive first, then concerns; **Add Feedback** for more, **x** to remove) and write **Agent Comments**: your own read on the week, at least 12 words. The tool will not build the report without them. Once you have written them, **Polish Comment** appears: it cleans up your grammar and tone but keeps your facts and voice. It will not write the comments for you.
+4. Review **Rent Comps**: one tap pulls live comparables for the address. Remove bad comps with the **x**, pick the 3/6/12-month window, and tap **Include Comps** to add the snapshot to the report.
+5. Mark **Listing Updates** (tap to select: Listing Revised, Pricing Review, Hold Price, List Price, pet policy, rent credit, deposits, criteria; the detail field appears when a selection needs one) and
+6. **Recommendations** (suggested listing changes & property upgrades with sub-options and a comments box).
 7. **Listing Preview / Update Listing**: the preview shows the current Buildium listing with your pending changes highlighted — selected Listing Updates edit the matching description lines, a List Price selection reduces the rent, and the **availability date** autofills to the following Saturday (forward only; enter any date you want). **Rewrite Listing** regenerates the narrative with AI and auto-checks Listing Revised. Tap **Update Listing** (tap twice to confirm) to push the description, rent, and availability date straight to Buildium. Manual path if the tool is down: [Updating Active Listings](https://sagareus.getoutline.com/doc/updating-active-listings-aytdYiWQoa).
 8. **30+ days on market?** The tool shows the pricing banner: deep dive the pricing strategy using the comps you pulled, and consider a full PreListing report.
-9. Tap **Build Report** and edit the full text inline. Use the "Tap to check links" row to verify the listing links before sending.
+9. Tap **Build Report** and edit the full text inline.
 
-Turnover and Pre-Move-In states are shorter: confirm the pre-filled site visit and tickets (Turnover) or move-in prep items (Pre-Move-In), add your notes, and build.
+### Turnover and Pre-Move-In Reports
+
+These states are shorter: confirm the pre-filled site visit and tickets (Turnover) or move-in prep items (Pre-Move-In), add your notes, and build.
 
 ## Review & Distribution
 
 1. Tap **Copy & Post to Asana**: the report copies to your clipboard, posts to the **Weekly Activity Report** subtask, and the subtask's due date rolls to next Tuesday automatically.
-2. Tap **Send Owner Email**: your mail app (Gmail on desktop) opens addressed to the owner with the subject line filled. If the body comes up empty, paste: the report is on your clipboard. Send by **Tuesday 12pm**.
+2. Tap **Send Owner Email**: your mail app (Gmail on desktop) opens addressed to the owner with the subject line filled. If the body comes up empty, click paste: the report is on your clipboard. Send by **Tuesday 12pm**.
 3. New agents, or when designated by the Team Lead: send to the Leasing Team Lead for review before the owner.
 4. Listing updates are already in Buildium if you used **Update Listing** in the tool. If you skipped it or the tool is down, update Buildium by hand: [Updating Active Listings](https://sagareus.getoutline.com/doc/updating-active-listings-aytdYiWQoa).
 
@@ -76,7 +82,9 @@ In the order the tool builds it:
 * **Site Visit** — the latest checklist comment and the shareable inspection PDF link.
 * **Next Update** — next Tuesday's date.
 
-Turnover reports carry: site visit notes, Tickets Created, inspection PDF, next update. Pre-Move-In reports carry: scheduled move-in date, site visit notes, Move-In Readiness, inspection PDF, next update.
+Turnover reports carry: site visit notes, Tickets Created, inspection PDF, next update.
+
+Pre-Move-In reports carry: scheduled move-in date, site visit notes, Move-In Readiness, inspection PDF, next update.
 
 ## Reference
 
