@@ -14,6 +14,14 @@
 //
 // Secrets: ASANA_PAT (required), SITE_VISIT_KEY (shared team key the widget sends).
 // Per the Weekly Site Visit SOP (Outline doc yjZFdeB9EC).
+//
+// Asana leasing hierarchy (Brittany, 2026-07-22) — do not misread this:
+//   Leasing | <address>                <- the MASTER parent task
+//     LU | <address> (or PreLease/TP)  <- subtask, multi-homed into Leasing | LU
+//     Turn Over | <address>            <- subtask, multi-homed into Leasing | Turn Over
+//   Turn Over is a SIBLING of LU under the Leasing parent, never a child of LU.
+//   Site Visit + Activity Report anchor to the LU/PreLease sibling; the
+//   Inspections tool anchors to the Turn Over sibling.
 
 import { Hono } from "hono";
 
