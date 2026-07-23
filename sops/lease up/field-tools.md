@@ -47,6 +47,7 @@ The Team Hub at **https://www.sagareus.com/field** hosts the three leasing field
 * **07-23** — "Hold Up!" overlay while posting.
 * **07-23** — Lease Details bullets are single-spaced in the draft and report. New card below the rent comps: View Listing in Buildium (opens the unit profile) and a photo review — the Buildium photos load automatically, click through and grade them Meets Photo Standard or Does Not Meet Standard. A pass prints in the report as "Photos meet our listing standard"; a fail prints "We'll coordinate photos post turn over & cleaning."
 * **07-23** — Polish Comment on Agent Comments (write 12+ words first, AI tidies it — same as the Activity Report). The text report now opens with an owner intro: analysis complete, review and reply, we proceed in one week if we don't hear back. The intro is editable in the page editor.
+* **07-23** — The polish button now shows "Keep typing... N more words" until you hit the 12-word minimum (both here and on the Activity Report). Post to Buildium completes the "Prepare | BD Listing" subtask; Copy & Post to Asana completes "Email | Owner - Market Rent & PreListing" — both stamped with today as the due date so the done-day is visible. Posting also writes Starting Price, Minimum Price, and the new 🤖 Estimated Market Rent field on the LU task, so we can compare our estimate to the actual lease later.
 
 ## Change Log — Inspections (in the workshop, /wt only)
 
