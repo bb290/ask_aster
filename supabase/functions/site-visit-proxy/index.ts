@@ -1105,7 +1105,9 @@ app.post("*", async (c) => {
       if (!items.length || (source === "manual" ? !address : !taskGid)) return j(headers, 400, { error: "missing_fields" });
 
       const todayStr = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10); // Seattle-ish
-      const dueOn = new Date(Date.now() - 7 * 3600 * 1000 + 86400000).toISOString().slice(0, 10);
+      const dueOn = todayStr; // FAILED punch lists are due TODAY (Brittany, 2026-07-22)
+      const TOC_FIELD = "1208575208052359"; // Turn Over Completion (date)
+      const TOV_FIELD = "1214522291188762"; // 💁‍♀️ Turn Over Verified (date)
 
       const punch: string[] = [];
       for (const it of items) {
@@ -1118,9 +1120,11 @@ app.post("*", async (c) => {
       const verdict = items.some((it) => it.answer === "no" || it.answer === "task") ? "FAILED" : "PASSED";
 
       let assignee: { gid: string; name: string } | null = null;
+      let tocValue = "";
       if (source !== "manual") try {
-        const to = await asana("GET", `/tasks/${taskGid}?opt_fields=assignee.name`);
+        const to = await asana("GET", `/tasks/${taskGid}?opt_fields=assignee.name,completed,custom_fields.gid,custom_fields.display_value`);
         if (to?.assignee) assignee = { gid: to.assignee.gid, name: to.assignee.name };
+        tocValue = String((to?.custom_fields ?? []).find((f: { gid: string; display_value?: string | null }) => f.gid === TOC_FIELD)?.display_value ?? "");
       } catch { /* non-fatal */ }
       if (!assignee && verdict === "FAILED") assignee = DEFAULT_MAINT;
 
@@ -1152,6 +1156,49 @@ app.post("*", async (c) => {
       lines.push(`RESULT: ${verdict}${punch.length ? ` -- ${punch.length} punch list item(s), due ${dueOn}` : ""}`);
       const story = await asana("POST", `/tasks/${inspection.gid}/stories`, { text: lines.join("\n") });
 
+      // Verdict choreography on the Turn Over task (Brittany, 2026-07-22):
+      // FAILED -> reopen the TU task, clear Turn Over Completion, reopen the
+      //   Confirm | Turn Over Complete subtask (no due date), @mention the
+      //   coordinator on the inspection.
+      // PASSED -> stamp Turn Over Verified today (+ Completion if blank), complete
+      //   the TU task and the Confirm subtask, @mention the coordinator with
+      //   thanks and heart the task (appreciation stickers aren't in the API).
+      if (source !== "manual") {
+        const findConfirm = async () => {
+          const subs = await asana("GET", `/tasks/${taskGid}/subtasks?limit=100&opt_fields=name`);
+          return (subs ?? []).find((sub: { name: string }) => /^confirm\s*\|?\s*turn\s*over\s*complete/i.test(sub.name)) ?? null;
+        };
+        if (verdict === "FAILED") {
+          try { await asana("PUT", `/tasks/${taskGid}`, { completed: false }); } catch { /* non-fatal */ }
+          try { await asana("PUT", `/tasks/${taskGid}`, { custom_fields: { [TOC_FIELD]: null } }); } catch { /* non-fatal */ }
+          try {
+            const conf = await findConfirm();
+            if (conf) await asana("PUT", `/tasks/${conf.gid}`, { completed: false, due_on: null });
+          } catch { /* non-fatal */ }
+          if (assignee) {
+            try {
+              await asana("POST", `/tasks/${inspection.gid}/stories`, { html_text: `<body><a data-asana-gid="${assignee.gid}"/> Turn over failed inspection. Punch list above is due today (${dueOn}).</body>` });
+            } catch { /* non-fatal */ }
+          }
+        } else {
+          try { await asana("PUT", `/tasks/${taskGid}`, { completed: true, liked: true }); } catch { /* non-fatal */ }
+          try {
+            const cf: Record<string, unknown> = { [TOV_FIELD]: { date: todayStr } }; // date fields need the object form
+            if (!tocValue) cf[TOC_FIELD] = { date: todayStr };
+            await asana("PUT", `/tasks/${taskGid}`, { custom_fields: cf });
+          } catch { /* non-fatal */ }
+          try {
+            const conf = await findConfirm();
+            if (conf) await asana("PUT", `/tasks/${conf.gid}`, { completed: true });
+          } catch { /* non-fatal */ }
+          if (assignee) {
+            try {
+              await asana("POST", `/tasks/${inspection.gid}/stories`, { html_text: `<body><a data-asana-gid="${assignee.gid}"/> Turn over verified 🙌 Unit is rent-ready. Great work.</body>` });
+            } catch { /* non-fatal */ }
+          }
+        }
+      }
+
       return j(headers, 200, {
         ok: true,
         verdict,
@@ -1159,7 +1206,7 @@ app.post("*", async (c) => {
         inspectionUrl: `https://app.asana.com/0/0/${inspection.gid}`,
         storyGid: story?.gid ?? null,
         punch,
-        assignee: assignee && verdict === "FAILED" ? assignee.name : null,
+        assignee: assignee ? assignee.name : null,
         dueOn,
       });
     }
