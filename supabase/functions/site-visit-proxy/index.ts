@@ -1062,6 +1062,15 @@ app.post("*", async (c) => {
       return j(headers, 200, { ok: true, unitId: uid, chars: desc.length });
     }
 
+    // ---------- toScope: turn scope text for the Inspections tool (Special Note for now) ----------
+    if (action === "toScope") {
+      const taskGid = String(body.taskGid ?? "").trim();
+      if (!taskGid) return j(headers, 400, { error: "missing_task" });
+      const t = await asana("GET", `/tasks/${taskGid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+      const sn = (t?.custom_fields ?? []).find((f: { name: string }) => /special note/i.test(f.name));
+      return j(headers, 200, { scope: String(sn?.display_value ?? "").slice(0, 4000) });
+    }
+
     // ---------- toList: Turn Over tasks, open or closed within the past 30 days ----------
     if (action === "toList") {
       if (toCache && Date.now() - toCache.at < 2 * 60 * 1000) return j(headers, 200, { tasks: toCache.tasks });
@@ -1101,6 +1110,10 @@ app.post("*", async (c) => {
       const source = body.source === "manual" ? "manual" : "to";
       const taskGid = source === "manual" ? "" : String(body.taskGid ?? "");
       const generalNote = String(body.generalNote ?? "").trim();
+      const turnScope = String(body.turnScope ?? "").trim().slice(0, 4000);
+      const cleaningIn = (body.cleaning && typeof body.cleaning === "object") ? body.cleaning as Record<string, unknown> : {};
+      const cleanGrade = String(cleaningIn.grade ?? "").trim().slice(0, 80);
+      const cleanNote = String(cleaningIn.note ?? "").trim().slice(0, 1000);
       const items = Array.isArray(body.items) ? body.items as Array<Record<string, unknown>> : [];
       if (!items.length || (source === "manual" ? !address : !taskGid)) return j(headers, 400, { error: "missing_fields" });
 
@@ -1151,7 +1164,13 @@ app.post("*", async (c) => {
         (bySection[sec] = bySection[sec] || []).push(`${mark} ${it.item}${extra ? ` -- ${extra}` : ""}${it.ticket ? " [punch list]" : ""}`);
       }
       const lines: string[] = [`TURN OVER COMPLETE INSPECTION -- ${todayStr} -- ${address}`, ""];
+      if (turnScope) { lines.push("TURN SCOPE"); lines.push(turnScope); lines.push(""); }
       for (const sec of Object.keys(bySection)) { lines.push(sec); lines.push(...bySection[sec]); lines.push(""); }
+      if (cleanGrade) {
+        lines.push("CLEANING (graded for the report; does not affect the verdict)");
+        lines.push(cleanGrade + (cleanNote ? ` -- ${cleanNote}` : ""));
+        lines.push("");
+      }
       if (generalNote) { lines.push("Notes:"); lines.push(generalNote); lines.push(""); }
       lines.push(`RESULT: ${verdict}${punch.length ? ` -- ${punch.length} punch list item(s), due ${dueOn}` : ""}`);
       const story = await asana("POST", `/tasks/${inspection.gid}/stories`, { text: lines.join("\n") });
@@ -1199,6 +1218,38 @@ app.post("*", async (c) => {
         }
       }
 
+      // Cleaning result -> "Schedule | Move Out Cleaning" subtask on the TU task.
+      // Cleaning is scheduled by the Leasing Team, so on PASSED the subtask is
+      // assigned to the LU task's assignee, due today. On FAILED: comment only
+      // (the inspection repeats). Never affects the verdict.
+      let cleaningPosted = false;
+      let cleaningAssignee: string | null = null;
+      if (cleanGrade && source !== "manual") {
+        try {
+          const subs = await asana("GET", `/tasks/${taskGid}/subtasks?limit=100&opt_fields=name`);
+          const cleanTask = (subs ?? []).find((sub: { name: string }) => /schedule\s*\|?\s*(move[\s-]*out\s*)?cleaning/i.test(sub.name));
+          if (cleanTask) {
+            await postStory(cleanTask.gid, [
+              `Cleanliness grade: ${cleanGrade}${cleanNote ? ` -- ${cleanNote}` : ""}`,
+              `From the Turn Over Complete Inspection on ${todayStr} (${verdict}): https://app.asana.com/0/0/${inspection.gid}`,
+            ].join("\n"));
+            cleaningPosted = true;
+            if (verdict === "PASSED") {
+              try {
+                const lu = matchUnit(await allVacancies(true), address).hit;
+                if (lu) {
+                  const luTask = await asana("GET", `/tasks/${lu.gid}?opt_fields=assignee.name`);
+                  if (luTask?.assignee) {
+                    await asana("PUT", `/tasks/${cleanTask.gid}`, { assignee: luTask.assignee.gid, due_on: todayStr });
+                    cleaningAssignee = luTask.assignee.name;
+                  }
+                }
+              } catch { /* comment already posted; assignment is best-effort */ }
+            }
+          }
+        } catch { /* non-fatal */ }
+      }
+
       return j(headers, 200, {
         ok: true,
         verdict,
@@ -1208,6 +1259,8 @@ app.post("*", async (c) => {
         punch,
         assignee: assignee ? assignee.name : null,
         dueOn,
+        cleaningPosted,
+        cleaningAssignee,
       });
     }
 
