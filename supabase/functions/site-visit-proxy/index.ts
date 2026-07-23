@@ -1070,17 +1070,18 @@ app.post("*", async (c) => {
       return j(headers, 200, { ok: true, unitId: uid, chars: desc.length });
     }
 
-    // ---------- toScope: turn scope text for the Inspections tool ----------
+    // ---------- toScope: turn scope for the Inspections tool ----------
     // Prefers the "Approved Scope" custom field (Brittany is creating it); until it
-    // exists, Special Note is the stand-in. No code change needed at switchover.
+    // exists, the Turn Over task's DESCRIPTION is the scope. The widget renders the
+    // lines as checkboxes; all checked = section passed.
     if (action === "toScope") {
       const taskGid = String(body.taskGid ?? "").trim();
       if (!taskGid) return j(headers, 400, { error: "missing_task" });
-      const t = await asana("GET", `/tasks/${taskGid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+      const t = await asana("GET", `/tasks/${taskGid}?opt_fields=notes,custom_fields.name,custom_fields.display_value`);
       const fields = (t?.custom_fields ?? []) as Array<{ name: string; display_value?: string | null }>;
       const approved = fields.find((f) => /approved\s*scope/i.test(f.name));
-      const pick = (approved?.display_value ? approved : fields.find((f) => /special note/i.test(f.name)));
-      return j(headers, 200, { scope: String(pick?.display_value ?? "").slice(0, 4000) });
+      const scope = String(approved?.display_value || t?.notes || "").slice(0, 4000);
+      return j(headers, 200, { scope });
     }
 
     // ---------- toList: Turn Over tasks, open or closed within the past 30 days ----------
