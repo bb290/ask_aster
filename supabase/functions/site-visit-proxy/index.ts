@@ -1087,26 +1087,33 @@ app.post("*", async (c) => {
     if (action === "toList") {
       if (toCache && Date.now() - toCache.at < 2 * 60 * 1000) return j(headers, 200, { tasks: toCache.tasks });
       const since = new Date(Date.now() - 30 * 86400000).toISOString();
-      const open: Array<{ gid: string; address: string }> = [];
-      const closedRecent: Array<{ gid: string; address: string }> = [];
+      type ToCand = { gid: string; address: string; completed: boolean; created: string };
+      const cands: ToCand[] = [];
       let off = "";
       for (let page = 0; page < 12; page++) {
         const res = await fetch(
-          `${ASANA}/projects/${TURNOVER_PROJECT}/tasks?completed_since=${encodeURIComponent(since)}&limit=100&opt_fields=name,completed${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
+          `${ASANA}/projects/${TURNOVER_PROJECT}/tasks?completed_since=${encodeURIComponent(since)}&limit=100&opt_fields=name,completed,created_at${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
           { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
         const json = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(`asana turnover page ${page} -> ${res.status}`);
-        for (const t of (json.data ?? []) as Array<{ gid: string; name: string; completed?: boolean }>) {
+        for (const t of (json.data ?? []) as Array<{ gid: string; name: string; completed?: boolean; created_at?: string }>) {
           if (!/^turn\s*over\s*\|/i.test(t.name)) continue;
           const address = addressFromTaskName(t.name);
           if (!address || address.includes("<")) continue;
-          (t.completed ? closedRecent : open).push({ gid: t.gid, address });
+          cands.push({ gid: t.gid, address, completed: Boolean(t.completed), created: String(t.created_at ?? "") });
         }
         off = json.next_page?.offset ?? "";
         if (!off) break;
       }
-      const openAddrs = new Set(open.map((v) => normAddr(v.address)));
-      const tasks = open.concat(closedRecent.filter((v) => !openAddrs.has(normAddr(v.address))))
+      // One entry per address: open beats closed, newest beats oldest (a re-turn
+      // within 30 days would otherwise show duplicate buttons in the picker).
+      const best = new Map<string, ToCand>();
+      for (const c of cands) {
+        const k = normAddr(c.address);
+        const cur = best.get(k);
+        if (!cur || (cur.completed && !c.completed) || (cur.completed === c.completed && c.created > cur.created)) best.set(k, c);
+      }
+      const tasks = Array.from(best.values()).map((c) => ({ gid: c.gid, address: c.address }))
         .sort((a, b) => a.address.localeCompare(b.address));
       toCache = { at: Date.now(), tasks };
       return j(headers, 200, { tasks });
