@@ -713,6 +713,19 @@ app.post("*", async (c) => {
         });
       }
       const story = await postStory(pre.gid, text.slice(0, 60000));
+      const todayStr = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+      // Report posted = email moment: close the subtask and stamp the day it happened.
+      try { await asana("PUT", `/tasks/${pre.gid}`, { completed: true, due_on: todayStr }); } catch { /* fail-soft */ }
+      // Price fields on the LU task: Starting/Minimum from the strategy card, plus the
+      // 🤖 Estimated Market Rent snapshot so estimates can be compared to reality later.
+      const numOrNull = (v: unknown) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Math.round(Number(v)) : null);
+      const priceFields: Record<string, number> = {};
+      const sp = numOrNull(body.startingPrice); if (sp != null) priceFields["1213858008483682"] = sp;
+      const mp = numOrNull(body.minPrice); if (mp != null) priceFields["1213858008483684"] = mp;
+      const em = numOrNull(body.estimate); if (em != null) priceFields["1216841038052857"] = em;
+      if (Object.keys(priceFields).length) {
+        try { await asana("PUT", `/tasks/${hit.gid}`, { custom_fields: priceFields }); } catch { /* fail-soft */ }
+      }
       return j(headers, 200, {
         ok: true,
         preGid: pre.gid,
@@ -1152,7 +1165,25 @@ app.post("*", async (c) => {
       });
       if (r1.status === 403) return j(headers, 502, { error: "buildium_no_scope", message: "Buildium hasn't granted edit access yet. Copy the listing and paste it manually for now." });
       if (!r1.ok) return j(headers, 502, { error: "buildium_failed", message: "Buildium rejected the update. Copy the listing and paste it manually." });
-      return j(headers, 200, { ok: true, unitId: uid, chars: desc.length });
+      // Listing prep is done in Buildium: close "Prepare | BD Listing" on the LU task
+      // and stamp the day via due_on. Fail-soft; the Buildium write already succeeded.
+      let prepGid: string | null = null;
+      try {
+        const address = String(body.address ?? "").trim();
+        if (address) {
+          const m2 = matchUnit(await allVacancies(true), address);
+          if (m2.hit) {
+            const subs = await asana("GET", `/tasks/${m2.hit.gid}/subtasks?limit=100&opt_fields=name,completed`);
+            const prep = (subs ?? []).find((t: { name: string }) => /prep(?:are)?\s*\|?\s*bd\s*listing/i.test(t.name));
+            if (prep) {
+              const today2 = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+              await asana("PUT", `/tasks/${prep.gid}`, { completed: true, due_on: today2 });
+              prepGid = prep.gid;
+            }
+          }
+        }
+      } catch { /* fail-soft */ }
+      return j(headers, 200, { ok: true, unitId: uid, chars: desc.length, prepCompleted: !!prepGid });
     }
 
     // ---------- toScope: turn scope for the Inspections tool ----------
