@@ -1076,7 +1076,12 @@ app.post("*", async (c) => {
       if ((draft.match(/\S+/g) ?? []).length < 12) {
         return j(headers, 400, { error: "draft_too_short", message: "Write at least 12 words of your own comment first, then polish." });
       }
-      const facts = [
+      const isPre = String(body.context ?? "") === "prelisting";
+      const facts = isPre ? [
+        `Property: ${String(body.address ?? "").slice(0, 120)}`,
+        body.marketRent != null ? `Estimated market rent from comps: $${n(body.marketRent)}/mo.` : "",
+        body.marketPosition ? `Market position: ${String(body.marketPosition).slice(0, 240)}` : "",
+      ].filter(Boolean).join("\n") : [
         `Property: ${String(body.address ?? "").slice(0, 120)}`,
         `This week: ${n(body.inquiries)} inquiries, ${n(body.showings)} showings, ${n(body.applications)} applications.`,
         body.daysOnMarket != null ? `Days on market: ${n(body.daysOnMarket)}.` : "",
@@ -1087,9 +1092,13 @@ app.post("*", async (c) => {
         arr(body.recommendations).length ? `Recommendations going to the owner: ${arr(body.recommendations).join("; ")}` : "",
       ].filter(Boolean).join("\n");
       const SYSTEM = [
-        "You polish the AGENT COMMENTS a Sagareus leasing agent wrote for the weekly activity report that goes to a property owner.",
+        isPre
+          ? "You polish the AGENT COMMENTS a Sagareus leasing agent wrote for a PreListing report that goes to a property owner before their unit is listed."
+          : "You polish the AGENT COMMENTS a Sagareus leasing agent wrote for the weekly activity report that goes to a property owner.",
         "The agent's draft is the source of truth: keep every fact, observation, and intention they wrote, and keep their first-person voice. Fix grammar, spelling, and clarity; tighten rambling; make the tone professional, direct, steady.",
-        "Do not add information the agent did not write. The week's numbers, feedback, and updates already appear in the report above the comments (given to you as context) — never pad the comment by reciting them. Only pull a specific from context when the agent's draft clearly alludes to it and needs it to make sense.",
+        isPre
+          ? "Do not add information the agent did not write. The rent estimate, comps, and strategy already appear in the report above the comments (given to you as context) — never pad the comment by reciting them. Only pull a specific from context when the agent's draft clearly alludes to it and needs it to make sense."
+          : "Do not add information the agent did not write. The week's numbers, feedback, and updates already appear in the report above the comments (given to you as context) — never pad the comment by reciting them. Only pull a specific from context when the agent's draft clearly alludes to it and needs it to make sense.",
         "Length: roughly the agent's length, 2 to 5 sentences, 90 words max. Plain text only: no markdown, no bullets, no emojis, never an em dash.",
         "If the draft clearly implies a next step, sharpen the final sentence into it; otherwise keep the agent's ending.",
         "OUTPUT: the polished comment only. No heading, no preamble, nothing after.",
