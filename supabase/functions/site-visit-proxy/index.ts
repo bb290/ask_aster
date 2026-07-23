@@ -26,6 +26,7 @@ const LEASING_LU_PROJECT = "1213171756304238";
 const UNIT_SETTINGS_PROJECT = "1213032009308835";
 const PROPERTY_SETTINGS_PROJECT = "1211134623744906";
 const MAINTENANCE_PROJECT = "1210320631715650"; // Maintenance 2.0
+const TURNOVER_PROJECT = "1213171760535170"; // Leasing | Turn Over
 // Lead maintenance coordinator; default assignee for occupied-unit and manual-address
 // tickets until per-property routing exists (Brittany, 2026-07-17).
 const DEFAULT_MAINT = { gid: "1201894870325840", name: "Joylyn De Castro" };
@@ -280,6 +281,7 @@ async function matchSettings(address: string): Promise<{ hit?: { gid: string; ad
 // (Brittany, 2026-07-22; replaced the short-lived Client Relations anchoring
 // the same day). Maintenance coordinators work out of this project, and the
 // address in the task and ticket names tells them which property it belongs to.
+let toCache: { at: number; tasks: Array<{ gid: string; address: string }> } | null = null;
 let maintVisitCache: { at: number; recs: Array<{ gid: string; address: string }> } | null = null;
 async function maintVisitTasks(): Promise<Array<{ gid: string; address: string }>> {
   if (maintVisitCache && Date.now() - maintVisitCache.at < 5 * 60 * 1000) return maintVisitCache.recs;
@@ -1058,6 +1060,108 @@ app.post("*", async (c) => {
       if (r1.status === 403) return j(headers, 502, { error: "buildium_no_scope", message: "Buildium hasn't granted edit access yet. Copy the listing and paste it manually for now." });
       if (!r1.ok) return j(headers, 502, { error: "buildium_failed", message: "Buildium rejected the update. Copy the listing and paste it manually." });
       return j(headers, 200, { ok: true, unitId: uid, chars: desc.length });
+    }
+
+    // ---------- toList: Turn Over tasks, open or closed within the past 30 days ----------
+    if (action === "toList") {
+      if (toCache && Date.now() - toCache.at < 2 * 60 * 1000) return j(headers, 200, { tasks: toCache.tasks });
+      const since = new Date(Date.now() - 30 * 86400000).toISOString();
+      const open: Array<{ gid: string; address: string }> = [];
+      const closedRecent: Array<{ gid: string; address: string }> = [];
+      let off = "";
+      for (let page = 0; page < 12; page++) {
+        const res = await fetch(
+          `${ASANA}/projects/${TURNOVER_PROJECT}/tasks?completed_since=${encodeURIComponent(since)}&limit=100&opt_fields=name,completed${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
+          { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+        const json = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(`asana turnover page ${page} -> ${res.status}`);
+        for (const t of (json.data ?? []) as Array<{ gid: string; name: string; completed?: boolean }>) {
+          if (!/^turn\s*over\s*\|/i.test(t.name)) continue;
+          const address = addressFromTaskName(t.name);
+          if (!address || address.includes("<")) continue;
+          (t.completed ? closedRecent : open).push({ gid: t.gid, address });
+        }
+        off = json.next_page?.offset ?? "";
+        if (!off) break;
+      }
+      const openAddrs = new Set(open.map((v) => normAddr(v.address)));
+      const tasks = open.concat(closedRecent.filter((v) => !openAddrs.has(normAddr(v.address))))
+        .sort((a, b) => a.address.localeCompare(b.address));
+      toCache = { at: Date.now(), tasks };
+      return j(headers, 200, { tasks });
+    }
+
+    // ---------- toSubmit: Turn Over Complete inspection ----------
+    // One subtask per inspection on the Turn Over task, named with the verdict:
+    // "PASSED \u{1F64C} || Turn Over Complete Inspection - <date> / <address>". FAILED
+    // inspections carry the punch list in the description, assigned to the Turn Over
+    // task's assignee, due the next day. PASSED ones post as a completed record.
+    if (action === "toSubmit") {
+      const address = String(body.address ?? "").trim();
+      const source = body.source === "manual" ? "manual" : "to";
+      const taskGid = source === "manual" ? "" : String(body.taskGid ?? "");
+      const generalNote = String(body.generalNote ?? "").trim();
+      const items = Array.isArray(body.items) ? body.items as Array<Record<string, unknown>> : [];
+      if (!items.length || (source === "manual" ? !address : !taskGid)) return j(headers, 400, { error: "missing_fields" });
+
+      const todayStr = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10); // Seattle-ish
+      const dueOn = new Date(Date.now() - 7 * 3600 * 1000 + 86400000).toISOString().slice(0, 10);
+
+      const punch: string[] = [];
+      for (const it of items) {
+        if (!it.ticket) continue;
+        const issues = Array.isArray(it.issues) ? it.issues.map((x: unknown) => String(x).trim()).filter(Boolean) : [];
+        const note = String(it.note ?? "").trim();
+        const extra = [issues.join(", "), note].filter(Boolean).join(" | ");
+        punch.push(`${String(it.item ?? "Issue")}${extra ? ` -- ${extra}` : ""}`);
+      }
+      const verdict = items.some((it) => it.answer === "no" || it.answer === "task") ? "FAILED" : "PASSED";
+
+      let assignee: { gid: string; name: string } | null = null;
+      if (source !== "manual") try {
+        const to = await asana("GET", `/tasks/${taskGid}?opt_fields=assignee.name`);
+        if (to?.assignee) assignee = { gid: to.assignee.gid, name: to.assignee.name };
+      } catch { /* non-fatal */ }
+      if (!assignee && verdict === "FAILED") assignee = DEFAULT_MAINT;
+
+      const name = `${verdict === "PASSED" ? "PASSED \u{1F64C}" : "FAILED \u{1F629}"} || Turn Over Complete Inspection - ${todayStr} / ${address}`.slice(0, 250);
+      const notesLines = punch.length ? ["Punch list:", ...punch.map((pp) => `- ${pp}`)] : ["All items passed."];
+      notesLines.push("", "Created by the Turn Over Inspection tool. Full checklist, photos, and inspection PDF are in the comments.");
+      const payload: Record<string, unknown> = { name, notes: notesLines.join("\n") };
+      if (verdict === "FAILED") {
+        if (assignee) payload.assignee = assignee.gid;
+        payload.due_on = dueOn;
+      }
+      const inspection = source === "manual"
+        ? await asana("POST", "/tasks", { ...payload, projects: [TURNOVER_PROJECT] })
+        : await asana("POST", `/tasks/${taskGid}/subtasks`, payload);
+      if (verdict === "PASSED") { try { await asana("PUT", `/tasks/${inspection.gid}`, { completed: true }); } catch { /* record stays open */ } }
+
+      const bySection: Record<string, string[]> = {};
+      for (const it of items) {
+        const sec = String(it.section ?? "CHECKLIST");
+        const mark = it.answer === "yes" ? "(PASS)" : it.answer === "no" ? "(FAIL)" : it.answer === "task" ? "(TASK)" : "(na)";
+        const note = String(it.note ?? "").trim();
+        const issues = Array.isArray(it.issues) ? it.issues.map((x: unknown) => String(x).trim()).filter(Boolean) : [];
+        const extra = [issues.join(", "), note].filter(Boolean).join(" | ");
+        (bySection[sec] = bySection[sec] || []).push(`${mark} ${it.item}${extra ? ` -- ${extra}` : ""}${it.ticket ? " [punch list]" : ""}`);
+      }
+      const lines: string[] = [`TURN OVER COMPLETE INSPECTION -- ${todayStr} -- ${address}`, ""];
+      for (const sec of Object.keys(bySection)) { lines.push(sec); lines.push(...bySection[sec]); lines.push(""); }
+      if (generalNote) { lines.push("Notes:"); lines.push(generalNote); lines.push(""); }
+      lines.push(`RESULT: ${verdict}${punch.length ? ` -- ${punch.length} punch list item(s), due ${dueOn}` : ""}`);
+      const story = await asana("POST", `/tasks/${inspection.gid}/stories`, { text: lines.join("\n") });
+
+      return j(headers, 200, {
+        ok: true,
+        verdict,
+        inspectionGid: inspection.gid,
+        inspectionUrl: `https://app.asana.com/0/0/${inspection.gid}`,
+        storyGid: story?.gid ?? null,
+        punch,
+        assignee: assignee && verdict === "FAILED" ? assignee.name : null,
+        dueOn,
+      });
     }
 
     // TEMP: identity probe (remove after PAT swap verification)
