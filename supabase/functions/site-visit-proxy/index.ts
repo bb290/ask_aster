@@ -174,34 +174,48 @@ function addressFromSettingsName(name: string): string {
 // results by recent modification, so bot-driven bulk edits push the real LU/TP/PreLease
 // tasks out of the window and the picker mysteriously shrinks (seen 2026-07-18).
 //
-// includeLeased=true returns EVERY open leasing task, skipping the leased filter.
-// Site visits run until the task closes (lease signed but move-in pending still gets
-// weekly visits), and the move-in-subtask heuristic misses tasks with no MOVE-IN
-// subtask — which is how a visit for an open LU task fell through to the manual
-// path and landed in Property Settings (522 N 117th, seen 2026-07-22).
+// includeLeased=true is the SITE VISIT list: every open leasing task, PLUS tasks
+// closed within the past 30 days whose 🙌 Move in Date hasn't passed (no date =
+// keep for the 30-day window). Lease signed -> the LU/PreLease task closes, but
+// pre-move-in site visits keep reporting to its Weekly Site Visit / Inspection
+// subtask until the resident moves in (Brittany, 2026-07-22; 404 21st Ave #B
+// fell through to Client Relations because its PreLease task was completed).
+// When an open and a recently-closed task share an address, the open one wins.
 let luCache: { at: number; all: Array<{ gid: string; address: string }>; active: Array<{ gid: string; address: string }> } | null = null;
 
 async function allVacancies(includeLeased = false): Promise<Array<{ gid: string; address: string }>> {
   if (luCache && Date.now() - luCache.at < 2 * 60 * 1000) return includeLeased ? luCache.all : luCache.active;
+  const since = new Date(Date.now() - 30 * 86400000).toISOString();
+  const today = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10); // Seattle-ish
   const out: Array<{ gid: string; address: string }> = [];
+  const closedRecent: Array<{ gid: string; address: string }> = [];
   let offset = "";
   for (let page = 0; page < 10; page++) {
     const res = await fetch(
-      `${ASANA}/projects/${LEASING_LU_PROJECT}/tasks?completed_since=now&limit=100&opt_fields=name${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+      `${ASANA}/projects/${LEASING_LU_PROJECT}/tasks?completed_since=${encodeURIComponent(since)}&limit=100&opt_fields=name,completed,custom_fields.gid,custom_fields.display_value${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
       { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(`asana lu page ${page} -> ${res.status}`);
-    for (const t of (json.data ?? []) as Array<{ gid: string; name: string }>) {
-      if (/^(LU|TP|PreLease)\s*\|/i.test(t.name)) {
-        const address = addressFromTaskName(t.name);
-        if (address && !address.includes("<")) out.push({ gid: t.gid, address });
+    for (const t of (json.data ?? []) as Array<{ gid: string; name: string; completed?: boolean; custom_fields?: Array<{ gid: string; display_value?: string | null }> }>) {
+      if (!/^(LU|TP|PreLease)\s*\|/i.test(t.name)) continue;
+      const address = addressFromTaskName(t.name);
+      if (!address || address.includes("<")) continue;
+      if (!t.completed) { out.push({ gid: t.gid, address }); continue; }
+      // closed within 30 days (guaranteed by completed_since): keep until move-in passes
+      const mi = (t.custom_fields ?? []).find((f) => f.gid === "1213183520317831")?.display_value; // 🙌 Move in Date
+      if (mi) {
+        const d = new Date(mi);
+        if (!isNaN(d.getTime()) && d.toISOString().slice(0, 10) < today) continue; // moved in: drop
       }
+      closedRecent.push({ gid: t.gid, address });
     }
     offset = json.next_page?.offset ?? "";
     if (!offset) break;
   }
   out.sort((a, b) => a.address.localeCompare(b.address));
-  const all = out.slice();
+  const openAddrs = new Set(out.map((v) => normAddr(v.address)));
+  const all = out.concat(closedRecent.filter((v) => !openAddrs.has(normAddr(v.address))))
+    .sort((a, b) => a.address.localeCompare(b.address));
   // Weekly reports run move-out to move-in, so a signed lease alone is not enough
   // to drop a task: drop only on positive evidence move-in happened — 🙌 Move in
   // Date already past, and no MOVE-IN subtask still open. The old rule dropped any
