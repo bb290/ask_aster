@@ -45,7 +45,8 @@ The Team Hub at **https://www.sagareus.com/field** hosts the three leasing field
 * **07-21** — Draft Listing pipeline: AI draft, structured pricing strategy, Copy Listing and Post to Buildium.
 * **07-22** — Draft lines that differ from the current listing highlight yellow; lookup limit fixed.
 * **07-23** — "Hold Up!" overlay while posting.
-* **07-23** — Lease Details bullets are single-spaced in the draft and report. New card below the rent comps: View Listing in Buildium (opens the unit profile) and Review Photos — click through the Buildium photos and grade them (Meets Photo Standard / Recommend New Photos / Does Not Meet Standard); the grade prints in the report and PDF.
+* **07-23** — Lease Details bullets are single-spaced in the draft and report. New card below the rent comps: View Listing in Buildium (opens the unit profile) and a photo review — the Buildium photos load automatically, click through and grade them Meets Photo Standard or Does Not Meet Standard. A pass prints in the report as "Photos meet our listing standard"; a fail prints "We'll coordinate photos post turn over & cleaning."
+* **07-23** — Polish Comment on Agent Comments (write 12+ words first, AI tidies it — same as the Activity Report). The text report now opens with an owner intro: analysis complete, review and reply, we proceed in one week if we don't hear back. The intro is editable in the page editor.
 
 ## Change Log — Inspections (in the workshop, /wt only)
 
