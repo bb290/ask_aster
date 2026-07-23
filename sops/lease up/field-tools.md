@@ -44,3 +44,9 @@ The Team Hub at **https://www.sagareus.com/field** hosts the three leasing field
 * **07-21** — Draft Listing pipeline: AI Generate Draft Listing, selected policies and criteria flow into the draft, structured pricing strategy that cascades when you edit the market rent estimate, real previous-lease history, and Copy Listing / Post to Buildium buttons.
 * **07-22** — Draft diff highlights: any line that differs from the current Buildium description highlights yellow so you can see exactly what changed; highlights clear after posting.
 * **07-22** — Bug fix: "Daily lookup limit reached" (same fix as Activity Report).
+
+## Change Log — Turn Over Inspection (in the workshop, /wt only)
+
+Field tool #4, not yet on /field. Testing at https://www.sagareus.com/wt.
+
+* **07-22** — Built: Turn Over Complete mode live (Move Out and Occupied Inspection modes coming soon). Pick a Turn Over task (open or closed within 30 days), walk the 22-item rent-ready checklist, and SUBMIT posts one inspection subtask on the Turn Over task — "PASSED 🙌 / FAILED 😩 || Turn Over Complete Inspection - date / address" — with the full checklist, photos, and PDF. FAILED inspections carry the punch list, assigned to the Turn Over Coordinator, due the next day.
