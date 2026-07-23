@@ -24,9 +24,10 @@ The Team Hub at **https://www.sagareus.com/field** hosts the three leasing field
 * **07-17** — Launched: tap-through checklist on your phone replaces manual comment copy/paste; checklist, photos, and tickets post to Asana in one submit.
 * **07-19** — Checklist rebuilt into Essentials / Appliances + Systems / Move-In Ready with Pass/Fail, common-issue dropdowns, per-item photos, Add Task for open-ended work, and the shareable inspection PDF.
 * **07-22** — Bug fix: visits could file into Property Settings when the leasing task was hidden from the picker. Visits now always anchor to the leasing task when one exists.
-* **07-22** — Occupied-property and unlisted-address visits now file under the property's Client Relations task instead of the Settings projects.
+* **07-22** — Occupied-property and unlisted-address visits now file to a "Site Visits // address" task in the Maintenance 2.0 project (briefly Client Relations earlier the same day), with tickets nested under it so coordinators can tell the property from the name.
 * **07-22** — Picker covers pre-move-in: leasing tasks closed within the past 60 days stay searchable until the move-in date passes.
 * **07-22** — Tickets created by a visit are now due the next day (was 3 days out).
+* **07-22** — The checklist comment header now includes the property address (was only in the PDF, which does not always finish uploading).
 
 ## Change Log — Activity Report
 

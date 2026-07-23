@@ -25,7 +25,7 @@ const WORKSPACE = "706990140225747";
 const LEASING_LU_PROJECT = "1213171756304238";
 const UNIT_SETTINGS_PROJECT = "1213032009308835";
 const PROPERTY_SETTINGS_PROJECT = "1211134623744906";
-const CLIENT_RELATIONS_PROJECT = "1208917007356847";
+const MAINTENANCE_PROJECT = "1210320631715650"; // Maintenance 2.0
 // Lead maintenance coordinator; default assignee for occupied-unit and manual-address
 // tickets until per-property routing exists (Brittany, 2026-07-17).
 const DEFAULT_MAINT = { gid: "1201894870325840", name: "Joylyn De Castro" };
@@ -275,35 +275,33 @@ async function matchSettings(address: string): Promise<{ hit?: { gid: string; ad
   return m;
 }
 
-// Client Relations 2.0: one open task per property, named "<address> // <owner>"
-// or "(CLIENT) <address> / <owner>". Occupied-unit and manual site visits anchor
-// here (Brittany, 2026-07-22) — Settings projects are programmatic configuration
-// and visit subtasks there confuse agents.
-function addressFromCrName(name: string): string {
-  let s = name.replace(/^\s*\([^)]*\)\s*/, "").trim();
-  s = s.split("//")[0].split(" / ")[0].trim();
-  return /^\d/.test(s) ? s : "";
-}
-let crCache: { at: number; props: Array<{ gid: string; address: string }> } | null = null;
-async function allClientRelations(): Promise<Array<{ gid: string; address: string }>> {
-  if (crCache && Date.now() - crCache.at < 5 * 60 * 1000) return crCache.props;
-  const props: Array<{ gid: string; address: string }> = [];
+// Maintenance 2.0: occupied-property and unlisted-address visits anchor to a
+// standalone "Site Visits // <address>" task in the maintenance project
+// (Brittany, 2026-07-22; replaced the short-lived Client Relations anchoring
+// the same day). Maintenance coordinators work out of this project, and the
+// address in the task and ticket names tells them which property it belongs to.
+let maintVisitCache: { at: number; recs: Array<{ gid: string; address: string }> } | null = null;
+async function maintVisitTasks(): Promise<Array<{ gid: string; address: string }>> {
+  if (maintVisitCache && Date.now() - maintVisitCache.at < 5 * 60 * 1000) return maintVisitCache.recs;
+  const recs: Array<{ gid: string; address: string }> = [];
   let offset = "";
   for (let page = 0; page < 12; page++) {
     const res = await fetch(
-      `${ASANA}/projects/${CLIENT_RELATIONS_PROJECT}/tasks?completed_since=now&limit=100&opt_fields=name${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+      `${ASANA}/projects/${MAINTENANCE_PROJECT}/tasks?completed_since=now&limit=100&opt_fields=name${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
       { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
     const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(`asana client-relations page ${page} -> ${res.status}`);
+    if (!res.ok) throw new Error(`asana maintenance page ${page} -> ${res.status}`);
     for (const t of (json.data ?? []) as Array<{ gid: string; name: string }>) {
-      const address = addressFromCrName(t.name);
-      if (address) props.push({ gid: t.gid, address });
+      if (/^site\s*visits?\s*\/\//i.test(t.name)) {
+        const address = t.name.split("//").slice(1).join("//").trim();
+        if (address) recs.push({ gid: t.gid, address });
+      }
     }
     offset = json.next_page?.offset ?? "";
     if (!offset) break;
   }
-  crCache = { at: Date.now(), props };
-  return props;
+  maintVisitCache = { at: Date.now(), recs };
+  return recs;
 }
 
 app.options("*", (c) => new Response(null, { status: 204, headers: corsHeaders(c.req.header("origin")) }));
@@ -361,12 +359,11 @@ app.post("*", async (c) => {
         } catch { /* non-fatal: fall through to the picked/manual anchor */ }
       }
 
-      // 1) the anchor task and site-visit subtask.
+      // 1) the anchor task and site-visit record.
       //    lu: "Weekly Site Visit / Inspection" subtask per SOP on the Leasing task.
-      //    unit/manual (occupied, no open leasing task): "Site Visits // <address>"
-      //    subtask on the property's Client Relations task. Last resorts: manual with
-      //    no Client Relations match creates a standalone "Site Visit // <address>"
-      //    task in Client Relations; unit with no match keeps the Settings subtask.
+      //    unit/manual (occupied, or address with no open leasing task): a standalone
+      //    "Site Visits // <address>" task in Maintenance 2.0 — reused visit to visit —
+      //    and tickets nest under it so coordinators can tell the property from the name.
       let anchorGid = taskGid;
       let inspection;
       if (source === "lu") {
@@ -380,40 +377,19 @@ app.post("*", async (c) => {
           });
         }
       } else {
-        let cr: { gid: string; address: string } | null = null;
-        try { cr = matchUnit(await allClientRelations(), address).hit ?? null; } catch { /* non-fatal */ }
-        if (cr) {
-          anchorGid = cr.gid;
-          const want = normAddr(address);
-          const subtasks = await asana("GET", `/tasks/${cr.gid}/subtasks?limit=100&opt_fields=name`);
-          const visits = (subtasks ?? []).filter((s: { name: string }) => /^site\s*visits?/i.test(s.name));
-          inspection = visits.find((s: { name: string }) =>
-            s.name.includes("//") && normAddr(s.name.split("//").slice(1).join("//")) === want) ??
-            visits.find((s: { name: string }) => !s.name.includes("//"));
-          if (!inspection) {
-            inspection = await asana("POST", `/tasks/${cr.gid}/subtasks`, {
-              name: `Site Visits // ${address}`.slice(0, 250),
-              notes: "Site visit documentation for this unit lives here. Every visit: one comment with the marked-up checklist and photos. SOP: https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC",
-            });
-          }
-        } else if (source === "manual") {
-          inspection = await asana("POST", "/tasks", {
-            name: `Site Visit // ${address}`.slice(0, 250),
-            projects: [CLIENT_RELATIONS_PROJECT],
-            notes: "Created from the site visit tool. This address has no open Leasing task and no Client Relations property task (new onboarding, or not under management). If the property gets a Client Relations task, fold this into it.",
+        const want = normAddr(address);
+        let rec: { gid: string } | null = null;
+        try { rec = (await maintVisitTasks()).find((t) => normAddr(t.address) === want) ?? null; } catch { /* non-fatal */ }
+        if (!rec) {
+          rec = await asana("POST", "/tasks", {
+            name: `Site Visits // ${address}`.slice(0, 250),
+            projects: [MAINTENANCE_PROJECT],
+            notes: "Site visit documentation for this property lives here (no open leasing task at the time of the visit). Every visit: one comment with the marked-up checklist and photos; issue tickets nest as subtasks. SOP: https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC",
           });
-          anchorGid = inspection.gid;
-        } else {
-          const subtasks = await asana("GET", `/tasks/${taskGid}/subtasks?limit=100&opt_fields=name`);
-          inspection = (subtasks ?? []).find((s: { name: string }) => /site\s*visit/i.test(s.name)) ??
-                       (subtasks ?? []).find((s: { name: string }) => /inspect/i.test(s.name));
-          if (!inspection) {
-            inspection = await asana("POST", `/tasks/${taskGid}/subtasks`, {
-              name: "Site Visits",
-              notes: "Site visit documentation lives here. Every visit: one comment with the marked-up checklist and photos. SOP: https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC",
-            });
-          }
+          maintVisitCache = null; // next lookup sees the new record
         }
+        inspection = rec!;
+        anchorGid = rec!.gid;
       }
 
       // 2) Preferred Showing Slot 1 (drives the next visit's due date)
@@ -437,7 +413,7 @@ app.post("*", async (c) => {
 
       // 4) due date: every ticket is due the NEXT DAY (Brittany, 2026-07-22).
       //    Always inside the 72-hour Accountability Rule, however close move-in is.
-      const today = new Date();
+      const todayStr = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10); // Seattle-ish today
       const dueOn = new Date(Date.now() - 7 * 3600 * 1000 + 86400000).toISOString().slice(0, 10); // Seattle-ish tomorrow
 
       // 5) create a maintenance subtask per flagged item, on the anchor task.
@@ -451,7 +427,7 @@ app.post("*", async (c) => {
         const note = String(it.note ?? "").trim();
         const issues = Array.isArray(it.issues) ? it.issues.map((x: unknown) => String(x).trim()).filter(Boolean) : [];
         const name = `${label} | ${address}`.slice(0, 250);
-        const bodyLines = [`Found on site visit (${today.toISOString().slice(0, 10)}).`];
+        const bodyLines = [`Found on site visit (${todayStr}).`];
         if (issues.length) bodyLines.push("", "Issues:", ...issues.map((x) => `- ${x}`));
         if (note) bodyLines.push("", `Agent comment: ${note}`);
         bodyLines.push("", "Photos for this item are attached here; the full set lives on the site visit subtask.");
@@ -479,7 +455,9 @@ app.post("*", async (c) => {
         (bySection[sec] = bySection[sec] || []).push(
           `${mark} ${it.item}${extra ? ` -- ${extra}` : ""}${it.ticket ? " [ticket created]" : ""}`);
       }
-      const lines: string[] = [`SITE VISIT -- ${today.toISOString().slice(0, 10)}`, ""];
+      // Address in the header: the comment must identify the property on its own —
+      // the PDF carries it too, but PDF uploads don't always finish (Brittany, 2026-07-22).
+      const lines: string[] = [`SITE VISIT -- ${todayStr} -- ${address}`, ""];
       for (const sec of Object.keys(bySection)) { lines.push(sec); lines.push(...bySection[sec]); lines.push(""); }
       if (generalNote) { lines.push("Notes:"); lines.push(generalNote); lines.push(""); }
       lines.push(`RESULT: ${created.length ? `${created.length} issue ticket(s) created` : "All good, no issues found"}`);
