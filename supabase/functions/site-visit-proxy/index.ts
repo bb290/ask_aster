@@ -805,7 +805,48 @@ app.post("*", async (c) => {
         leaseHistory,
         marketRent: typeof u.MarketRent === "number" && u.MarketRent > 0 ? u.MarketRent : null,
         description: String(u.Description ?? ""),
+        propertyId: u.PropertyId ?? null,
       });
+    }
+
+    // ---------- unitPhotos: Buildium unit/property images for the PreListing photo review ----------
+    if (action === "unitPhotos") {
+      if (!BUILDIUM_ID || !BUILDIUM_SECRET) return j(headers, 500, { error: "buildium_not_configured" });
+      const uid = String(body.unitId ?? "").trim();
+      if (!/^\d+$/.test(uid)) return j(headers, 400, { error: "bad_unit_id" });
+      const BH = { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET, "Content-Type": "application/json" };
+      const grab = async (base: string) => {
+        const lr = await fetch(`${base}?limit=50`, { headers: BH });
+        if (!lr.ok) return [];
+        const list = await lr.json().catch(() => []);
+        if (!Array.isArray(list) || !list.length) return [];
+        const photos: { id: number; name: string; url: string }[] = [];
+        for (const img of list.slice(0, 20)) {
+          // Buildium image download endpoints vary between singular/plural; try both.
+          let dr = await fetch(`${base}/${img.Id}/downloadrequest`, { method: "POST", headers: BH, body: "{}" });
+          if (dr.status === 404 || dr.status === 405) {
+            dr = await fetch(`${base}/${img.Id}/downloadrequests`, { method: "POST", headers: BH, body: "{}" });
+          }
+          if (!dr.ok) continue;
+          const d = await dr.json().catch(() => ({}));
+          const url = String(d.DownloadUrl ?? d.Url ?? d.ResultUrl ?? "");
+          if (url) photos.push({ id: img.Id, name: String(img.Description ?? ""), url });
+        }
+        return photos;
+      };
+      let photos = await grab(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}/images`);
+      let source = "unit";
+      if (!photos.length) {
+        const ru = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}`, { headers: BH });
+        if (ru.ok) {
+          const u = await ru.json().catch(() => ({}));
+          if (u.PropertyId) {
+            photos = await grab(`https://api.buildium.com/v1/rentals/${encodeURIComponent(String(u.PropertyId))}/images`);
+            source = "property";
+          }
+        }
+      }
+      return j(headers, 200, { ok: true, photos, source, count: photos.length });
     }
 
     // ---------- pdf: attach the inspection PDF and link it in the checklist comment ----------
