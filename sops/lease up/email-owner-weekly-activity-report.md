@@ -11,16 +11,18 @@ tags: [leasing, owner-communication, weekly-report, lease-up, operation-no-drama
 created_but_never_updated: false
 ---
 
-Keep owners informed and listings optimized with a weekly update sent every Tuesday by 12pm. Deadline: Tuesdays at 12pm.
+Send the owner a weekly update **every Tuesday by 12pm**, from move-out to move-in.
 
-What changed (2026-07-22): the Activity Report tool now starts with a Verify Listings step, pulls live rent comps, pushes listing updates (description, rent, availability date) straight to Buildium from the Listing Preview, and polishes your Agent Comments instead of writing them for you. What changed (2026-07-15): Leasing Agents visit the property at least weekly from move-out to move-in for a [Weekly Site Visit](https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC); every site visit gets a marked-up checklist comment on the Weekly Site Visit / Inspection subtask with notes and photos; the Weekly Activity Report closes at move-in, not at lease signing, and runs regardless of state. Companion docs: [Scheduling Preferred Slots](https://sagareus.getoutline.com/doc/scheduling-preferred-slots-pa5dv5TXHb). Initiative brief: [Operation: No Drama](https://sagareus.getoutline.com/doc/operation-no-drama-1KiDctsybm).
+:::warning
+**The weekly report covers the entire vacancy, not just the leasing phase.** It starts at move-out (Turnover), continues while listed (Leasing) and after lease signing (Pre-Move-In), and closes only at move-in.
+:::
 
-## Reference
+**Recent changes**
 
-* [Weekly Activity Report // Email Templates](https://sagareus.getoutline.com/doc/weekly-activity-report-email-templates-Nbjth1yCLc) — the three state-based email templates: Turnover, Leasing, Pre-Move-In.
-* [Weekly Activity Report // Activity Thresholds & Low Activity Checklist](https://sagareus.getoutline.com/doc/weekly-activity-report-activity-thresholds-low-activity-checklist-yeNwW446dM) — the inquiry/showing thresholds, the low-activity triple-check, and the standard recommendations to increase activity.
-* [Updating Active Listings](https://sagareus.getoutline.com/doc/updating-active-listings-aytdYiWQoa) — weekly Buildium listing updates, rent reductions, move-in specials, and the after-update Asana documentation steps.
-* [Weekly Activity Report // Manual Fallback](https://sagareus.getoutline.com/doc/weekly-activity-report-manual-fallback-7xyhYD91cY) — build and send the report by hand when the tool is down. Same deadline, same format.
+* **2026-07-22** — Activity Report tool: Verify Listings comes first, live rent comps, listing updates (description, rent, availability date) push straight to Buildium from the Listing Preview, and Polish Comment cleans up your Agent Comments instead of writing them for you.
+* **2026-07-15** — [Weekly Site Visits](https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC) run move-out to move-in; every visit posts a marked-up checklist comment with notes and photos.
+
+Companion docs: [Scheduling Preferred Slots](https://sagareus.getoutline.com/doc/scheduling-preferred-slots-pa5dv5TXHb) and [Operation: No Drama](https://sagareus.getoutline.com/doc/operation-no-drama-1KiDctsybm).
 
 ## The Three Reports
 
@@ -75,3 +77,10 @@ In the order the tool builds it:
 * **Next Update** — next Tuesday's date.
 
 Turnover reports carry: site visit notes, Tickets Created, inspection PDF, next update. Pre-Move-In reports carry: scheduled move-in date, site visit notes, Move-In Readiness, inspection PDF, next update.
+
+## Reference
+
+* [Weekly Activity Report // Email Templates](https://sagareus.getoutline.com/doc/weekly-activity-report-email-templates-Nbjth1yCLc) — the three state-based email templates: Turnover, Leasing, Pre-Move-In.
+* [Weekly Activity Report // Activity Thresholds & Low Activity Checklist](https://sagareus.getoutline.com/doc/weekly-activity-report-activity-thresholds-low-activity-checklist-yeNwW446dM) — the inquiry/showing thresholds, the low-activity triple-check, and the standard recommendations to increase activity.
+* [Updating Active Listings](https://sagareus.getoutline.com/doc/updating-active-listings-aytdYiWQoa) — weekly Buildium listing updates, rent reductions, move-in specials, and the after-update Asana documentation steps.
+* [Weekly Activity Report // Manual Fallback](https://sagareus.getoutline.com/doc/weekly-activity-report-manual-fallback-7xyhYD91cY) — build and send the report by hand when the tool is down. Same deadline, same format.
