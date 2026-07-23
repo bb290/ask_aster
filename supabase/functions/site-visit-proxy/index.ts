@@ -290,6 +290,28 @@ async function matchSettings(address: string): Promise<{ hit?: { gid: string; ad
 // the same day). Maintenance coordinators work out of this project, and the
 // address in the task and ticket names tells them which property it belongs to.
 let toCache: { at: number; tasks: Array<{ gid: string; address: string }> } | null = null;
+let toOpenCache: { at: number; tasks: Array<{ gid: string; address: string }> } | null = null;
+async function openTurnOvers(): Promise<Array<{ gid: string; address: string }>> {
+  if (toOpenCache && Date.now() - toOpenCache.at < 2 * 60 * 1000) return toOpenCache.tasks;
+  const tasks: Array<{ gid: string; address: string }> = [];
+  let off = "";
+  for (let page = 0; page < 12; page++) {
+    const res = await fetch(
+      `${ASANA}/projects/${TURNOVER_PROJECT}/tasks?completed_since=now&limit=100&opt_fields=name${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
+      { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(`asana turnover-open page ${page} -> ${res.status}`);
+    for (const t of (json.data ?? []) as Array<{ gid: string; name: string }>) {
+      if (!/^turn\s*over\s*\|/i.test(t.name)) continue;
+      const address = addressFromTaskName(t.name);
+      if (address && !address.includes("<")) tasks.push({ gid: t.gid, address });
+    }
+    off = json.next_page?.offset ?? "";
+    if (!off) break;
+  }
+  toOpenCache = { at: Date.now(), tasks };
+  return tasks;
+}
 let maintVisitCache: { at: number; recs: Array<{ gid: string; address: string }> } | null = null;
 async function maintVisitTasks(): Promise<Array<{ gid: string; address: string }>> {
   if (maintVisitCache && Date.now() - maintVisitCache.at < 5 * 60 * 1000) return maintVisitCache.recs;
@@ -472,6 +494,17 @@ app.post("*", async (c) => {
       if (generalNote) { lines.push("Notes:"); lines.push(generalNote); lines.push(""); }
       lines.push(`RESULT: ${created.length ? `${created.length} issue ticket(s) created` : "All good, no issues found"}`);
       const story = await asana("POST", `/tasks/${inspection.gid}/stories`, { text: lines.join("\n") });
+
+      // While a Turn Over task is open for this address, the coordinator gets a
+      // duplicate of the visit comment on that task (Brittany, 2026-07-23).
+      // The original posting above is unchanged; this is visibility only.
+      try {
+        const toHit = matchUnit(await openTurnOvers(), address).hit;
+        if (toHit) {
+          await postStory(toHit.gid, lines.join("\n") +
+            `\n\nFull record (photos + inspection PDF): https://app.asana.com/0/0/${inspection.gid}`);
+        }
+      } catch { /* non-fatal: the visit itself already posted */ }
 
       // 7) bump the inspection subtask's due date to the next Slot 1 weekday.
       //    Slot 1 is free text ("Tuesday 10-11am"). Blank or no weekday = fall back
