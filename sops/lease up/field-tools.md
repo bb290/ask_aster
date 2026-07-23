@@ -13,6 +13,10 @@ created_but_never_updated: false
 
 The Team Hub at **https://www.sagareus.com/field** hosts the three leasing field tools. Phone-first, one tap per action, and everything they produce lands in Asana automatically. Every tool has a by-hand fallback SOP for when it is down; the deadline and format never change.
 
+:::info
+**Asana mobile shows stale values after a tool posts.** If a field, due date, or completion state looks wrong right after using a tool, pull down to refresh (or close and reopen the task) before assuming something failed — the app caches what it showed you last.
+:::
+
 ## The Tools
 
 * **Site Visit** — the weekly walk-through checklist. Pass/Fail every item (Essentials, Appliances + Systems, Move-In Ready), snap photos, and one SUBMIT posts the marked-up checklist to the property's inspection subtask, creates an assigned ticket for every Fail, and attaches a shareable inspection PDF. SOP: [Weekly Site Visit](https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC) · [Manual Fallback](https://sagareus.getoutline.com/doc/weekly-site-visit-manual-fallback-bdcObUreW9)
