@@ -25,41 +25,32 @@ The Team Hub at **https://www.sagareus.com/field** hosts the three leasing field
 
 ## Change Log — Site Visit
 
-* **07-17** — Launched: tap-through checklist on your phone replaces manual comment copy/paste; checklist, photos, and tickets post to Asana in one submit.
-* **07-19** — Checklist rebuilt into Essentials / Appliances + Systems / Move-In Ready with Pass/Fail, common-issue dropdowns, per-item photos, Add Task for open-ended work, and the shareable inspection PDF.
-* **07-22** — Bug fix: visits could file into Property Settings when the leasing task was hidden from the picker. Visits now always anchor to the leasing task when one exists.
-* **07-22** — Occupied-property and unlisted-address visits now file to a "Site Visits // address" task in the Maintenance 2.0 project (briefly Client Relations earlier the same day), with tickets nested under it so coordinators can tell the property from the name.
-* **07-22** — Picker covers pre-move-in: leasing tasks closed within the past 60 days stay searchable until the move-in date passes.
-* **07-22** — Tickets created by a visit are now due the next day (was 3 days out).
-* **07-22** — The checklist comment header now includes the property address (was only in the PDF, which does not always finish uploading).
+* **07-17** — Launched: phone checklist posts the comment, photos, and tickets to Asana in one submit.
+* **07-19** — Checklist rebuilt into three sections with Pass/Fail, issue dropdowns, per-item photos, and the inspection PDF.
+* **07-22** — Fixes: visits always anchor to the leasing task; occupied and unlisted visits file to a "Site Visits // address" task in Maintenance 2.0; the address prints in the comment header.
+* **07-22** — Picker runs through move-in (closed tasks stay searchable 60 days); tickets are due next day.
+* **07-23** — "Hang Tight!" overlay while posting; Inspected By name buttons (required, prints in the comment and PDF).
 
 ## Change Log — Activity Report
 
-* **07-19** — Launched: builds all three state-based weekly reports (Turnover / Leasing / Pre-Move-In) with Asana pre-fill, posts to the Weekly Activity Report subtask, and rolls the due date to next Tuesday.
-* **07-20** — Rent Comps card: pull live comparables, remove bad ones, pick a 3/6/12-month window, and include the snapshot in the report.
-* **07-21** — Buildium from the widget: Listing Preview with your pending changes highlighted, AI Rewrite Listing, availability date autofill (following Saturday, forward only), and Update Listing pushes description, rent, and date. Verify Listings buttons (Zillow/Redfin) with troubleshooting help. Renames: Listing Revised, Pricing Review, Hold Price.
-* **07-22** — Write Comments became Polish Comment: write at least 12 words of your own Agent Comments first; the AI cleans up grammar and tone but keeps your facts and voice.
-* **07-22** — Bug fix: leased-but-not-moved-in properties were missing from the picker. The picker now runs to move-in, including tasks closed within the past 60 days.
-* **07-22** — Bug fix: "Daily lookup limit reached" on rent comps. Team tools no longer share the public rent widget's daily cap.
+* **07-19** — Launched: builds all three weekly reports (Turnover / Leasing / Pre-Move-In) with Asana pre-fill and posts to the report subtask.
+* **07-20** — Rent Comps card: pull live comparables into the report.
+* **07-21** — Buildium built in: listing preview with your changes highlighted, AI rewrite, and Update Listing pushes description, rent, and availability date.
+* **07-22** — Polish Comment (write 12+ words first, AI tidies it); picker runs through move-in; rent-comp lookup limit fixed.
+* **07-23** — "Hold Up!" overlay while posting.
 
 ## Change Log — PreListing Report
 
-* **07-19** — Launched: Unit ID or address in; live comps, market position, listing strategy defaults, and the owner report out.
-* **07-21** — Draft Listing pipeline: AI Generate Draft Listing, selected policies and criteria flow into the draft, structured pricing strategy that cascades when you edit the market rent estimate, real previous-lease history, and Copy Listing / Post to Buildium buttons.
-* **07-22** — Draft diff highlights: any line that differs from the current Buildium description highlights yellow so you can see exactly what changed; highlights clear after posting.
-* **07-22** — Bug fix: "Daily lookup limit reached" (same fix as Activity Report).
+* **07-19** — Launched: Unit ID or address in; comps, market position, strategy, and the owner report out.
+* **07-21** — Draft Listing pipeline: AI draft, structured pricing strategy, Copy Listing and Post to Buildium.
+* **07-22** — Draft lines that differ from the current listing highlight yellow; lookup limit fixed.
+* **07-23** — "Hold Up!" overlay while posting.
 
-## Change Log — Turn Over Inspection (in the workshop, /wt only)
+## Change Log — Inspections (in the workshop, /wt only)
 
 Field tool #4, not yet on /field. Testing at https://www.sagareus.com/wt.
 
-* **07-22** — Built: Turn Over Complete mode live (Move Out and Occupied Inspection modes coming soon). Pick a Turn Over task (open or closed within 30 days), walk the 22-item rent-ready checklist, and SUBMIT posts one inspection subtask on the Turn Over task — "PASSED 🙌 / FAILED 😩 || Turn Over Complete Inspection - date / address" — with the full checklist, photos, and PDF.
-* **07-22** — Renamed to Inspections; mode buttons stacked like the Activity Report states. FAILED now runs the full reset: punch list due TODAY assigned to the coordinator, Turn Over task reopened, Turn Over Completion field cleared, Confirm | Turn Over Complete subtask reopened with its due date removed, coordinator @mentioned. PASSED closes the loop: Turn Over Verified (and Completion, if blank) stamped today, Turn Over task and Confirm subtask completed, task hearted, coordinator @mentioned with thanks.
-* **07-22** — Checklist v2: Repairs + Turn Work comes first with a turn-scope text box auto-filled from the Turn Over task's Special Note (editable on site). Essentials / Big Tickets / Move-In Ready mirror the Site Visit checklist, minus cleaning items. New Cleaning section with the A+–F+ grading scale from the Move-Out Inspection SOP — required, included in the report, never part of the PASS/FAIL verdict — and the grade posts to the Schedule | Move Out Cleaning subtask: assigned to the LU task's assignee due today when the inspection PASSED, comment only when it FAILED (the inspection repeats).
-* **07-22** — Turn scope v2: the scope pulls from the Turn Over task's description (the Approved Scope custom field takes over automatically once it exists) and renders as checkboxes with a progress count. Checking every item auto-passes Turn Scope Completed; unchecking reverts it. Agents can add or remove scope items on site, and the checked/unchecked marks print in the report and PDF. Picker now shows one entry per address (open beats closed, newest wins).
-* **07-22** — Turn scope v3: every scope item is a full card with the same big Pass/Fail buttons as the rest of the checklist (up to 20 items), the section opens by default, and a failed scope item flows into the punch list on its own line. Scope answers are required before SUBMIT and print first in the report.
-* **07-23** — Polish across the inspection tools: a full-screen Bruce overlay ("keep this page open until everything is posted") covers photo and PDF uploads on both Site Visit and Inspections; All Pass buttons hold neon green while their section fully passes; the blue focus outline is gone; stale drafts (over an hour old) no longer restore old answers; the cleaning grade dropdown turns green when selected. Site Visit: while a Turn Over task is open for the visited address, the visit comment is duplicated onto it with a link to the full record.
-* **07-23** — Bruce overlay v2 ("Hang Tight!" speech bubble, Bruce 2x). Inspections scope cards now carry the full fail panel — turn-work common-issues dropdown, note, Punch list toggle, and per-item Photo — matching every other checklist item; issues and notes ride along into the punch list, comment, and PDF.
-* **07-23** — "Hold Up!" upload overlays on the Activity Report and PreListing tools (Copy & Post to Asana, Update Listing, Post to Buildium); the "Nice!" Bruce success popup left the Site Visit tool. Inspections: All Pass force-passes the whole section and stays neon; black focus styling; "Vendor left materials" issue option; a Start Over button (tap twice) clears the saved draft when you want a clean slate.
-* **07-23** — Inspected By, on both the Site Visit and Inspections widgets: tap your name from the button list before submitting — required. The free-text Name box only appears after tapping Other (and hides again when a name button is picked). The name prints in the checklist comment and the PDF. The roster is a module field, edited one name per line, so it updates as staff changes. Inspections guts are now fully editable: every label, placeholder, and section description is a module field with safe fallbacks.
-* **07-23** — Bug fix: the "Hang Tight!" speech bubble ran off the right edge of the screen on phones. It now wraps and sizes to fit inside the card on both widgets.
+* **07-22** — Built: Turn Over Complete inspection posts a PASSED 🙌 / FAILED 😩 subtask on the Turn Over task with the full checklist, photos, punch list, and PDF.
+* **07-22** — Asana choreography: FAILED reopens the turn over (punch list due today, fields reset, coordinator @mentioned); PASSED closes it out (Turn Over Verified stamped, tasks completed, coordinator thanked).
+* **07-22** — Checklist: Repairs + Turn Work scope cards pulled from the Approved Scope field, Site Visit sections minus cleaning, and a graded Cleaning section that posts to the cleaning subtask.
+* **07-23** — Polish: "Hang Tight!" overlay, All Pass passes the whole section, Start Over reset, Inspected By, and every label is editable in the page editor.
