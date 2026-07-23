@@ -1265,7 +1265,7 @@ app.post("*", async (c) => {
           } catch { /* non-fatal */ }
           if (assignee) {
             try {
-              await asana("POST", `/tasks/${inspection.gid}/stories`, { html_text: `<body><a data-asana-gid="${assignee.gid}"/> Turn over verified 🙌 Unit is rent-ready. Great work.</body>` });
+              await asana("POST", `/tasks/${inspection.gid}/stories`, { html_text: `<body><a data-asana-gid="${assignee.gid}"/> 🎉🦄🌈 TURN OVER VERIFIED! The unit is rent-ready. Great work 🙌✨</body>` });
             } catch { /* non-fatal */ }
           }
         }
