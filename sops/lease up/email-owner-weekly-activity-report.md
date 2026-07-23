@@ -67,7 +67,11 @@ These states are shorter: confirm the pre-filled site visit and tickets (Turnove
 2. Repeat every week until a resident has moved in.
 3. Do not mark the Weekly Activity Report subtask done at lease signing or when a move-in is scheduled; it closes at move-in. (Changed 2026-07-15; previously "until a lease is signed or a move-in is scheduled.")
 
-## Standard Leasing Activity Report Content
+## Standard Report Content
+
+All three reports carry equal weight: the owner hears from us every Tuesday with the same care, whichever phase the property is in. A Turnover or Pre-Move-In week is not a lighter obligation than a Leasing week.
+
+### Leasing Activity Report
 
 In the order the tool builds it:
 
@@ -82,9 +86,24 @@ In the order the tool builds it:
 * **Site Visit** — the latest checklist comment and the shareable inspection PDF link.
 * **Next Update** — next Tuesday's date.
 
-Turnover reports carry: site visit notes, Tickets Created, inspection PDF, next update.
+### Turnover (PreList) Report
 
-Pre-Move-In reports carry: scheduled move-in date, site visit notes, Move-In Readiness, inspection PDF, next update.
+In the order the tool builds it:
+
+* **Site Visit** — the visit date and your marked-up checklist comment with notes.
+* **Tickets Created** — every maintenance ticket opened this week, pre-filled from Asana; each has an assignee and a due date.
+* **Site Inspection** — the shareable inspection PDF with photos.
+* **Next Update** — next Tuesday's date.
+
+### Pre-Move-In Report
+
+In the order the tool builds it:
+
+* **Move In Scheduled** — the confirmed move-in date.
+* **Site Visit** — the visit date and your marked-up checklist comment with notes.
+* **Move-In Readiness** — the prep items completed or still outstanding before the resident arrives.
+* **Site Inspection** — the shareable inspection PDF with photos.
+* **Next Update** — next Tuesday's date.
 
 ## Reference
 
