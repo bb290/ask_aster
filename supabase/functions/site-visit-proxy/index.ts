@@ -375,6 +375,7 @@ app.post("*", async (c) => {
       let source = body.source === "unit" ? "unit" : body.source === "manual" ? "manual" : "lu";
       let taskGid = source === "manual" ? "" : String(body.taskGid ?? "");
       const generalNote = String(body.generalNote ?? "").trim();
+      const inspector = String(body.inspector ?? "").trim().slice(0, 80);
       const items = Array.isArray(body.items) ? body.items as Array<Record<string, unknown>> : [];
       if (!items.length || (source === "manual" ? !address : !taskGid)) {
         return j(headers, 400, { error: "missing_fields" });
@@ -490,6 +491,7 @@ app.post("*", async (c) => {
       // Address in the header: the comment must identify the property on its own —
       // the PDF carries it too, but PDF uploads don't always finish (Brittany, 2026-07-22).
       const lines: string[] = [`SITE VISIT -- ${todayStr} -- ${address}`, ""];
+      if (inspector) lines.splice(1, 0, `Inspected by: ${inspector}`);
       for (const sec of Object.keys(bySection)) { lines.push(sec); lines.push(...bySection[sec]); lines.push(""); }
       if (generalNote) { lines.push("Notes:"); lines.push(generalNote); lines.push(""); }
       lines.push(`RESULT: ${created.length ? `${created.length} issue ticket(s) created` : "All good, no issues found"}`);
@@ -1163,6 +1165,7 @@ app.post("*", async (c) => {
       const source = body.source === "manual" ? "manual" : "to";
       const taskGid = source === "manual" ? "" : String(body.taskGid ?? "");
       const generalNote = String(body.generalNote ?? "").trim();
+      const inspector = String(body.inspector ?? "").trim().slice(0, 80);
       const turnScope = String(body.turnScope ?? "").trim().slice(0, 4000);
       const cleaningIn = (body.cleaning && typeof body.cleaning === "object") ? body.cleaning as Record<string, unknown> : {};
       const cleanGrade = String(cleaningIn.grade ?? "").trim().slice(0, 80);
@@ -1215,6 +1218,7 @@ app.post("*", async (c) => {
         (bySection[sec] = bySection[sec] || []).push(`${mark} ${it.item}${extra ? ` -- ${extra}` : ""}${it.ticket ? " [punch list]" : ""}`);
       }
       const lines: string[] = [`TURN OVER COMPLETE INSPECTION -- ${todayStr} -- ${address}`, ""];
+      if (inspector) lines.splice(1, 0, `Inspected by: ${inspector}`);
       if (turnScope) { lines.push("TURN SCOPE"); lines.push(turnScope); lines.push(""); }
       for (const sec of Object.keys(bySection)) { lines.push(sec); lines.push(...bySection[sec]); lines.push(""); }
       if (cleanGrade) {
