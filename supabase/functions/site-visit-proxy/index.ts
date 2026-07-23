@@ -1186,11 +1186,9 @@ app.post("*", async (c) => {
       const verdict = items.some((it) => it.answer === "no" || it.answer === "task") ? "FAILED" : "PASSED";
 
       let assignee: { gid: string; name: string } | null = null;
-      let tocValue = "";
       if (source !== "manual") try {
-        const to = await asana("GET", `/tasks/${taskGid}?opt_fields=assignee.name,completed,custom_fields.gid,custom_fields.display_value`);
+        const to = await asana("GET", `/tasks/${taskGid}?opt_fields=assignee.name`);
         if (to?.assignee) assignee = { gid: to.assignee.gid, name: to.assignee.name };
-        tocValue = String((to?.custom_fields ?? []).find((f: { gid: string; display_value?: string | null }) => f.gid === TOC_FIELD)?.display_value ?? "");
       } catch { /* non-fatal */ }
       if (!assignee && verdict === "FAILED") assignee = DEFAULT_MAINT;
 
@@ -1255,9 +1253,9 @@ app.post("*", async (c) => {
         } else {
           try { await asana("PUT", `/tasks/${taskGid}`, { completed: true, liked: true }); } catch { /* non-fatal */ }
           try {
-            const cf: Record<string, unknown> = { [TOV_FIELD]: { date: todayStr } }; // date fields need the object form
-            if (!tocValue) cf[TOC_FIELD] = { date: todayStr };
-            await asana("PUT", `/tasks/${taskGid}`, { custom_fields: cf });
+            // PASSED stamps Turn Over Verified only; Turn Over Completion is never
+            // touched on a pass (Brittany, 2026-07-23). Date fields need the object form.
+            await asana("PUT", `/tasks/${taskGid}`, { custom_fields: { [TOV_FIELD]: { date: todayStr } } });
           } catch { /* non-fatal */ }
           try {
             const conf = await findConfirm();
