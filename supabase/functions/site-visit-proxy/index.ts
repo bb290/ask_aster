@@ -862,6 +862,31 @@ app.post("*", async (c) => {
       return j(headers, 200, { ok: true, photos, source, count: photos.length });
     }
 
+    // ---------- moVideoUrl: signed upload for the move-out walkthrough video ----------
+    // The widget PUTs the raw file straight to storage (videos are too big for JSON).
+    if (action === "moVideoUrl") {
+      const supaUrl = Deno.env.get("SUPABASE_URL") ?? "";
+      const supaKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+      if (!supaUrl || !supaKey) return j(headers, 500, { error: "storage_not_configured" });
+      const filename = String(body.filename ?? "moveout-video.mp4").replace(/[^\w.\-]/g, "_").slice(0, 80);
+      const key = `mo-videos/${crypto.randomUUID()}/${filename}`;
+      const sh = { "Authorization": `Bearer ${supaKey}`, "apikey": supaKey };
+      await fetch(`${supaUrl}/storage/v1/bucket`, {
+        method: "POST", headers: { ...sh, "Content-Type": "application/json" },
+        body: JSON.stringify({ id: "inspections", name: "inspections", public: true }),
+      }).catch(() => null);
+      const r = await fetch(`${supaUrl}/storage/v1/object/upload/sign/inspections/${key}`, {
+        method: "POST", headers: { ...sh, "Content-Type": "application/json" }, body: "{}",
+      });
+      const jr = await r.json().catch(() => ({}));
+      if (!r.ok || !jr.url) return j(headers, 502, { error: "sign_failed", message: "Could not prepare the video upload. Paste a Drive link instead." });
+      return j(headers, 200, {
+        ok: true,
+        uploadUrl: `${supaUrl}/storage/v1${jr.url}`,
+        publicUrl: `${supaUrl}/storage/v1/object/public/inspections/${key}`,
+      });
+    }
+
     // ---------- moSubmit: Move Out inspection — neutral condition documentation ----------
     // Posts the report to "Conduct | Move-out inspection & share report" under the
     // Move-Out | task, stamps Move Out Completion Date on the LU task, and appends
@@ -872,13 +897,14 @@ app.post("*", async (c) => {
       const taskGid = String(body.taskGid ?? "");
       const address = String(body.address ?? "").trim();
       if (!taskGid || !address) return j(headers, 400, { error: "missing_fields" });
-      type MoFinding = { area: string; cat: string; note: string; photos: number };
-      const findings: MoFinding[] = (Array.isArray(body.findings) ? body.findings : []).slice(0, 60).map((f: Record<string, unknown>) => ({
+      type MoFinding = { area: string; item: string; cat: string; note: string; photos: number };
+      const findings: MoFinding[] = (Array.isArray(body.findings) ? body.findings : []).slice(0, 80).map((f: Record<string, unknown>) => ({
         area: String(f.area ?? "").slice(0, 60),
+        item: String(f.item ?? "").slice(0, 80),
         cat: String(f.cat ?? "").slice(0, 60),
         note: String(f.note ?? "").slice(0, 1000),
         photos: Number(f.photos ?? 0) || 0,
-      })).filter((f: MoFinding) => f.area && (f.cat || f.note));
+      })).filter((f: MoFinding) => f.area);
       const clean = body.cleaning ?? {};
       const cleaningGrade = String((clean as Record<string, unknown>).grade ?? "").slice(0, 4);
       const cleaningNote = String((clean as Record<string, unknown>).note ?? "").slice(0, 600);
@@ -930,7 +956,7 @@ app.post("*", async (c) => {
       lines.push("");
       lines.push(`SUMMARY OF FINDINGS (${findings.length})`);
       findings.forEach((f, i) => {
-        lines.push(`${i + 1}. [${f.area}${f.cat ? " / " + f.cat : ""}] ${f.note}${f.photos ? ` (${f.photos} photo${f.photos > 1 ? "s" : ""})` : ""}`);
+        lines.push(`${i + 1}. [${[f.area, f.item, f.cat].filter(Boolean).join(" / ")}] ${f.note}${f.photos ? ` (${f.photos} photo${f.photos > 1 ? "s" : ""})` : ""}`);
       });
       if (!findings.length) lines.push("No condition items documented.");
       if (okAreas.length) { lines.push(""); lines.push(`No condition items documented: ${okAreas.join(", ")}`); }
@@ -956,7 +982,7 @@ app.post("*", async (c) => {
           const tuTask = await asana("GET", `/tasks/${tuGid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
           const scopeField = (tuTask.custom_fields ?? []).find((f: { gid: string }) => f.gid === "1216811465429492");
           const existing = String(scopeField?.display_value ?? "").trim();
-          const block = findings.map((f) => `${f.area}: ${[f.cat, f.note].filter(Boolean).join(" - ")}`).join("\n");
+          const block = findings.map((f) => `${[f.area, f.item].filter(Boolean).join(" - ")}: ${[f.cat, f.note].filter(Boolean).join(" - ")}`).join("\n");
           const merged = (existing ? existing + "\n" : "") + block;
           await asana("PUT", `/tasks/${tuGid}`, { custom_fields: { "1216811465429492": merged.slice(0, 4900) } });
           scopeAppended = findings.length;
