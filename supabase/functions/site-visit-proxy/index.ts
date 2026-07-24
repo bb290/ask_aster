@@ -1105,7 +1105,7 @@ app.post("*", async (c) => {
         "If the verified facts are thin, still produce the best compliant draft and use [verify: detail] placeholders sparingly rather than refusing.",
         "If the input copy contains discriminatory or tenant-targeting language, silently drop it.",
         "SELF-CHECK before you output: exactly 5 paragraphs? Zero mentions of address, beds, baths, or square footage? Opener has a hook? CTA line present and exact? 140-250 words? No repeated sentence openers? Location paragraph names a freeway, a park, and shopping with distances? Reads like a story, not a spec sheet? Fix anything failing, then output.",
-        "OUTPUT: plain text only, no markdown, no asterisks, no bullet symbols, no links, no inline citations (sources go in the Note line as domains only). The 5 paragraphs only, then ONE final line starting exactly with \"Note:\" listing what the agent must verify before publishing plus the research source domains (domains only). No preamble, nothing after the Note line.",
+        "OUTPUT: plain text only, no markdown, no asterisks, no bullet symbols, no links, no inline citations. Output EXACTLY this structure: a first line that is exactly LISTING: followed by the 5 paragraphs, then a line that is exactly NOTE: followed by what the agent must verify before publishing plus the research source domains (domains only). NOTHING before the LISTING: line. Any reasoning about location context or verification belongs after NOTE:, never in the listing paragraphs.",
       ].join("\n");
       const userMsg = existing
         ? `Rewrite the existing listing copy below to the required format. Keep verified content, drop anything unverifiable or non-compliant.\n\nVerified facts:\n${facts}\n\nExisting copy:\n${existing}`
@@ -1119,7 +1119,34 @@ app.post("*", async (c) => {
           });
           const jr = await r.json().catch(() => ({}));
           const text = jr?.choices?.[0]?.message?.content;
-          if (r.ok && text) return j(headers, 200, { copy: String(text).replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\*\*/g, "").trim(), model });
+          if (r.ok && text) {
+            const raw = String(text).replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\*\*/g, "").trim();
+            // Split the delimited output: anything before LISTING: (model preamble) and
+            // everything after NOTE: goes to the agent-facing note, never the listing.
+            let copy = raw;
+            let note = "";
+            const mL = /(^|\n)\s*LISTING:\s*/i.exec(raw);
+            if (mL) {
+              const pre = raw.slice(0, mL.index).trim();
+              copy = raw.slice(mL.index + mL[0].length).trim();
+              if (pre) note = pre;
+            }
+            const mN = /(^|\n)\s*NOTE:\s*/i.exec(copy);
+            if (mN) {
+              note = [note, copy.slice(mN.index + mN[0].length).trim()].filter(Boolean).join("\n\n");
+              copy = copy.slice(0, mN.index).trim();
+            }
+            // Fallback for undelimited output: a leading first-person planning paragraph
+            // ("I have enough verified location context...") is reasoning, not listing copy.
+            if (!mL) {
+              const paras = copy.split(/\n{2,}/);
+              if (paras.length > 5 && /^["\u201C]?I(?:'ll| have| am| will|\s)/.test(paras[0].trim())) {
+                note = [paras.shift()!.trim().replace(/^["\u201C]|["\u201D]$/g, ""), note].filter(Boolean).join("\n\n");
+                copy = paras.join("\n\n").trim();
+              }
+            }
+            return j(headers, 200, { copy, note, model });
+          }
         } catch { /* try next model */ }
       }
       return j(headers, 502, { error: "llm_failed", message: "Copy generation is unavailable right now. Draft manually for this one." });
