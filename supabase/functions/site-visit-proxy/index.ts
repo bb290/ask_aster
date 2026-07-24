@@ -862,6 +862,120 @@ app.post("*", async (c) => {
       return j(headers, 200, { ok: true, photos, source, count: photos.length });
     }
 
+    // ---------- moSubmit: Move Out inspection — neutral condition documentation ----------
+    // Posts the report to "Conduct | Move-out inspection & share report" under the
+    // Move-Out | task, stamps Move Out Completion Date on the LU task, and appends
+    // the findings to the open Turn Over task's Approved Scope (the initial work order).
+    // Deliberately NO verdict, NO tickets, NO deposit language: deductions are assessed
+    // later against the Move In report.
+    if (action === "moSubmit") {
+      const taskGid = String(body.taskGid ?? "");
+      const address = String(body.address ?? "").trim();
+      if (!taskGid || !address) return j(headers, 400, { error: "missing_fields" });
+      type MoFinding = { area: string; cat: string; note: string; photos: number };
+      const findings: MoFinding[] = (Array.isArray(body.findings) ? body.findings : []).slice(0, 60).map((f: Record<string, unknown>) => ({
+        area: String(f.area ?? "").slice(0, 60),
+        cat: String(f.cat ?? "").slice(0, 60),
+        note: String(f.note ?? "").slice(0, 1000),
+        photos: Number(f.photos ?? 0) || 0,
+      })).filter((f: MoFinding) => f.area && (f.cat || f.note));
+      const clean = body.cleaning ?? {};
+      const cleaningGrade = String((clean as Record<string, unknown>).grade ?? "").slice(0, 4);
+      const cleaningNote = String((clean as Record<string, unknown>).note ?? "").slice(0, 600);
+      const kb = body.keybox ?? {};
+      const keyboxLoc = String((kb as Record<string, unknown>).location ?? "").slice(0, 200);
+      const keyboxCode = String((kb as Record<string, unknown>).code ?? "").slice(0, 40);
+      const videoLink = String(body.videoLink ?? "").trim().slice(0, 400);
+      const inspector = String(body.inspector ?? "").trim().slice(0, 80);
+      const generalNote = String(body.generalNote ?? "").slice(0, 2000);
+      const okAreas = (Array.isArray(body.okAreas) ? body.okAreas : []).map((a: unknown) => String(a).slice(0, 60)).slice(0, 20);
+      const todayStr = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+
+      // taskGid is the picked Turn Over task (the picker serves both modes).
+      // Everything else hangs off its Leasing parent: the Move-Out | task with the
+      // Conduct subtask, and the LU task for owner email + Move Out Completion Date.
+      const tuGid = taskGid;
+      const picked = await asana("GET", `/tasks/${taskGid}?opt_fields=parent.gid,parent.name`);
+      const parentGid = picked?.parent?.gid ?? null;
+      let luGid: string | null = null;
+      let ownerEmail = "";
+      let conduct: { gid: string; name?: string } | null = null;
+      let moGid: string | null = null;
+      if (parentGid) {
+        try {
+          const subs = await asana("GET", `/tasks/${parentGid}/subtasks?limit=100&opt_fields=name`);
+          const moTask = (subs ?? []).find((t: { name: string }) => /^move.?out\s*\|/i.test(t.name));
+          const luTask = (subs ?? []).find((t: { name: string }) => /^(lu|tp|pre.?lease)\s*\|/i.test(t.name));
+          if (luTask) {
+            luGid = luTask.gid;
+            const lu = await asana("GET", `/tasks/${luGid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+            ownerEmail = String(((lu.custom_fields ?? []).find((f: { name: string }) => /owner e-?mail/i.test(f.name)) ?? {}).display_value ?? "").replace(/;/g, ",").trim();
+          }
+          if (moTask) {
+            moGid = moTask.gid;
+            const mos = await asana("GET", `/tasks/${moTask.gid}/subtasks?limit=100&opt_fields=name`);
+            conduct = (mos ?? []).find((t: { name: string }) => /move.?out\s*inspection/i.test(t.name)) ?? null;
+          }
+        } catch { /* fall through to create */ }
+      }
+      if (!conduct) {
+        conduct = await asana("POST", `/tasks/${moGid || parentGid || taskGid}/subtasks`, { name: "Conduct | Move-out inspection & share report" });
+      }
+
+      // Neutral report comment
+      const lines: string[] = [`MOVE OUT CONDITION REPORT | ${address}`];
+      if (inspector) lines.push(`Inspected by: ${inspector}`);
+      lines.push(`Move-out inspection date: ${todayStr}`);
+      if (videoLink) lines.push(`Walkthrough video: ${videoLink}`);
+      lines.push("");
+      lines.push(`SUMMARY OF FINDINGS (${findings.length})`);
+      findings.forEach((f, i) => {
+        lines.push(`${i + 1}. [${f.area}${f.cat ? " / " + f.cat : ""}] ${f.note}${f.photos ? ` (${f.photos} photo${f.photos > 1 ? "s" : ""})` : ""}`);
+      });
+      if (!findings.length) lines.push("No condition items documented.");
+      if (okAreas.length) { lines.push(""); lines.push(`No condition items documented: ${okAreas.join(", ")}`); }
+      if (cleaningGrade) { lines.push(""); lines.push(`CLEANING: ${cleaningGrade}${cleaningNote ? " - " + cleaningNote : ""}`); }
+      if (keyboxLoc || keyboxCode) { lines.push(""); lines.push(`Keybox: ${[keyboxLoc, keyboxCode ? "code " + keyboxCode : ""].filter(Boolean).join(" / ")}`); }
+      if (generalNote) { lines.push(""); lines.push(`NOTES: ${generalNote}`); }
+      lines.push("");
+      lines.push("This report records observations only; it is reviewed together with the Move In Condition Report.");
+      const story = await postStory(conduct.gid, lines.join("\n").slice(0, 60000));
+
+      // Complete the subtask, stamped with today
+      try { await asana("PUT", `/tasks/${conduct.gid}`, { completed: true, due_on: todayStr }); } catch { /* fail-soft */ }
+
+      // Move Out Completion Date on the LU task (date fields need object form)
+      if (luGid) {
+        try { await asana("PUT", `/tasks/${luGid}`, { custom_fields: { "1214521745467158": { date: todayStr } } }); } catch { /* fail-soft */ }
+      }
+
+      // Append findings to this Turn Over task's Approved Scope = initial work order
+      let scopeAppended = 0;
+      if (findings.length) {
+        try {
+          const tuTask = await asana("GET", `/tasks/${tuGid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
+          const scopeField = (tuTask.custom_fields ?? []).find((f: { gid: string }) => f.gid === "1216811465429492");
+          const existing = String(scopeField?.display_value ?? "").trim();
+          const block = findings.map((f) => `${f.area}: ${[f.cat, f.note].filter(Boolean).join(" - ")}`).join("\n");
+          const merged = (existing ? existing + "\n" : "") + block;
+          await asana("PUT", `/tasks/${tuGid}`, { custom_fields: { "1216811465429492": merged.slice(0, 4900) } });
+          scopeAppended = findings.length;
+          await postStory(tuGid, `Move out inspection complete: ${findings.length} finding${findings.length > 1 ? "s" : ""} added to the Approved Scope (initial work order). Full report: https://app.asana.com/0/0/${conduct.gid}`);
+        } catch { /* fail-soft; scope can be filled by hand */ }
+      }
+
+      return j(headers, 200, {
+        ok: true,
+        conductGid: conduct.gid,
+        conductUrl: `https://app.asana.com/0/0/${conduct.gid}`,
+        storyGid: story?.gid ?? null,
+        ownerEmail,
+        tuGid,
+        scopeAppended,
+        reportDate: todayStr,
+      });
+    }
+
     // ---------- pdf: attach the inspection PDF and link it in the checklist comment ----------
     if (action === "pdf") {
       const parent = String(body.parent ?? "");
