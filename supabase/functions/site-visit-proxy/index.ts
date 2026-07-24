@@ -897,14 +897,17 @@ app.post("*", async (c) => {
       const taskGid = String(body.taskGid ?? "");
       const address = String(body.address ?? "").trim();
       if (!taskGid || !address) return j(headers, 400, { error: "missing_fields" });
-      type MoFinding = { area: string; item: string; cat: string; note: string; photos: number };
-      const findings: MoFinding[] = (Array.isArray(body.findings) ? body.findings : []).slice(0, 80).map((f: Record<string, unknown>) => ({
-        area: String(f.area ?? "").slice(0, 60),
-        item: String(f.item ?? "").slice(0, 80),
-        cat: String(f.cat ?? "").slice(0, 60),
+      type MoFinding = { room: string; type: string; note: string; photos: number };
+      const findings: MoFinding[] = (Array.isArray(body.findings) ? body.findings : []).slice(0, 100).map((f: Record<string, unknown>) => ({
+        room: String(f.room ?? "").slice(0, 60),
+        type: String(f.type ?? "").slice(0, 60) || "Other",
         note: String(f.note ?? "").slice(0, 1000),
         photos: Number(f.photos ?? 0) || 0,
-      })).filter((f: MoFinding) => f.area);
+      })).filter((f: MoFinding) => f.room || f.note);
+      const locks = body.locks ?? {};
+      const locksDone = ["code", "mail", "ext", "smoke"].filter((k) => (locks as Record<string, unknown>)[k]);
+      const odor = String(body.odor ?? "").slice(0, 200);
+      const stains = String(body.stains ?? "").slice(0, 200);
       const clean = body.cleaning ?? {};
       const cleaningGrade = String((clean as Record<string, unknown>).grade ?? "").slice(0, 4);
       const cleaningNote = String((clean as Record<string, unknown>).note ?? "").slice(0, 600);
@@ -914,7 +917,6 @@ app.post("*", async (c) => {
       const videoLink = String(body.videoLink ?? "").trim().slice(0, 400);
       const inspector = String(body.inspector ?? "").trim().slice(0, 80);
       const generalNote = String(body.generalNote ?? "").slice(0, 2000);
-      const okAreas = (Array.isArray(body.okAreas) ? body.okAreas : []).map((a: unknown) => String(a).slice(0, 60)).slice(0, 20);
       const todayStr = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
 
       // taskGid is the picked Turn Over task (the picker serves both modes).
@@ -954,13 +956,22 @@ app.post("*", async (c) => {
       lines.push(`Move-out inspection date: ${todayStr}`);
       if (videoLink) lines.push(`Walkthrough video: ${videoLink}`);
       lines.push("");
-      lines.push(`SUMMARY OF FINDINGS (${findings.length})`);
-      findings.forEach((f, i) => {
-        lines.push(`${i + 1}. [${[f.area, f.item, f.cat].filter(Boolean).join(" / ")}] ${f.note}${f.photos ? ` (${f.photos} photo${f.photos > 1 ? "s" : ""})` : ""}`);
-      });
-      if (!findings.length) lines.push("No condition items documented.");
-      if (okAreas.length) { lines.push(""); lines.push(`No condition items documented: ${okAreas.join(", ")}`); }
-      if (cleaningGrade) { lines.push(""); lines.push(`CLEANING: ${cleaningGrade}${cleaningNote ? " - " + cleaningNote : ""}`); }
+      const lockLabels: Record<string, string> = { code: "Lockbox code changed + recorded to 1Password", mail: "Mailbox keys tested", ext: "All exterior locks tested", smoke: "Smoke + CO detectors documented" };
+      lines.push("LOCKS + SAFETY");
+      ["code", "mail", "ext", "smoke"].forEach((k) => lines.push(`${locksDone.includes(k) ? "[x]" : "[ ]"} ${lockLabels[k]}`));
+      lines.push("");
+      lines.push(`FINDINGS BY TYPE (${findings.length})`);
+      const byType = new Map<string, MoFinding[]>();
+      findings.forEach((f) => { const arr = byType.get(f.type) ?? []; arr.push(f); byType.set(f.type, arr); });
+      for (const [ty, arr] of byType) {
+        lines.push(`${ty.toUpperCase()}: ${arr.map((f) => f.room).join(", ")}`);
+        arr.forEach((f) => { if (f.note) lines.push(`  - ${f.room}: ${f.note}${f.photos ? ` (${f.photos} photo${f.photos > 1 ? "s" : ""})` : ""}`); });
+      }
+      if (!findings.length) lines.push("No condition items documented. Everything not noted is assumed OK.");
+      lines.push("");
+      lines.push(`CLEANING: ${cleaningGrade || "not graded"}${cleaningNote ? " - " + cleaningNote : ""}`);
+      if (odor) lines.push(`Odor: ${odor}`);
+      if (stains) lines.push(`Stains: ${stains}`);
       if (keyboxLoc || keyboxCode) { lines.push(""); lines.push(`Keybox: ${[keyboxLoc, keyboxCode ? "code " + keyboxCode : ""].filter(Boolean).join(" / ")}`); }
       if (generalNote) { lines.push(""); lines.push(`NOTES: ${generalNote}`); }
       lines.push("");
@@ -982,7 +993,8 @@ app.post("*", async (c) => {
           const tuTask = await asana("GET", `/tasks/${tuGid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
           const scopeField = (tuTask.custom_fields ?? []).find((f: { gid: string }) => f.gid === "1216811465429492");
           const existing = String(scopeField?.display_value ?? "").trim();
-          const block = findings.map((f) => `${[f.area, f.item].filter(Boolean).join(" - ")}: ${[f.cat, f.note].filter(Boolean).join(" - ")}`).join("\n");
+          const sorted = findings.slice().sort((a, b) => a.type.localeCompare(b.type));
+            const block = sorted.map((f) => `${f.type} - ${f.room}${f.note ? ": " + f.note : ""}`).join("\n");
           const merged = (existing ? existing + "\n" : "") + block;
           await asana("PUT", `/tasks/${tuGid}`, { custom_fields: { "1216811465429492": merged.slice(0, 4900) } });
           scopeAppended = findings.length;
