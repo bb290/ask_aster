@@ -266,19 +266,56 @@ app.post("/onboard-proxy", async (c) => {
       return j(headers, 200, { ok: true, taskGid: task.gid, taskUrl: `https://app.asana.com/0/0/${task.gid}`, summarized: !!summary });
     }
 
-    // ---------- obPrefill: HubSpot deal lookup (inactive until a CRM token secret exists) ----------
+    // ---------- obPrefill: HubSpot contact + Mgmt 3.0 deal-card lookup ----------
+    // Returns only owner-safe facts (name, phone, property address). Internal deal fields
+    // (fees, commissions, onboarding notes) must never be sent to the owner-facing form.
     if (action === "obPrefill") {
       const HS = Deno.env.get("HUBSPOT_CRM_TOKEN") ?? "";
       const email = String(body.email ?? "").trim().slice(0, 200);
       if (!HS || !email) return j(headers, 200, { ok: true, prefill: {} });
       try {
-        const r = await fetch("https://api.hubapi.com/crm/v3/objects/contacts/search", {
-          method: "POST", headers: { "Authorization": `Bearer ${HS}`, "Content-Type": "application/json" },
+        const hs = (path: string, init?: RequestInit) => fetch("https://api.hubapi.com" + path, {
+          ...init, headers: { "Authorization": `Bearer ${HS}`, "Content-Type": "application/json" },
+        });
+        const r = await hs("/crm/v3/objects/contacts/search", {
+          method: "POST",
           body: JSON.stringify({ filterGroups: [{ filters: [{ propertyName: "email", operator: "EQ", value: email }] }], properties: ["firstname", "lastname", "email", "phone", "address", "city", "state", "zip"], limit: 1 }),
         });
         const jr = await r.json().catch(() => ({}));
-        const c0 = jr?.results?.[0]?.properties ?? {};
-        return j(headers, 200, { ok: true, prefill: { ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" "), email: c0.email ?? "", phone: c0.phone ?? "", address: [c0.address, c0.city, c0.state, c0.zip].filter(Boolean).join(", ") } });
+        const hit = jr?.results?.[0];
+        const c0 = hit?.properties ?? {};
+        let dealAddress = "";
+        if (hit?.id) {
+          const MGMT_PIPELINE = "2185322227";                                        // Mgmt 3.0
+          const ONBOARD_STAGES = new Set(["3505530584", "3505670864", "3540740803"]); // FS Onboard, TP Onboard, Closed Won
+          const ar = await hs(`/crm/v4/objects/contacts/${hit.id}/associations/deals?limit=50`);
+          const aj = await ar.json().catch(() => ({}));
+          const ids = (aj?.results ?? []).map((x: { toObjectId?: unknown }) => x?.toObjectId).filter(Boolean);
+          if (ids.length) {
+            const br = await hs("/crm/v3/objects/deals/batch/read", {
+              method: "POST",
+              body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate"] }),
+            });
+            const bj = await br.json().catch(() => ({}));
+            const deals = (bj?.results ?? [])
+              .map((d: { properties?: Record<string, string> }) => d.properties ?? {})
+              .filter((p: Record<string, string>) => p.pipeline === MGMT_PIPELINE);
+            deals.sort((a: Record<string, string>, b: Record<string, string>) =>
+              ((ONBOARD_STAGES.has(b.dealstage) ? 1 : 0) - (ONBOARD_STAGES.has(a.dealstage) ? 1 : 0)) ||
+              String(b.hs_lastmodifieddate ?? "").localeCompare(String(a.hs_lastmodifieddate ?? "")));
+            const d0 = deals[0];
+            if (d0?.dealname) {
+              const name = String(d0.dealname).replace(/^\s*\[[^\]]*\]\s*/, "").trim();  // strip "[MGMT]"-style prefixes
+              const city = String(d0.subject_city ?? "").trim();
+              dealAddress = city && !name.toLowerCase().includes(city.toLowerCase()) ? `${name}, ${city}` : name;
+            }
+          }
+        }
+        return j(headers, 200, { ok: true, prefill: {
+          ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" "),
+          email: c0.email ?? "", phone: c0.phone ?? "",
+          address: dealAddress || [c0.address, c0.city, c0.state, c0.zip].filter(Boolean).join(", "),
+        } });
       } catch { return j(headers, 200, { ok: true, prefill: {} }); }
     }
 
