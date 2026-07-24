@@ -205,6 +205,8 @@ app.post("/onboard-proxy", async (c) => {
       setText("Construction Plans", answers.construction ?? "");
       setNum("Year Built", answers.yearBuilt ?? "");
       setText("🙆 Owner Phone(s)", answers.ownerPhones ?? "");
+      setText("🙆 Owner Name(s)", answers.ownerNames ?? "");
+      setText("🙆 Owner e-mail(s)", answers.ownerEmails ?? "");
       setText("Mailbox", answers.mailbox ?? "");
       setText("Storage", answers.storage ?? "");
       setText("Parking", answers.parking ?? "");
@@ -215,6 +217,12 @@ app.post("/onboard-proxy", async (c) => {
       setText("Appliances", answers.appliances ?? "");
       setText("Heating Type", answers.heating ?? "");
       setText("Owner Preferences", answers.ownerPreferences ?? "");
+      setText("Special Note", answers.specialNote ?? "");
+      setText("Pest Control", answers.pest ?? "");
+      setText("Landscaping Maintenance", answers.landscaping ?? "");
+      setText("Common Area Cleaning", answers.commonArea ?? "");
+      setText("Utilities - Electricity", ""); // enum-only; skip unless mapped
+      // per-utility enum mapping (Tenant Account / Sagareus Pass Through / etc. is set at push, not here)
 
       const TITLE: Record<string, string> = { new_client: "Initial Onboarding", add_property: "Add Property", add_unit: "Add Unit" };
       const task = await asana("POST", "/tasks", {
@@ -224,8 +232,15 @@ app.post("/onboard-proxy", async (c) => {
         custom_fields: Object.keys(cf).length ? cf : undefined,
       });
       if (target) { try { await asana("POST", `/sections/${target.gid}/addTask`, { task: task.gid }); } catch { /* stays in default */ } }
+      const unitNoField = byName.get("unit #");
       for (const u of units) {
-        try { await asana("POST", `/tasks/${task.gid}/subtasks`, { name: `Unit ${u.label} | ${address}`, notes: `${u.beds} bd / ${u.baths} ba${u.sqft ? " / " + u.sqft + " sqft" : ""}` }); } catch { /* best-effort */ }
+        try {
+          const sub = await asana("POST", `/tasks/${task.gid}/subtasks`, { name: `Unit ${u.label} | ${address}`, notes: `${u.beds} bd / ${u.baths} ba${u.sqft ? " / " + u.sqft + " sqft" : ""}` });
+          const n = Number(String(u.label).replace(/[^0-9]/g, ""));
+          if (unitNoField && sub?.gid && Number.isFinite(n) && n > 0) {
+            try { await asana("PUT", `/tasks/${sub.gid}`, { custom_fields: { [unitNoField.gid]: n } }); } catch { /* field may not accept */ }
+          }
+        } catch { /* best-effort */ }
       }
 
       // LLM summary -> Onboarding Summary field + comment (fail-soft)
