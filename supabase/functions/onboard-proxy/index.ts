@@ -136,6 +136,137 @@ app.post("/onboard-proxy", async (c) => {
   const action = String(body.action ?? "");
 
   try {
+    // ---------- obSubmit: /onboard wizard -> Client Relations // Initial Onboard ----------
+    // OPEN endpoint by design (open-but-contained): writes ONLY to the Initial Onboard
+    // project. Nothing here touches Property/Unit Settings; the push is a later staff step.
+    if (action === "obSubmit") {
+      const OB_PROJECT = "1216860326210544";
+      const SECTIONS: Record<string, string> = { new_client: "New Submissions", add_property: "Existing Client Requests", add_unit: "Existing Client Requests" };
+      const kind = ["new_client", "add_property", "add_unit"].includes(String(body.kind)) ? String(body.kind) : "new_client";
+      const address = String(body.address ?? "").trim().slice(0, 200);
+      if (!address) return j(headers, 400, { error: "missing_address", message: "Property address is required." });
+      const answers = (body.answers && typeof body.answers === "object") ? body.answers as Record<string, string> : {};
+      const units = (Array.isArray(body.units) ? body.units : []).slice(0, 30).map((u: Record<string, unknown>) => ({
+        label: String(u.label ?? "").slice(0, 40), beds: String(u.beds ?? "").slice(0, 10),
+        baths: String(u.baths ?? "").slice(0, 10), sqft: String(u.sqft ?? "").slice(0, 10),
+      })).filter((u: { label: string }) => u.label);
+      const sectionsDump = (Array.isArray(body.sections) ? body.sections : []).slice(0, 20).map((sec: Record<string, unknown>) => ({
+        title: String(sec.title ?? "").slice(0, 80),
+        rows: (Array.isArray(sec.rows) ? sec.rows : []).slice(0, 60).map((r: Record<string, unknown>) => ({
+          q: String(r.q ?? "").slice(0, 160), a: String(r.a ?? "").slice(0, 1500),
+        })).filter((r: { q: string; a: string }) => r.q && r.a),
+      })).filter((sec: { rows: unknown[] }) => sec.rows.length);
+
+      // task description: the full structured dump (source of record for unmapped answers)
+      const lines: string[] = [`INITIAL ONBOARDING SUBMISSION (${kind.replace("_", " ")}) | ${address}`, `Submitted via the /onboard wizard on ${new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 16).replace("T", " ")} (Seattle time).`, ""];
+      for (const sec of sectionsDump) {
+        lines.push(`=== ${sec.title.toUpperCase()} ===`);
+        for (const r of sec.rows) lines.push(`${r.q}: ${r.a}`);
+        lines.push("");
+      }
+      if (units.length) {
+        lines.push("=== UNITS ===");
+        units.forEach((u: { label: string; beds: string; baths: string; sqft: string }) => lines.push(`${u.label}: ${u.beds} bd / ${u.baths} ba${u.sqft ? " / " + u.sqft + " sqft" : ""}`));
+        lines.push("");
+      }
+      lines.push("Photos, leases, and HOA documents: owner was directed to email them to onboarding@sagareus.com.");
+
+      // find target section
+      const secs = await asana("GET", `/projects/${OB_PROJECT}/sections?opt_fields=name`);
+      const target = (secs ?? []).find((x: { name: string }) => x.name === SECTIONS[kind]) ?? null;
+
+      // enum matching helper against the project's own fields
+      const settings = await asana("GET", `/projects/${OB_PROJECT}/custom_field_settings?limit=100&opt_fields=custom_field.gid,custom_field.name,custom_field.resource_subtype,custom_field.enum_options.gid,custom_field.enum_options.name`);
+      const byName = new Map<string, { gid: string; type: string; options: { gid: string; name: string }[] }>();
+      for (const st of settings ?? []) {
+        const f = st.custom_field;
+        byName.set(String(f.name).toLowerCase(), { gid: f.gid, type: f.resource_subtype, options: f.enum_options ?? [] });
+      }
+      const cf: Record<string, unknown> = {};
+      const setText = (name: string, val: string) => {
+        const f = byName.get(name.toLowerCase());
+        if (f && val) cf[f.gid] = String(val).slice(0, 1000);
+      };
+      const setEnum = (name: string, val: string) => {
+        const f = byName.get(name.toLowerCase());
+        if (!f || !val) return;
+        const hit = f.options.find((o) => o.name.toLowerCase() === val.toLowerCase()) ??
+          f.options.find((o) => val.toLowerCase().startsWith(o.name.slice(0, 12).toLowerCase()) || o.name.toLowerCase().startsWith(val.slice(0, 12).toLowerCase()));
+        if (hit) cf[f.gid] = hit.gid;
+      };
+      const setNum = (name: string, val: string) => {
+        const f = byName.get(name.toLowerCase());
+        const n = Number(val);
+        if (f && Number.isFinite(n) && n > 0) cf[f.gid] = n;
+      };
+      setEnum("Applicant Criteria", answers.criteria ?? "");
+      setEnum("Pet Policy", answers.pets ?? "");
+      setEnum("Landscaping Policy", answers.landscaping ?? "");
+      setText("Construction Plans", answers.construction ?? "");
+      setNum("Year Built", answers.yearBuilt ?? "");
+      setText("🙆 Owner Phone(s)", answers.ownerPhones ?? "");
+      setText("Mailbox", answers.mailbox ?? "");
+      setText("Storage", answers.storage ?? "");
+      setText("Parking", answers.parking ?? "");
+      setText("Cooling", answers.cooling ?? "");
+      setText("EV Charger", answers.ev ?? "");
+      setText("Internet Provider", answers.internetProvider ?? "");
+      setText("Utilities", answers.utilities ?? "");
+      setText("Appliances", answers.appliances ?? "");
+      setText("Heating Type", answers.heating ?? "");
+      setText("Owner Preferences", answers.ownerPreferences ?? "");
+
+      const TITLE: Record<string, string> = { new_client: "Initial Onboarding", add_property: "Add Property", add_unit: "Add Unit" };
+      const task = await asana("POST", "/tasks", {
+        name: `${TITLE[kind]} | ${address}`,
+        projects: [OB_PROJECT],
+        notes: lines.join("\n").slice(0, 60000),
+        custom_fields: Object.keys(cf).length ? cf : undefined,
+      });
+      if (target) { try { await asana("POST", `/sections/${target.gid}/addTask`, { task: task.gid }); } catch { /* stays in default */ } }
+      for (const u of units) {
+        try { await asana("POST", `/tasks/${task.gid}/subtasks`, { name: `Unit ${u.label} | ${address}`, notes: `${u.beds} bd / ${u.baths} ba${u.sqft ? " / " + u.sqft + " sqft" : ""}` }); } catch { /* best-effort */ }
+      }
+
+      // LLM summary -> Onboarding Summary field + comment (fail-soft)
+      let summary = "";
+      try {
+        const OR_KEY = Deno.env.get("OPENROUTER_API_KEY") ?? "";
+        if (OR_KEY) {
+          const SYSTEM = "You write the Onboarding Summary for a Sagareus property management onboarding. From the intake below, write: (1) a tight 4-8 sentence operational summary a coordinator can act on (occupancy, transfer situation, access, utilities plan, policies chosen, risks/flags), then (2) a 30-60-90 Day Priorities list, 2-4 bullets per period, grounded ONLY in the intake. Plain text, no markdown headers other than the literal lines 'SUMMARY', '30 DAYS', '60 DAYS', '90 DAYS'. No em dashes. Do not invent facts.";
+          const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${OR_KEY}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ model: "anthropic/claude-sonnet-5", max_tokens: 900, messages: [{ role: "system", content: SYSTEM }, { role: "user", content: lines.join("\n").slice(0, 12000) }] }),
+          });
+          const jr = await r.json().catch(() => ({}));
+          summary = String(jr?.choices?.[0]?.message?.content ?? "").trim();
+          if (summary) {
+            try { await asana("PUT", `/tasks/${task.gid}`, { custom_fields: { "1216860326654431": summary.slice(0, 1000) } }); } catch { /* field cap */ }
+            await asana("POST", `/tasks/${task.gid}/stories`, { html_text: storyHtml(summary.slice(0, 60000)) });
+          }
+        }
+      } catch { /* summary is best-effort */ }
+
+      return j(headers, 200, { ok: true, taskGid: task.gid, taskUrl: `https://app.asana.com/0/0/${task.gid}`, summarized: !!summary });
+    }
+
+    // ---------- obPrefill: HubSpot deal lookup (inactive until a CRM token secret exists) ----------
+    if (action === "obPrefill") {
+      const HS = Deno.env.get("HUBSPOT_CRM_TOKEN") ?? "";
+      const email = String(body.email ?? "").trim().slice(0, 200);
+      if (!HS || !email) return j(headers, 200, { ok: true, prefill: {} });
+      try {
+        const r = await fetch("https://api.hubapi.com/crm/v3/objects/contacts/search", {
+          method: "POST", headers: { "Authorization": `Bearer ${HS}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ filterGroups: [{ filters: [{ propertyName: "email", operator: "EQ", value: email }] }], properties: ["firstname", "lastname", "email", "phone", "address", "city", "state", "zip"], limit: 1 }),
+        });
+        const jr = await r.json().catch(() => ({}));
+        const c0 = jr?.results?.[0]?.properties ?? {};
+        return j(headers, 200, { ok: true, prefill: { ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" "), email: c0.email ?? "", phone: c0.phone ?? "", address: [c0.address, c0.city, c0.state, c0.zip].filter(Boolean).join(", ") } });
+      } catch { return j(headers, 200, { ok: true, prefill: {} }); }
+    }
+
     // ---------- link (internal) ----------
     if (action === "link") {
       if (!TEAM_KEY || c.req.header("x-sv-key") !== TEAM_KEY) return j(headers, 401, { error: "bad_key" });
