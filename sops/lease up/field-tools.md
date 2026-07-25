@@ -4,7 +4,7 @@ service_line: lease up
 sop_owner: brittany@sagareus.com
 outline_url: https://sagareus.getoutline.com/doc/field-tools-bDa7ScAbvH
 status: active
-last_reviewed: 2026-07-22
+last_reviewed: 2026-07-24
 visibility_tier: ic
 version: 1
 tags: [leasing, field-tools, site-visit, activity-report, prelisting, change-log, team-hub]
@@ -49,6 +49,7 @@ The Team Hub at **https://www.sagareus.com/field** hosts the three leasing field
 * **07-23** — Polish Comment on Agent Comments (write 12+ words first, AI tidies it — same as the Activity Report). The text report now opens with an owner intro: analysis complete, review and reply, we proceed in one week if we don't hear back. The intro is editable in the page editor.
 * **07-23** — The polish button now shows "Keep typing... N more words" until you hit the 12-word minimum (both here and on the Activity Report). Post to Buildium completes the "Prepare | BD Listing" subtask; Copy & Post to Asana completes "Email | Owner - Market Rent & PreListing" — both stamped with today as the due date so the done-day is visible. Posting also writes Starting Price, Minimum Price, and the new 🤖 Estimated Market Rent field on the LU task, so we can compare our estimate to the actual lease later.
 * **07-24** — Bug fix: the AI's commentary (location research notes, verify-before-publishing reminders) could land inside the draft listing text and travel to Buildium. It now lives in its own "AI Notes" box under the Generate button and can never enter the draft, the report, or a posted listing.
+* **07-24** — Staff feedback round: comp links now open the actual Zillow listing (no more hand-fixing links before sending); security deposit prints "$100 less than 1 month rent" instead of a dollar amount (draft listing + strategy); comps pull on bedroom count only for a wider pool; new Radius selector (Auto to 10 mi) for thin markets; "Active only" filter chip next to the month chips, on by default; and Agent Comments now insert themselves into the owner email even if you edited the text before writing them. Requested for later (logged in the Improvements task): add a comp by pasting a Zillow link.
 
 ## Change Log — Inspections (in the workshop, /wt only)
 
@@ -68,3 +69,10 @@ Field tool #4, not yet on /field. Testing at https://www.sagareus.com/wt.
 Owner-facing multi-step onboarding. Writes to the new **Client Relations // Initial Onboard** Asana project only; data pushes to Property/Unit Settings later via a staff step (fill blanks, never overwrite).
 
 * **07-24** — Built and live on /wt: Welcome → New Client or Existing Client. New Client: encrypted Accounting form embedded first (separate for security), then the PM Onboarding sections as tap-open dropdowns mirroring the current Jotform with its branching (multifamily, occupancy, key transfer, PM transfer, HOA, non-conforming), policies acknowledgment with initials, save-and-come-back, and a close-out with next steps + downloadable onboarding doc. Existing Client: Add Property / Add Unit quick requests, or the secure Account Update form embedded. Every submission lands as a task with custom fields, unit subtasks, and an AI-compiled Onboarding Summary with 30-60-90 day priorities.
+* **07-24** — Flow reshaped: New Client opens a 3-step roadmap card (Accounting Onboarding → Property Onboarding → Close Out, each explained) with a Take Me To Accounting Form button. The accounting skip option is removed — accounting comes first. Every step button now matches the accounting form's Save/Next style.
+* **07-24** — Sections rebuilt: Owner Details is now Authorized Personnel — contact cards (Name, Phone, Email, Relationship) with an info popup explaining who belongs there, add as many as needed. Communication Preferences options are short labels with "i" popups defining each. Property Details moved up under Communication Preferences; vacancy is renamed Vacancy Status and sits last in Transfer Details with new branches: pending move out reveals Current Occupant cards, a deposit-refund dropdown, and a green leasing-procedures card; fully occupied reveals occupant cards plus a tenant docs upload spot. Construction is a required Yes/No with timeline + site plan; urgent repairs moved to Transfer Details with a photo upload spot.
+* **07-24** — Dropdowns everywhere: Property Type, Heating Type (with notes), Garage Details (1-4 car), HOA "What Does HOA Manage?" checkboxes, an EV "open to install" option, and all seven utility providers pull from the Resident Hub list with an Other type-in. Preferred Vendors are contact cards with a vendor-type dropdown. Utility Management choosing "Sagareus to manage" reveals the disable-auto-pay reminder card.
+* **07-24** — Policies acknowledged now include the 72-hour response policy and the Construction Addendum ($200/mo rent credit during construction). Filled fields turn and stay green across the whole widget so progress is visible at a glance.
+* **07-24** — Prefill upgraded: entering your email pulls the property address from the HubSpot deal card, not just the contact card. Internal deal data (fees, notes) never reaches the form.
+* **07-24** — For editors: every piece of wizard copy is editable in the page editor, organized into 8 screen-by-screen groups with a plain-English note on each field.
+* **07-24** — Feedback home: the "Field Tools | Bugs & Feature Requests" task in the Improvements project has a subtask per tool — drop bugs and requests there.
