@@ -94,6 +94,7 @@ app.post("*", async (c) => {
   const bedrooms = num(body.bedrooms, 0, 20);
   const bathrooms = num(body.bathrooms, 0, 20);
   const squareFootage = num(body.squareFootage, 100, 50000);
+  const maxRadius = num(body.maxRadius, 0.5, 25);
 
   const today = new Date().toISOString().slice(0, 10);
   const ip = (c.req.header("x-forwarded-for") ?? "unknown").split(",")[0].trim();
@@ -106,7 +107,7 @@ app.post("*", async (c) => {
     return new Response(JSON.stringify({ error: "rate_limited", message: "Daily lookup limit reached. Try again tomorrow, or request a proposal and we'll run the numbers for you." }), { status: 429, headers });
   }
 
-  const cacheKey = [address.toLowerCase(), propertyType, bedrooms ?? "", bathrooms ?? "", squareFootage ?? "", "v2"].join("|");
+  const cacheKey = [address.toLowerCase(), propertyType, bedrooms ?? "", bathrooms ?? "", squareFootage ?? "", maxRadius ?? "", "v2"].join("|");
   const { data: cacheRow } = await supabase
     .from("rentcast_cache").select("payload, created_at").eq("cache_key", cacheKey).maybeSingle();
 
@@ -134,6 +135,7 @@ app.post("*", async (c) => {
   if (bedrooms !== undefined) qs.set("bedrooms", String(bedrooms));
   if (bathrooms !== undefined) qs.set("bathrooms", String(bathrooms));
   if (squareFootage !== undefined) qs.set("squareFootage", String(squareFootage));
+  if (maxRadius !== undefined) qs.set("maxRadius", String(maxRadius));
 
   const upstream = await fetch(`https://api.rentcast.io/v1/avm/rent/long-term?${qs}`, {
     headers: { "X-Api-Key": RENTCAST_API_KEY, "Accept": "application/json" },
