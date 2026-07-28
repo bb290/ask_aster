@@ -306,6 +306,7 @@ app.post("/onboard-proxy", async (c) => {
         const c0 = hit?.properties ?? {};
         let dealAddress = "";
         let dealNotes = "", dealUnits = "";
+        let dealFields: Record<string, string> = {};
         if (hit?.id) {
           const MGMT_PIPELINE = "2185322227";                                        // Mgmt 3.0
           const ONBOARD_STAGES = new Set(["3505530584", "3505670864", "3540740803"]); // FS Onboard, TP Onboard, Closed Won
@@ -315,7 +316,7 @@ app.post("/onboard-proxy", async (c) => {
           if (ids.length) {
             const br = await hs("/crm/v3/objects/deals/batch/read", {
               method: "POST",
-              body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate", "onboarding_notes", "units", "bed__bath__sqft"] }),
+              body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate", "onboarding_notes", "units", "bed__bath__sqft", "ob_property_type", "ob_year_built", "ob_vacancy_status", "ob_pet_policy", "ob_applicant_criteria", "ob_construction_planned"] }),
             });
             const bj = await br.json().catch(() => ({}));
             const deals = (bj?.results ?? [])
@@ -327,6 +328,15 @@ app.post("/onboard-proxy", async (c) => {
             const d0 = deals[0];
             dealNotes = String(d0?.onboarding_notes ?? "").slice(0, 2000);
             dealUnits = String(d0?.units ?? "");
+            dealFields = {
+              ptype: String(d0?.ob_property_type ?? ""),
+              yearBuilt: String(d0?.ob_year_built ?? ""),
+              occ: String(d0?.ob_vacancy_status ?? ""),
+              // HubSpot enum values cannot hold semicolons; restore the wizard's exact string
+              pets: String(d0?.ob_pet_policy ?? "").replace("up to 30lbs, $50/mo", "up to 30lbs; $50/mo"),
+              criteria: String(d0?.ob_applicant_criteria ?? ""),
+              construction: String(d0?.ob_construction_planned ?? ""),
+            };
             if (d0?.dealname) {
               const name = String(d0.dealname).replace(/^\s*\[[^\]]*\]\s*/, "").trim();  // strip "[MGMT]"-style prefixes
               const city = String(d0.subject_city ?? "").trim();
@@ -338,7 +348,7 @@ app.post("/onboard-proxy", async (c) => {
           ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" "),
           email: c0.email ?? "", phone: c0.phone ?? "",
           address: dealAddress || [c0.address, c0.city, c0.state, c0.zip].filter(Boolean).join(", "),
-          notes: dealNotes, unitsCount: dealUnits,
+          notes: dealNotes, unitsCount: dealUnits, fields: dealFields,
         } });
       } catch { return j(headers, 200, { ok: true, prefill: {} }); }
     }
