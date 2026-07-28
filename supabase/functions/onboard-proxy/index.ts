@@ -149,6 +149,10 @@ app.post("/onboard-proxy", async (c) => {
       const units = (Array.isArray(body.units) ? body.units : []).slice(0, 30).map((u: Record<string, unknown>) => ({
         label: String(u.label ?? "").slice(0, 40), beds: String(u.beds ?? "").slice(0, 10),
         baths: String(u.baths ?? "").slice(0, 10), sqft: String(u.sqft ?? "").slice(0, 10),
+        laundry: String(u.laundry ?? "").slice(0, 60), mail: String(u.mail ?? "").slice(0, 60),
+        mailnum: String(u.mailnum ?? "").slice(0, 20), storage: String(u.storage ?? "").slice(0, 60),
+        parking: String(u.parking ?? "").slice(0, 60), parknum: String(u.parknum ?? "").slice(0, 20),
+        cooling: String(u.cooling ?? "").slice(0, 40),
       })).filter((u: { label: string }) => u.label);
       const sectionsDump = (Array.isArray(body.sections) ? body.sections : []).slice(0, 20).map((sec: Record<string, unknown>) => ({
         title: String(sec.title ?? "").slice(0, 80),
@@ -166,7 +170,10 @@ app.post("/onboard-proxy", async (c) => {
       }
       if (units.length) {
         lines.push("=== UNITS ===");
-        units.forEach((u: { label: string; beds: string; baths: string; sqft: string }) => lines.push(`${u.label}: ${u.beds} bd / ${u.baths} ba${u.sqft ? " / " + u.sqft + " sqft" : ""}`));
+        units.forEach((u: Record<string, string>) => lines.push([`${u.label}: ${u.beds} bd / ${u.baths} ba${u.sqft ? " / " + u.sqft + " sqft" : ""}`,
+          u.laundry ? `Laundry: ${u.laundry}` : "", u.mail ? `Mail: ${u.mail}${u.mailnum ? " #" + u.mailnum : ""}` : "",
+          u.storage ? `Storage: ${u.storage}` : "", u.parking ? `Parking: ${u.parking}${u.parknum ? " #" + u.parknum : ""}` : "",
+          u.cooling ? `A/C: ${u.cooling}` : ""].filter(Boolean).join(" | ")));
         lines.push("");
       }
       lines.push("Photos, leases, and HOA documents: owner was directed to email them to onboarding@sagareus.com.");
@@ -194,6 +201,16 @@ app.post("/onboard-proxy", async (c) => {
           f.options.find((o) => val.toLowerCase().startsWith(o.name.slice(0, 12).toLowerCase()) || o.name.toLowerCase().startsWith(val.slice(0, 12).toLowerCase()));
         if (hit) cf[f.gid] = hit.gid;
       };
+      const setMulti = (name: string, val: string) => {
+        const f = byName.get(name.toLowerCase());
+        if (!f || !val) return;
+        const gids = String(val).split(",").map((v) => v.trim()).filter(Boolean).map((v) => {
+          const hit = f.options.find((o) => o.name.toLowerCase() === v.toLowerCase()) ??
+            f.options.find((o) => v.toLowerCase().startsWith(o.name.slice(0, 10).toLowerCase()) || o.name.toLowerCase().startsWith(v.slice(0, 10).toLowerCase()));
+          return hit?.gid;
+        }).filter(Boolean);
+        if (gids.length) cf[f.gid] = gids;
+      };
       const setNum = (name: string, val: string) => {
         const f = byName.get(name.toLowerCase());
         const n = Number(val);
@@ -216,6 +233,7 @@ app.post("/onboard-proxy", async (c) => {
       setText("Utilities", answers.utilities ?? "");
       setText("Appliances", answers.appliances ?? "");
       setText("Heating Type", answers.heating ?? "");
+      setMulti("Laundry", answers.laundry ?? "");
       setText("Owner Preferences", answers.ownerPreferences ?? "");
       setText("Special Note", answers.specialNote ?? "");
       setText("Pest Control", answers.pest ?? "");
@@ -235,7 +253,11 @@ app.post("/onboard-proxy", async (c) => {
       const unitNoField = byName.get("unit #");
       for (const u of units) {
         try {
-          const sub = await asana("POST", `/tasks/${task.gid}/subtasks`, { name: `Unit ${u.label} | ${address}`, notes: `${u.beds} bd / ${u.baths} ba${u.sqft ? " / " + u.sqft + " sqft" : ""}` });
+          const detail = [`${u.beds} bd / ${u.baths} ba${u.sqft ? " / " + u.sqft + " sqft" : ""}`,
+            u.laundry ? `Laundry: ${u.laundry}` : "", u.mail ? `Mail: ${u.mail}${u.mailnum ? " #" + u.mailnum : ""}` : "",
+            u.storage ? `Storage: ${u.storage}` : "", u.parking ? `Parking: ${u.parking}${u.parknum ? " #" + u.parknum : ""}` : "",
+            u.cooling ? `A/C: ${u.cooling}` : ""].filter(Boolean).join("\n");
+          const sub = await asana("POST", `/tasks/${task.gid}/subtasks`, { name: `Unit ${u.label} | ${address}`, notes: detail });
           const n = Number(String(u.label).replace(/[^0-9]/g, ""));
           if (unitNoField && sub?.gid && Number.isFinite(n) && n > 0) {
             try { await asana("PUT", `/tasks/${sub.gid}`, { custom_fields: { [unitNoField.gid]: n } }); } catch { /* field may not accept */ }
