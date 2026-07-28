@@ -218,7 +218,6 @@ app.post("/onboard-proxy", async (c) => {
       };
       setEnum("Applicant Criteria", answers.criteria ?? "");
       setEnum("Pet Policy", answers.pets ?? "");
-      setEnum("Landscaping Policy", answers.landscaping ?? "");
       setText("Construction Plans", answers.construction ?? "");
       setNum("Year Built", answers.yearBuilt ?? "");
       setText("🙆 Owner Phone(s)", answers.ownerPhones ?? "");
@@ -237,7 +236,6 @@ app.post("/onboard-proxy", async (c) => {
       setText("Owner Preferences", answers.ownerPreferences ?? "");
       setText("Special Note", answers.specialNote ?? "");
       setText("Pest Control", answers.pest ?? "");
-      setText("Landscaping Maintenance", answers.landscaping ?? "");
       setText("Common Area Cleaning", answers.commonArea ?? "");
       setText("Utilities - Electricity", ""); // enum-only; skip unless mapped
       // per-utility enum mapping (Tenant Account / Sagareus Pass Through / etc. is set at push, not here)
