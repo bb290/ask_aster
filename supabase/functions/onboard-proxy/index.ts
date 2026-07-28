@@ -305,6 +305,7 @@ app.post("/onboard-proxy", async (c) => {
         const hit = jr?.results?.[0];
         const c0 = hit?.properties ?? {};
         let dealAddress = "";
+        let dealNotes = "", dealUnits = "";
         if (hit?.id) {
           const MGMT_PIPELINE = "2185322227";                                        // Mgmt 3.0
           const ONBOARD_STAGES = new Set(["3505530584", "3505670864", "3540740803"]); // FS Onboard, TP Onboard, Closed Won
@@ -314,7 +315,7 @@ app.post("/onboard-proxy", async (c) => {
           if (ids.length) {
             const br = await hs("/crm/v3/objects/deals/batch/read", {
               method: "POST",
-              body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate"] }),
+              body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate", "onboarding_notes", "units", "bed__bath__sqft"] }),
             });
             const bj = await br.json().catch(() => ({}));
             const deals = (bj?.results ?? [])
@@ -324,6 +325,8 @@ app.post("/onboard-proxy", async (c) => {
               ((ONBOARD_STAGES.has(b.dealstage) ? 1 : 0) - (ONBOARD_STAGES.has(a.dealstage) ? 1 : 0)) ||
               String(b.hs_lastmodifieddate ?? "").localeCompare(String(a.hs_lastmodifieddate ?? "")));
             const d0 = deals[0];
+            dealNotes = String(d0?.onboarding_notes ?? "").slice(0, 2000);
+            dealUnits = String(d0?.units ?? "");
             if (d0?.dealname) {
               const name = String(d0.dealname).replace(/^\s*\[[^\]]*\]\s*/, "").trim();  // strip "[MGMT]"-style prefixes
               const city = String(d0.subject_city ?? "").trim();
@@ -335,6 +338,7 @@ app.post("/onboard-proxy", async (c) => {
           ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" "),
           email: c0.email ?? "", phone: c0.phone ?? "",
           address: dealAddress || [c0.address, c0.city, c0.state, c0.zip].filter(Boolean).join(", "),
+          notes: dealNotes, unitsCount: dealUnits,
         } });
       } catch { return j(headers, 200, { ok: true, prefill: {} }); }
     }
