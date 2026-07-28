@@ -248,6 +248,30 @@ app.post("/onboard-proxy", async (c) => {
         custom_fields: Object.keys(cf).length ? cf : undefined,
       });
       if (target) { try { await asana("POST", `/sections/${target.gid}/addTask`, { task: task.gid }); } catch { /* stays in default */ } }
+
+      // Push 2 (new clients): instantiate the (CLIENT) template in Client Relations 2.0
+      let crUrl = "";
+      if (kind === "new_client") {
+        try {
+          const CR_TEMPLATE = "1214028249129136"; // (CLIENT) <Address> / <Owner Name>
+          const firstOwner = String(answers.ownerNames ?? "").split(",")[0].replace(/\s*\([^)]*\)/, "").trim();
+          const job = await asana("POST", `/task_templates/${CR_TEMPLATE}/instantiateTask`, {
+            name: `(CLIENT) ${address}${firstOwner ? " / " + firstOwner : ""}`,
+          });
+          let crGid = job?.new_task?.gid ?? "";
+          for (let i = 0; i < 10 && !crGid; i++) {
+            await new Promise((res) => setTimeout(res, 700));
+            const jb = await asana("GET", `/jobs/${job.gid}`);
+            if (jb?.status === "succeeded" || jb?.new_task?.gid) crGid = jb?.new_task?.gid ?? "";
+            if (jb?.status === "failed") break;
+          }
+          if (crGid) {
+            crUrl = `https://app.asana.com/0/0/${crGid}`;
+            await asana("POST", `/tasks/${crGid}/stories`, { html_text: storyHtml(`Created by the onboarding wizard. Full onboarding data: https://app.asana.com/0/0/${task.gid}`) }).catch(() => null);
+            await asana("POST", `/tasks/${task.gid}/stories`, { html_text: storyHtml(`Client Relations task created: ${crUrl}`) }).catch(() => null);
+          }
+        } catch { /* CR task creation is best-effort; onboarding data is already safe */ }
+      }
       const unitNoField = byName.get("unit #");
       for (const u of units) {
         try {
@@ -283,7 +307,53 @@ app.post("/onboard-proxy", async (c) => {
         }
       } catch { /* summary is best-effort */ }
 
-      return j(headers, 200, { ok: true, taskGid: task.gid, taskUrl: `https://app.asana.com/0/0/${task.gid}`, summarized: !!summary });
+      return j(headers, 200, { ok: true, taskGid: task.gid, taskUrl: `https://app.asana.com/0/0/${task.gid}`, crUrl, summarized: !!summary });
+    }
+
+    // ---------- obAttach: owner shares document links onto their onboarding task ----------
+    if (action === "obAttach") {
+      const OB_PROJECT = "1216860326210544";
+      const gid = String(body.taskGid ?? "").replace(/[^0-9]/g, "");
+      if (!gid) return j(headers, 400, { error: "bad_task" });
+      const links = (Array.isArray(body.links) ? body.links : []).slice(0, 10)
+        .map((u: unknown) => String(u).trim()).filter((u: string) => /^https?:\/\/\S+$/.test(u) && u.length < 500);
+      if (!links.length) return j(headers, 400, { error: "no_links", message: "Nothing to attach." });
+      const task = await asana("GET", `/tasks/${gid}?opt_fields=projects.gid`).catch(() => null);
+      const inOb = (task?.projects ?? []).some((p: { gid: string }) => p.gid === OB_PROJECT);
+      if (!inOb) return j(headers, 403, { error: "not_onboarding_task" });
+      const label = String(body.label ?? "documents").slice(0, 60);
+      await asana("POST", `/tasks/${gid}/stories`, { html_text: storyHtml(`Owner shared ${label}:\n${links.join("\n")}`) });
+      return j(headers, 200, { ok: true, attached: links.length });
+    }
+
+    // ---------- obUploadUrl: signed storage upload for owner documents ----------
+    if (action === "obUploadUrl") {
+      const OB_PROJECT = "1216860326210544";
+      const gid = String(body.taskGid ?? "").replace(/[^0-9]/g, "");
+      if (!gid) return j(headers, 400, { error: "bad_task" });
+      const task = await asana("GET", `/tasks/${gid}?opt_fields=projects.gid`).catch(() => null);
+      const inOb = (task?.projects ?? []).some((p: { gid: string }) => p.gid === OB_PROJECT);
+      if (!inOb) return j(headers, 403, { error: "not_onboarding_task" });
+      const supaUrl = Deno.env.get("SUPABASE_URL") ?? "";
+      const supaKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+      if (!supaUrl || !supaKey) return j(headers, 500, { error: "storage_not_configured" });
+      const filename = String(body.filename ?? "document").replace(/[^\w.\-]/g, "_").slice(0, 80);
+      const key = `ob-docs/${gid}/${crypto.randomUUID().slice(0, 8)}-${filename}`;
+      const sh = { "Authorization": `Bearer ${supaKey}`, "apikey": supaKey };
+      await fetch(`${supaUrl}/storage/v1/bucket`, {
+        method: "POST", headers: { ...sh, "Content-Type": "application/json" },
+        body: JSON.stringify({ id: "inspections", name: "inspections", public: true }),
+      }).catch(() => null);
+      const r = await fetch(`${supaUrl}/storage/v1/object/upload/sign/inspections/${key}`, {
+        method: "POST", headers: { ...sh, "Content-Type": "application/json" }, body: "{}",
+      });
+      const jr = await r.json().catch(() => ({}));
+      if (!r.ok || !jr.url) return j(headers, 502, { error: "sign_failed", message: "Could not prepare the upload. Share a link instead, or email the file." });
+      return j(headers, 200, {
+        ok: true,
+        uploadUrl: `${supaUrl}/storage/v1${jr.url}`,
+        publicUrl: `${supaUrl}/storage/v1/object/public/inspections/${key}`,
+      });
     }
 
     // ---------- obPrefill: HubSpot contact + Mgmt 3.0 deal-card lookup ----------
