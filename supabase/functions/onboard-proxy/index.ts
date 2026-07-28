@@ -316,7 +316,7 @@ app.post("/onboard-proxy", async (c) => {
           if (ids.length) {
             const br = await hs("/crm/v3/objects/deals/batch/read", {
               method: "POST",
-              body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate", "onboarding_notes", "units", "bed__bath__sqft", "ob_property_type", "ob_year_built", "ob_vacancy_status", "ob_pet_policy", "ob_applicant_criteria", "ob_construction_planned"] }),
+              body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate", "onboarding_notes", "units", "bed__bath__sqft", "ob_property_type", "ob_year_built", "ob_vacancy_status", "ob_pet_policy", "ob_applicant_criteria", "ob_construction_planned", "ob_construction_timeline", "ob_maintenance_dispatch", "ob_renewal_notice", "ob_leasing_notifications", "ob_pm_transfer", "ob_pm_contact", "ob_rental_registration", "ob_registration_id", "ob_hoa", "ob_hoa_contact", "ob_hoa_manages", "ob_urgent_repairs", "ob_urgent_repairs_detail", "ob_move_out_date", "ob_deposit_refund", "ob_key_transfer", "ob_key_transfer_detail", "ob_tax_parcel_status", "ob_ub_electricity", "ob_ub_water_sewer", "ob_ub_garbage", "ob_ub_gas"] }),
             });
             const bj = await br.json().catch(() => ({}));
             const deals = (bj?.results ?? [])
@@ -336,6 +336,28 @@ app.post("/onboard-proxy", async (c) => {
               pets: String(d0?.ob_pet_policy ?? "").replace("up to 30lbs, $50/mo", "up to 30lbs; $50/mo"),
               criteria: String(d0?.ob_applicant_criteria ?? ""),
               construction: String(d0?.ob_construction_planned ?? ""),
+              constrtime: String(d0?.ob_construction_timeline ?? ""),
+              dispatch: String(d0?.ob_maintenance_dispatch ?? ""),
+              renewal: String(d0?.ob_renewal_notice ?? ""),
+              notifs: String(d0?.ob_leasing_notifications ?? ""),          // semicolon-joined multi
+              pmxfer: String(d0?.ob_pm_transfer ?? ""),
+              pmcontact: String(d0?.ob_pm_contact ?? ""),
+              rentalreg: String(d0?.ob_rental_registration ?? ""),
+              regid: String(d0?.ob_registration_id ?? ""),
+              hoa: String(d0?.ob_hoa ?? ""),
+              hoacontact: String(d0?.ob_hoa_contact ?? ""),
+              hoamanage: String(d0?.ob_hoa_manages ?? ""),                 // semicolon-joined multi
+              repairs: String(d0?.ob_urgent_repairs ?? ""),
+              repairdetail: String(d0?.ob_urgent_repairs_detail ?? ""),
+              moveout: String(d0?.ob_move_out_date ?? ""),
+              depositrefund: String(d0?.ob_deposit_refund ?? ""),
+              keys: String(d0?.ob_key_transfer ?? ""),
+              keydetail: String(d0?.ob_key_transfer_detail ?? ""),
+              conforming: String(d0?.ob_tax_parcel_status ?? ""),
+              ubElec: String(d0?.ob_ub_electricity ?? ""),
+              ubWater: String(d0?.ob_ub_water_sewer ?? ""),
+              ubGarbage: String(d0?.ob_ub_garbage ?? ""),
+              ubGas: String(d0?.ob_ub_gas ?? ""),
             };
             if (d0?.dealname) {
               const name = String(d0.dealname).replace(/^\s*\[[^\]]*\]\s*/, "").trim();  // strip "[MGMT]"-style prefixes
