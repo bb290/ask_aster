@@ -423,12 +423,12 @@ app.post("/onboard-proxy", async (c) => {
             renewal_fee: String(d0.renewal_fee ?? ""),
             annual_inspection_fee: String(d0.annual_inspection_fee ?? ""),
           },
+          units: String(d0.units ?? ""),
           data,
         };
         if (staff) {
           out.stage = String(d0.dealstage ?? "");
           out.bedBathSqft = String(d0.bed__bath__sqft ?? "");
-          out.units = String(d0.units ?? "");
           out.zillow = String(d0.link ?? "");
           out.rentometer = String(d0.rentometer_link ?? "");
           out.dealName = String(d0.dealname ?? "");
