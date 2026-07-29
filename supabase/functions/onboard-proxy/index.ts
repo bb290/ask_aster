@@ -233,6 +233,7 @@ app.post("/onboard-proxy", async (c) => {
       setText("Appliances", answers.appliances ?? "");
       setText("Heating Type", answers.heating ?? "");
       setMulti("Laundry", answers.laundry ?? "");
+      setNum("🤖 Estimated Market Rent", answers.estimatedRent ?? "");
       setText("Owner Preferences", answers.ownerPreferences ?? "");
       setText("Special Note", answers.specialNote ?? "");
       setText("Pest Control", answers.pest ?? "");
@@ -375,7 +376,7 @@ app.post("/onboard-proxy", async (c) => {
         const hit = jr?.results?.[0];
         const c0 = hit?.properties ?? {};
         let dealAddress = "";
-        let dealNotes = "", dealUnits = "";
+        let dealNotes = "", dealUnits = "", dealRent = "";
         let dealFields: Record<string, string> = {};
         if (hit?.id) {
           const MGMT_PIPELINE = "2185322227";                                        // Mgmt 3.0
@@ -386,7 +387,7 @@ app.post("/onboard-proxy", async (c) => {
           if (ids.length) {
             const br = await hs("/crm/v3/objects/deals/batch/read", {
               method: "POST",
-              body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate", "onboarding_notes", "units", "bed__bath__sqft", "ob_property_type", "ob_year_built", "ob_vacancy_status", "ob_pet_policy", "ob_applicant_criteria", "ob_construction_planned", "ob_construction_timeline", "ob_maintenance_dispatch", "ob_renewal_notice", "ob_leasing_notifications", "ob_pm_transfer", "ob_pm_contact", "ob_rental_registration", "ob_registration_id", "ob_hoa", "ob_hoa_contact", "ob_hoa_manages", "ob_urgent_repairs", "ob_urgent_repairs_detail", "ob_move_out_date", "ob_deposit_refund", "ob_key_transfer", "ob_key_transfer_detail", "ob_tax_parcel_status", "ob_ub_electricity", "ob_ub_water_sewer", "ob_ub_garbage", "ob_ub_gas"] }),
+              body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate", "onboarding_notes", "units", "bed__bath__sqft", "estimated_rent", "ob_property_type", "ob_year_built", "ob_vacancy_status", "ob_pet_policy", "ob_applicant_criteria", "ob_construction_planned", "ob_construction_timeline", "ob_maintenance_dispatch", "ob_renewal_notice", "ob_leasing_notifications", "ob_pm_transfer", "ob_pm_contact", "ob_rental_registration", "ob_registration_id", "ob_hoa", "ob_hoa_contact", "ob_hoa_manages", "ob_urgent_repairs", "ob_urgent_repairs_detail", "ob_move_out_date", "ob_deposit_refund", "ob_key_transfer", "ob_key_transfer_detail", "ob_tax_parcel_status", "ob_ub_electricity", "ob_ub_water_sewer", "ob_ub_garbage", "ob_ub_gas"] }),
             });
             const bj = await br.json().catch(() => ({}));
             const deals = (bj?.results ?? [])
@@ -398,6 +399,7 @@ app.post("/onboard-proxy", async (c) => {
             const d0 = deals[0];
             dealNotes = String(d0?.onboarding_notes ?? "").slice(0, 2000);
             dealUnits = String(d0?.units ?? "");
+            dealRent = String(d0?.estimated_rent ?? "");
             dealFields = {
               ptype: String(d0?.ob_property_type ?? ""),
               yearBuilt: String(d0?.ob_year_built ?? ""),
@@ -440,7 +442,7 @@ app.post("/onboard-proxy", async (c) => {
           ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" "),
           email: c0.email ?? "", phone: c0.phone ?? "",
           address: dealAddress || [c0.address, c0.city, c0.state, c0.zip].filter(Boolean).join(", "),
-          notes: dealNotes, unitsCount: dealUnits, fields: dealFields,
+          notes: dealNotes, unitsCount: dealUnits, estimatedRent: dealRent, fields: dealFields,
         } });
       } catch { return j(headers, 200, { ok: true, prefill: {} }); }
     }
