@@ -428,11 +428,13 @@ app.post("/onboard-proxy", async (c) => {
           },
           units: String(d0.units ?? ""),
           agreementUrl: String(d0.ob_agreement_url ?? ""),
+          // bed/bath/sqft of the prospect's own property is proposal-safe; the client
+          // header renders beds/baths from it (moved from staff-only 2026-07-29).
+          bedBathSqft: String(d0.bed__bath__sqft ?? ""),
           data,
         };
         if (staff) {
           out.stage = String(d0.dealstage ?? "");
-          out.bedBathSqft = String(d0.bed__bath__sqft ?? "");
           out.zillow = String(d0.link ?? "");
           out.rentometer = String(d0.rentometer_link ?? "");
           out.dealName = String(d0.dealname ?? "");
