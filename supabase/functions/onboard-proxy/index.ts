@@ -311,6 +311,47 @@ app.post("/onboard-proxy", async (c) => {
       return j(headers, 200, { ok: true, taskGid: task.gid, taskUrl: `https://app.asana.com/0/0/${task.gid}`, crUrl, summarized: !!summary });
     }
 
+    // ---------- propSave (internal, x-sv-key): verify + save proposal numbers to the deal ----------
+    if (action === "propSave") {
+      if (!TEAM_KEY || c.req.header("x-sv-key") !== TEAM_KEY) return j(headers, 401, { error: "bad_key" });
+      const HS = Deno.env.get("HUBSPOT_CRM_TOKEN") ?? "";
+      const email = String(body.email ?? "").trim().slice(0, 200);
+      const rent = Number(body.estimatedRent);
+      const propUrl = String(body.proposalUrl ?? "").slice(0, 400);
+      if (!HS || !email) return j(headers, 400, { error: "missing", message: "Email required." });
+      const hs = (path: string, init?: RequestInit) => fetch("https://api.hubapi.com" + path, {
+        ...init, headers: { "Authorization": `Bearer ${HS}`, "Content-Type": "application/json" },
+      });
+      const r = await hs("/crm/v3/objects/contacts/search", {
+        method: "POST",
+        body: JSON.stringify({ filterGroups: [{ filters: [{ propertyName: "email", operator: "EQ", value: email }] }], properties: ["email"], limit: 1 }),
+      });
+      const jr = await r.json().catch(() => ({}));
+      const cid = jr?.results?.[0]?.id;
+      if (!cid) return j(headers, 404, { error: "no_contact", message: "No HubSpot contact for that email." });
+      const ar = await hs(`/crm/v4/objects/contacts/${cid}/associations/deals?limit=50`);
+      const aj = await ar.json().catch(() => ({}));
+      const ids = (aj?.results ?? []).map((x: { toObjectId?: unknown }) => x?.toObjectId).filter(Boolean);
+      if (!ids.length) return j(headers, 404, { error: "no_deal", message: "No deal associated with that contact." });
+      const br = await hs("/crm/v3/objects/deals/batch/read", {
+        method: "POST",
+        body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "hs_lastmodifieddate"] }),
+      });
+      const bj = await br.json().catch(() => ({}));
+      const deals = (bj?.results ?? []).filter((d: { properties?: Record<string, string> }) => d.properties?.pipeline === "2185322227")
+        .sort((a: { properties?: Record<string, string> }, b: { properties?: Record<string, string> }) =>
+          String(b.properties?.hs_lastmodifieddate ?? "").localeCompare(String(a.properties?.hs_lastmodifieddate ?? "")));
+      const deal = deals[0];
+      if (!deal) return j(headers, 404, { error: "no_mgmt_deal", message: "No Mgmt 3.0 deal for that contact." });
+      const props: Record<string, string> = {};
+      if (Number.isFinite(rent) && rent > 0) props.estimated_rent = String(rent);
+      if (propUrl) props.ob_proposal_url = propUrl;
+      if (!Object.keys(props).length) return j(headers, 400, { error: "nothing_to_save" });
+      const ur = await hs(`/crm/v3/objects/deals/${deal.id}`, { method: "PATCH", body: JSON.stringify({ properties: props }) });
+      if (!ur.ok) return j(headers, 502, { error: "deal_update_failed" });
+      return j(headers, 200, { ok: true, dealName: String(deal.properties?.dealname ?? ""), saved: Object.keys(props) });
+    }
+
     // ---------- obAttach: owner shares document links onto their onboarding task ----------
     if (action === "obAttach") {
       const OB_PROJECT = "1216860326210544";
