@@ -319,6 +319,7 @@ app.post("/onboard-proxy", async (c) => {
       const rent = Number(body.estimatedRent);
       const propUrl = String(body.proposalUrl ?? "").slice(0, 400);
       const propData = String(body.proposalData ?? "").slice(0, 30000);
+      const agreementUrl = String(body.agreementUrl ?? "").trim().slice(0, 500);
       const pricingIn = (body.pricing && typeof body.pricing === "object") ? body.pricing as Record<string, unknown> : {};
       const moveStage = body.moveStage === true;
       if (!HS || !email) return j(headers, 400, { error: "missing", message: "Email required." });
@@ -350,6 +351,8 @@ app.post("/onboard-proxy", async (c) => {
       if (Number.isFinite(rent) && rent > 0) props.estimated_rent = String(rent);
       if (propUrl) props.ob_proposal_url = propUrl;
       if (propData) props.ob_proposal_data = propData;
+      if (/^https:\/\/\S+$/.test(agreementUrl)) props.ob_agreement_url = agreementUrl;
+      else if (agreementUrl === "-") props.ob_agreement_url = "";   // explicit clear
       // Finalized pricing: the same deal properties PandaDoc merges, so web + PDF + PandaDoc agree.
       for (const f of ["onboarding_fee", "lease_up_fee", "mgmt_fee", "renewal_fee", "annual_inspection_fee"]) {
         const v = Number((pricingIn as Record<string, unknown>)[f]);
@@ -397,7 +400,7 @@ app.post("/onboard-proxy", async (c) => {
         if (!ids.length) return j(headers, 200, { ok: true, proposal: { ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" ") } });
         const br = await hs("/crm/v3/objects/deals/batch/read", {
           method: "POST",
-          body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate", "estimated_rent", "onboarding_fee", "lease_up_fee", "mgmt_fee", "renewal_fee", "annual_inspection_fee", "ob_proposal_data", "bed__bath__sqft", "units", "link", "rentometer_link"] }),
+          body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate", "estimated_rent", "onboarding_fee", "lease_up_fee", "mgmt_fee", "renewal_fee", "annual_inspection_fee", "ob_proposal_data", "ob_agreement_url", "bed__bath__sqft", "units", "link", "rentometer_link"] }),
         });
         const bj = await br.json().catch(() => ({}));
         const deals = (bj?.results ?? [])
@@ -424,6 +427,7 @@ app.post("/onboard-proxy", async (c) => {
             annual_inspection_fee: String(d0.annual_inspection_fee ?? ""),
           },
           units: String(d0.units ?? ""),
+          agreementUrl: String(d0.ob_agreement_url ?? ""),
           data,
         };
         if (staff) {
