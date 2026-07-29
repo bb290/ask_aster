@@ -318,6 +318,9 @@ app.post("/onboard-proxy", async (c) => {
       const email = String(body.email ?? "").trim().slice(0, 200);
       const rent = Number(body.estimatedRent);
       const propUrl = String(body.proposalUrl ?? "").slice(0, 400);
+      const propData = String(body.proposalData ?? "").slice(0, 30000);
+      const pricingIn = (body.pricing && typeof body.pricing === "object") ? body.pricing as Record<string, unknown> : {};
+      const moveStage = body.moveStage === true;
       if (!HS || !email) return j(headers, 400, { error: "missing", message: "Email required." });
       const hs = (path: string, init?: RequestInit) => fetch("https://api.hubapi.com" + path, {
         ...init, headers: { "Authorization": `Bearer ${HS}`, "Content-Type": "application/json" },
@@ -335,7 +338,7 @@ app.post("/onboard-proxy", async (c) => {
       if (!ids.length) return j(headers, 404, { error: "no_deal", message: "No deal associated with that contact." });
       const br = await hs("/crm/v3/objects/deals/batch/read", {
         method: "POST",
-        body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "hs_lastmodifieddate"] }),
+        body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "hs_lastmodifieddate"] }),
       });
       const bj = await br.json().catch(() => ({}));
       const deals = (bj?.results ?? []).filter((d: { properties?: Record<string, string> }) => d.properties?.pipeline === "2185322227")
@@ -346,10 +349,92 @@ app.post("/onboard-proxy", async (c) => {
       const props: Record<string, string> = {};
       if (Number.isFinite(rent) && rent > 0) props.estimated_rent = String(rent);
       if (propUrl) props.ob_proposal_url = propUrl;
+      if (propData) props.ob_proposal_data = propData;
+      // Finalized pricing: the same deal properties PandaDoc merges, so web + PDF + PandaDoc agree.
+      for (const f of ["onboarding_fee", "lease_up_fee", "mgmt_fee", "renewal_fee", "annual_inspection_fee"]) {
+        const v = Number((pricingIn as Record<string, unknown>)[f]);
+        if (Number.isFinite(v) && v >= 0) props[f] = String(v);
+      }
+      // Stage move: only forward into Proposal Sent from pre-agreement stages; never pull a deal back from agreement/onboarding/won.
+      const SENT_STAGE = "3505530582";
+      const MOVABLE_FROM = new Set(["3505530579", "3505530580", "3505530581", "3505530583", "3505670865"]);
+      let stageMoved = false, stageNote = "";
+      const curStage = String(deal.properties?.dealstage ?? "");
+      if (moveStage) {
+        if (curStage === SENT_STAGE) stageNote = "Deal is already in Proposal Sent.";
+        else if (MOVABLE_FROM.has(curStage)) { props.dealstage = SENT_STAGE; stageMoved = true; }
+        else stageNote = "Stage left unchanged: the deal is already past the proposal step.";
+      }
       if (!Object.keys(props).length) return j(headers, 400, { error: "nothing_to_save" });
       const ur = await hs(`/crm/v3/objects/deals/${deal.id}`, { method: "PATCH", body: JSON.stringify({ properties: props }) });
       if (!ur.ok) return j(headers, 502, { error: "deal_update_failed" });
-      return j(headers, 200, { ok: true, dealName: String(deal.properties?.dealname ?? ""), saved: Object.keys(props) });
+      return j(headers, 200, { ok: true, dealName: String(deal.properties?.dealname ?? ""), saved: Object.keys(props), stageMoved, stageNote });
+    }
+
+    // ---------- propLoad: proposal payload by prospect email (open, read-only) ----------
+    // Returns only proposal-safe facts: name, address, this prospect's own quoted pricing and
+    // rent analysis. With a valid x-sv-key it adds staff context (stage, bed/bath, links).
+    if (action === "propLoad") {
+      const HS = Deno.env.get("HUBSPOT_CRM_TOKEN") ?? "";
+      const email = String(body.email ?? "").trim().slice(0, 200);
+      if (!HS || !email) return j(headers, 200, { ok: true, proposal: {} });
+      const staff = !!TEAM_KEY && c.req.header("x-sv-key") === TEAM_KEY;
+      try {
+        const hs = (path: string, init?: RequestInit) => fetch("https://api.hubapi.com" + path, {
+          ...init, headers: { "Authorization": `Bearer ${HS}`, "Content-Type": "application/json" },
+        });
+        const r = await hs("/crm/v3/objects/contacts/search", {
+          method: "POST",
+          body: JSON.stringify({ filterGroups: [{ filters: [{ propertyName: "email", operator: "EQ", value: email }] }], properties: ["firstname", "lastname", "email"], limit: 1 }),
+        });
+        const jr = await r.json().catch(() => ({}));
+        const hit = jr?.results?.[0];
+        if (!hit?.id) return j(headers, 200, { ok: true, proposal: {} });
+        const c0 = hit.properties ?? {};
+        const ar = await hs(`/crm/v4/objects/contacts/${hit.id}/associations/deals?limit=50`);
+        const aj = await ar.json().catch(() => ({}));
+        const ids = (aj?.results ?? []).map((x: { toObjectId?: unknown }) => x?.toObjectId).filter(Boolean);
+        if (!ids.length) return j(headers, 200, { ok: true, proposal: { ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" ") } });
+        const br = await hs("/crm/v3/objects/deals/batch/read", {
+          method: "POST",
+          body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate", "estimated_rent", "onboarding_fee", "lease_up_fee", "mgmt_fee", "renewal_fee", "annual_inspection_fee", "ob_proposal_data", "bed__bath__sqft", "units", "link", "rentometer_link"] }),
+        });
+        const bj = await br.json().catch(() => ({}));
+        const deals = (bj?.results ?? [])
+          .map((d: { properties?: Record<string, string> }) => d.properties ?? {})
+          .filter((p: Record<string, string>) => p.pipeline === "2185322227");
+        deals.sort((a: Record<string, string>, b: Record<string, string>) =>
+          String(b.hs_lastmodifieddate ?? "").localeCompare(String(a.hs_lastmodifieddate ?? "")));
+        const d0 = deals[0];
+        if (!d0) return j(headers, 200, { ok: true, proposal: { ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" ") } });
+        const name = String(d0.dealname ?? "").replace(/^\s*\[[^\]]*\]\s*/, "").trim();
+        const city = String(d0.subject_city ?? "").trim();
+        const address = city && name && !name.toLowerCase().includes(city.toLowerCase()) ? `${name}, ${city}` : name;
+        let data: unknown = null;
+        try { data = d0.ob_proposal_data ? JSON.parse(String(d0.ob_proposal_data)) : null; } catch { data = null; }
+        const out: Record<string, unknown> = {
+          ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" "),
+          address, city,
+          estimatedRent: String(d0.estimated_rent ?? ""),
+          pricing: {
+            onboarding_fee: String(d0.onboarding_fee ?? ""),
+            lease_up_fee: String(d0.lease_up_fee ?? ""),
+            mgmt_fee: String(d0.mgmt_fee ?? ""),
+            renewal_fee: String(d0.renewal_fee ?? ""),
+            annual_inspection_fee: String(d0.annual_inspection_fee ?? ""),
+          },
+          data,
+        };
+        if (staff) {
+          out.stage = String(d0.dealstage ?? "");
+          out.bedBathSqft = String(d0.bed__bath__sqft ?? "");
+          out.units = String(d0.units ?? "");
+          out.zillow = String(d0.link ?? "");
+          out.rentometer = String(d0.rentometer_link ?? "");
+          out.dealName = String(d0.dealname ?? "");
+        }
+        return j(headers, 200, { ok: true, proposal: out });
+      } catch { return j(headers, 200, { ok: true, proposal: {} }); }
     }
 
     // ---------- obAttach: owner shares document links onto their onboarding task ----------
