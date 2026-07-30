@@ -400,7 +400,7 @@ app.post("/onboard-proxy", async (c) => {
         if (!ids.length) return j(headers, 200, { ok: true, proposal: { ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" ") } });
         const br = await hs("/crm/v3/objects/deals/batch/read", {
           method: "POST",
-          body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate", "estimated_rent", "onboarding_fee", "lease_up_fee", "mgmt_fee", "renewal_fee", "annual_inspection_fee", "ob_proposal_data", "ob_agreement_url", "bed__bath__sqft", "units", "link", "rentometer_link", "ob_maintenance_dispatch", "ob_renewal_notice", "ob_leasing_notifications", "ob_applicant_criteria", "ob_repair_authorization", "ob_contract_start"] }),
+          body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate", "estimated_rent", "onboarding_fee", "lease_up_fee", "mgmt_fee", "renewal_fee", "annual_inspection_fee", "ob_proposal_data", "ob_agreement_url", "bed__bath__sqft", "units", "link", "rentometer_link", "ob_maintenance_dispatch", "ob_renewal_notice", "ob_leasing_notifications", "ob_applicant_criteria", "authorization", "contract_start_date"] }),
         });
         const bj = await br.json().catch(() => ({}));
         const deals = (bj?.results ?? [])
@@ -438,8 +438,8 @@ app.post("/onboard-proxy", async (c) => {
             renewal: String(d0.ob_renewal_notice ?? ""),
             notifs: String(d0.ob_leasing_notifications ?? ""),
             criteria: String(d0.ob_applicant_criteria ?? ""),
-            authorization: String(d0.ob_repair_authorization ?? ""),
-            contractStart: String(d0.ob_contract_start ?? ""),
+            authorization: String(d0.authorization ?? ""),
+            contractStart: String(d0.contract_start_date ?? ""),
           },
           data,
         };
@@ -466,10 +466,12 @@ app.post("/onboard-proxy", async (c) => {
         ob_maintenance_dispatch: ["Dispatch", "Dispatch + Notify", "100% Owner Provide Instruction"],
         ob_renewal_notice: ["No Owner Communication", "Notify Only", "Owner Approval Required"],
         ob_applicant_criteria: ["Standard: 2.5x rent gross income, 650+ credit score", "Strict: 3x rent gross income & 650+ credit score", "Lenient: 2x rent gross income & 650+ credit score", "Not Sure - Please advise"],
-        ob_repair_authorization: ["$1,000", "$1,500", "$2,000", "$2,500", "$3,000"],
+        // "authorization" + "contract_start_date" are the pre-agreement About-section
+        // properties PandaDoc merges into the PM Agreement (NOT ob_* onboarding fields).
+        authorization: ["1000", "1500", "2000", "2500", "3000"],
       };
       const NOTIF_OPTS = ["None", "PreListing Email", "Listed!", "Weekly Updates", "Lease Signed!"];
-      const KEYMAP: Record<string, string> = { dispatch: "ob_maintenance_dispatch", renewal: "ob_renewal_notice", criteria: "ob_applicant_criteria", authorization: "ob_repair_authorization" };
+      const KEYMAP: Record<string, string> = { dispatch: "ob_maintenance_dispatch", renewal: "ob_renewal_notice", criteria: "ob_applicant_criteria", authorization: "authorization" };
       const props: Record<string, string> = {};
       for (const [k, prop] of Object.entries(KEYMAP)) {
         if (t[k] === undefined) continue;
@@ -485,7 +487,7 @@ app.post("/onboard-proxy", async (c) => {
       if (t.contractStart !== undefined) {
         const v = String(t.contractStart).trim();
         if (v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) return j(headers, 400, { ok: false, error: "invalid contractStart" });
-        props.ob_contract_start = v;
+        props.contract_start_date = v;
       }
       if (!Object.keys(props).length) return j(headers, 400, { ok: false, error: "nothing to save" });
       try {
