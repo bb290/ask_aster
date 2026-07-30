@@ -400,7 +400,7 @@ app.post("/onboard-proxy", async (c) => {
         if (!ids.length) return j(headers, 200, { ok: true, proposal: { ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" ") } });
         const br = await hs("/crm/v3/objects/deals/batch/read", {
           method: "POST",
-          body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate", "estimated_rent", "onboarding_fee", "lease_up_fee", "mgmt_fee", "renewal_fee", "annual_inspection_fee", "ob_proposal_data", "ob_agreement_url", "bed__bath__sqft", "units", "link", "rentometer_link"] }),
+          body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate", "estimated_rent", "onboarding_fee", "lease_up_fee", "mgmt_fee", "renewal_fee", "annual_inspection_fee", "ob_proposal_data", "ob_agreement_url", "bed__bath__sqft", "units", "link", "rentometer_link", "ob_maintenance_dispatch", "ob_renewal_notice", "ob_leasing_notifications", "ob_applicant_criteria", "ob_repair_authorization", "ob_contract_start"] }),
         });
         const bj = await br.json().catch(() => ({}));
         const deals = (bj?.results ?? [])
@@ -431,6 +431,16 @@ app.post("/onboard-proxy", async (c) => {
           // bed/bath/sqft of the prospect's own property is proposal-safe; the client
           // header renders beds/baths from it (moved from staff-only 2026-07-29).
           bedBathSqft: String(d0.bed__bath__sqft ?? ""),
+          // the prospect's own agreement-term selections (Agreement Terms section
+          // prefills from these; propTerms writes them back)
+          terms: {
+            dispatch: String(d0.ob_maintenance_dispatch ?? ""),
+            renewal: String(d0.ob_renewal_notice ?? ""),
+            notifs: String(d0.ob_leasing_notifications ?? ""),
+            criteria: String(d0.ob_applicant_criteria ?? ""),
+            authorization: String(d0.ob_repair_authorization ?? ""),
+            contractStart: String(d0.ob_contract_start ?? ""),
+          },
           data,
         };
         if (staff) {
@@ -441,6 +451,74 @@ app.post("/onboard-proxy", async (c) => {
         }
         return j(headers, 200, { ok: true, proposal: out });
       } catch { return j(headers, 200, { ok: true, proposal: {} }); }
+    }
+
+    // ---------- propTerms: prospect saves agreement-term selections onto their own deal ----------
+    // Open-but-contained (same pattern as obSubmit): writes ONLY the six whitelisted
+    // preference fields, values validated against the exact option lists the onboarding
+    // wizard uses, always to the prospect's own latest Mgmt 3.0 deal.
+    if (action === "propTerms") {
+      const HS = Deno.env.get("HUBSPOT_CRM_TOKEN") ?? "";
+      const email = String(body.email ?? "").trim().slice(0, 200);
+      const t = (body.terms ?? {}) as Record<string, unknown>;
+      if (!HS || !email) return j(headers, 400, { ok: false, error: "missing email" });
+      const OPTS: Record<string, string[]> = {
+        ob_maintenance_dispatch: ["Dispatch", "Dispatch + Notify", "100% Owner Provide Instruction"],
+        ob_renewal_notice: ["No Owner Communication", "Notify Only", "Owner Approval Required"],
+        ob_applicant_criteria: ["Standard: 2.5x rent gross income, 650+ credit score", "Strict: 3x rent gross income & 650+ credit score", "Lenient: 2x rent gross income & 650+ credit score", "Not Sure - Please advise"],
+        ob_repair_authorization: ["$1,000", "$1,500", "$2,000", "$2,500", "$3,000"],
+      };
+      const NOTIF_OPTS = ["None", "PreListing Email", "Listed!", "Weekly Updates", "Lease Signed!"];
+      const KEYMAP: Record<string, string> = { dispatch: "ob_maintenance_dispatch", renewal: "ob_renewal_notice", criteria: "ob_applicant_criteria", authorization: "ob_repair_authorization" };
+      const props: Record<string, string> = {};
+      for (const [k, prop] of Object.entries(KEYMAP)) {
+        if (t[k] === undefined) continue;
+        const v = String(t[k]).trim();
+        if (v && !OPTS[prop].includes(v)) return j(headers, 400, { ok: false, error: `invalid ${k}` });
+        props[prop] = v; // empty clears the field
+      }
+      if (t.notifs !== undefined) {
+        const list = String(t.notifs).split(";").map((s) => s.trim()).filter(Boolean);
+        if (list.some((v) => !NOTIF_OPTS.includes(v))) return j(headers, 400, { ok: false, error: "invalid notifs" });
+        props.ob_leasing_notifications = list.join(";");
+      }
+      if (t.contractStart !== undefined) {
+        const v = String(t.contractStart).trim();
+        if (v && !/^\d{4}-\d{2}-\d{2}$/.test(v)) return j(headers, 400, { ok: false, error: "invalid contractStart" });
+        props.ob_contract_start = v;
+      }
+      if (!Object.keys(props).length) return j(headers, 400, { ok: false, error: "nothing to save" });
+      try {
+        const hs = (path: string, init?: RequestInit) => fetch("https://api.hubapi.com" + path, {
+          ...init, headers: { "Authorization": `Bearer ${HS}`, "Content-Type": "application/json" },
+        });
+        const r = await hs("/crm/v3/objects/contacts/search", {
+          method: "POST",
+          body: JSON.stringify({ filterGroups: [{ filters: [{ propertyName: "email", operator: "EQ", value: email }] }], properties: ["email"], limit: 1 }),
+        });
+        const jr = await r.json().catch(() => ({}));
+        const hit = jr?.results?.[0];
+        if (!hit?.id) return j(headers, 404, { ok: false, error: "no contact" });
+        const ar = await hs(`/crm/v4/objects/contacts/${hit.id}/associations/deals?limit=50`);
+        const aj = await ar.json().catch(() => ({}));
+        const ids = (aj?.results ?? []).map((x: { toObjectId?: unknown }) => x?.toObjectId).filter(Boolean);
+        if (!ids.length) return j(headers, 404, { ok: false, error: "no deal" });
+        const br = await hs("/crm/v3/objects/deals/batch/read", {
+          method: "POST",
+          body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["pipeline", "hs_lastmodifieddate"] }),
+        });
+        const bj = await br.json().catch(() => ({}));
+        const deals = (bj?.results ?? [])
+          .map((d: { id?: unknown; properties?: Record<string, string> }) => ({ id: String(d.id ?? ""), p: d.properties ?? {} }))
+          .filter((d: { id: string; p: Record<string, string> }) => d.id && d.p.pipeline === "2185322227");
+        deals.sort((a: { p: Record<string, string> }, b: { p: Record<string, string> }) =>
+          String(b.p.hs_lastmodifieddate ?? "").localeCompare(String(a.p.hs_lastmodifieddate ?? "")));
+        const deal = deals[0];
+        if (!deal) return j(headers, 404, { ok: false, error: "no deal" });
+        const ur = await hs(`/crm/v3/objects/deals/${deal.id}`, { method: "PATCH", body: JSON.stringify({ properties: props }) });
+        if (!ur.ok) return j(headers, 502, { ok: false, error: "save failed" });
+        return j(headers, 200, { ok: true, saved: Object.keys(props) });
+      } catch { return j(headers, 502, { ok: false, error: "save failed" }); }
     }
 
     // ---------- obAttach: owner shares document links onto their onboarding task ----------
