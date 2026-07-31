@@ -387,6 +387,38 @@ app.post("/onboard-proxy", async (c) => {
                   const um = await hs(`/crm/v3/objects/deals/${dd2.id}`, { method: "PATCH", body: JSON.stringify({ properties: { dealstage: "3505530584" } }) });
                   dealStageMoved = um.ok;
                 }
+                // push the submission back onto the deal's onboarding-wizard properties
+                // (mirror of the obPrefill mapping; overwrite - the wizard submission is
+                // the owner's authoritative answer set)
+                if (dd2) {
+                  const DF_MAP: Record<string, string> = {
+                    ptype: "ob_property_type", yearBuilt: "ob_year_built", occ: "ob_vacancy_status",
+                    pets: "ob_pet_policy", criteria: "ob_applicant_criteria",
+                    construction: "ob_construction_planned", constrtime: "ob_construction_timeline",
+                    dispatch: "ob_maintenance_dispatch", renewal: "ob_renewal_notice", notifs: "ob_leasing_notifications",
+                    pmxfer: "ob_pm_transfer", pmcontact: "ob_pm_contact", rentalreg: "ob_rental_registration",
+                    regid: "ob_registration_id", hoa: "ob_hoa", hoacontact: "ob_hoa_contact", hoamanage: "ob_hoa_manages",
+                    repairs: "ob_urgent_repairs", repairdetail: "ob_urgent_repairs_detail", moveout: "ob_move_out_date",
+                    depositrefund: "ob_deposit_refund", keys: "ob_key_transfer", keydetail: "ob_key_transfer_detail",
+                    conforming: "ob_tax_parcel_status", ubElec: "ob_ub_electricity", ubWater: "ob_ub_water_sewer",
+                    ubGarbage: "ob_ub_garbage", ubGas: "ob_ub_gas", unitsCount: "units", ownernotes: "onboarding_notes",
+                  };
+                  const df = (body.dealFields && typeof body.dealFields === "object") ? body.dealFields as Record<string, unknown> : {};
+                  const fprops: Record<string, string> = {};
+                  for (const [k, prop] of Object.entries(DF_MAP)) {
+                    const v = String(df[k] ?? "").trim().slice(0, 1000);
+                    if (v) fprops[prop] = v;
+                  }
+                  if (Object.keys(fprops).length) {
+                    const fr = await hs(`/crm/v3/objects/deals/${dd2.id}`, { method: "PATCH", body: JSON.stringify({ properties: fprops }) });
+                    if (!fr.ok) {
+                      // one invalid enum value fails the whole batch: retry per property, skipping bad ones
+                      for (const [prop, v] of Object.entries(fprops)) {
+                        await hs(`/crm/v3/objects/deals/${dd2.id}`, { method: "PATCH", body: JSON.stringify({ properties: { [prop]: v } }) }).catch(() => null);
+                      }
+                    }
+                  }
+                }
               }
             }
           }
