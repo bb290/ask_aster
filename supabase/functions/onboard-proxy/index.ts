@@ -567,41 +567,76 @@ app.post("/onboard-proxy", async (c) => {
       return j(headers, 200, { ok: true, dealName: String(deal.properties?.dealname ?? ""), saved: Object.keys(props), stageMoved, stageNote });
     }
 
-    // ---------- propLoad: proposal payload by prospect email (open, read-only) ----------
+    // ---------- propLoad: proposal payload by address slug or prospect email (open, read-only) ----------
+    // Client links carry ?p=<address-slug> (Vincent 2026-07-31); the slug lives inside the deal's
+    // ob_proposal_url, written at propSave. Legacy ?email= links still resolve via the email path.
     // Returns only proposal-safe facts: name, address, this prospect's own quoted pricing and
     // rent analysis. With a valid x-sv-key it adds staff context (stage, bed/bath, links).
     if (action === "propLoad") {
       const HS = Deno.env.get("HUBSPOT_CRM_TOKEN") ?? "";
       const email = String(body.email ?? "").trim().slice(0, 200);
-      if (!HS || !email) return j(headers, 200, { ok: true, proposal: {} });
+      const slugIn = String(body.slug ?? "").trim().toLowerCase().slice(0, 120).replace(/[^a-z0-9-]/g, "");
+      if (!HS || (!email && !slugIn)) return j(headers, 200, { ok: true, proposal: {} });
       const staff = !!TEAM_KEY && c.req.header("x-sv-key") === TEAM_KEY;
       try {
         const hs = (path: string, init?: RequestInit) => fetch("https://api.hubapi.com" + path, {
           ...init, headers: { "Authorization": `Bearer ${HS}`, "Content-Type": "application/json" },
         });
-        const r = await hs("/crm/v3/objects/contacts/search", {
-          method: "POST",
-          body: JSON.stringify({ filterGroups: [{ filters: [{ propertyName: "email", operator: "EQ", value: email }] }], properties: ["firstname", "lastname", "email"], limit: 1 }),
-        });
-        const jr = await r.json().catch(() => ({}));
-        const hit = jr?.results?.[0];
-        if (!hit?.id) return j(headers, 200, { ok: true, proposal: {} });
-        const c0 = hit.properties ?? {};
-        const ar = await hs(`/crm/v4/objects/contacts/${hit.id}/associations/deals?limit=50`);
-        const aj = await ar.json().catch(() => ({}));
-        const ids = (aj?.results ?? []).map((x: { toObjectId?: unknown }) => x?.toObjectId).filter(Boolean);
-        if (!ids.length) return j(headers, 200, { ok: true, proposal: { ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" ") } });
-        const br = await hs("/crm/v3/objects/deals/batch/read", {
-          method: "POST",
-          body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate", "estimated_rent", "onboarding_fee", "lease_up_fee", "mgmt_fee", "renewal_fee", "annual_inspection_fee", "ob_proposal_data", "ob_agreement_url", "bed__bath__sqft", "units", "link", "rentometer_link", "ob_maintenance_dispatch", "ob_renewal_notice", "ob_leasing_notifications", "ob_applicant_criteria"] }),
-        });
-        const bj = await br.json().catch(() => ({}));
-        const deals = (bj?.results ?? [])
-          .map((d: { id?: unknown; properties?: Record<string, string> }) => ({ id: String(d.id ?? ""), p: d.properties ?? {} }))
-          .filter((d: { id: string; p: Record<string, string> }) => d.p.pipeline === "2185322227");
-        deals.sort((a: { p: Record<string, string> }, b: { p: Record<string, string> }) =>
-          String(b.p.hs_lastmodifieddate ?? "").localeCompare(String(a.p.hs_lastmodifieddate ?? "")));
-        const dd = deals[0];
+        const DEAL_PROPS = ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate", "estimated_rent", "onboarding_fee", "lease_up_fee", "mgmt_fee", "renewal_fee", "annual_inspection_fee", "ob_proposal_data", "ob_proposal_url", "ob_agreement_url", "bed__bath__sqft", "units", "link", "rentometer_link", "ob_maintenance_dispatch", "ob_renewal_notice", "ob_leasing_notifications", "ob_applicant_criteria"];
+        let c0: Record<string, string> = {};
+        let dd: { id: string; p: Record<string, string> } | undefined;
+        if (email) {
+          const r = await hs("/crm/v3/objects/contacts/search", {
+            method: "POST",
+            body: JSON.stringify({ filterGroups: [{ filters: [{ propertyName: "email", operator: "EQ", value: email }] }], properties: ["firstname", "lastname", "email"], limit: 1 }),
+          });
+          const jr = await r.json().catch(() => ({}));
+          const hit = jr?.results?.[0];
+          if (!hit?.id) return j(headers, 200, { ok: true, proposal: {} });
+          c0 = hit.properties ?? {};
+          const ar = await hs(`/crm/v4/objects/contacts/${hit.id}/associations/deals?limit=50`);
+          const aj = await ar.json().catch(() => ({}));
+          const ids = (aj?.results ?? []).map((x: { toObjectId?: unknown }) => x?.toObjectId).filter(Boolean);
+          if (!ids.length) return j(headers, 200, { ok: true, proposal: { ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" ") } });
+          const br = await hs("/crm/v3/objects/deals/batch/read", {
+            method: "POST",
+            body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: DEAL_PROPS }),
+          });
+          const bj = await br.json().catch(() => ({}));
+          const deals = (bj?.results ?? [])
+            .map((d: { id?: unknown; properties?: Record<string, string> }) => ({ id: String(d.id ?? ""), p: d.properties ?? {} }))
+            .filter((d: { id: string; p: Record<string, string> }) => d.p.pipeline === "2185322227");
+          deals.sort((a: { p: Record<string, string> }, b: { p: Record<string, string> }) =>
+            String(b.p.hs_lastmodifieddate ?? "").localeCompare(String(a.p.hs_lastmodifieddate ?? "")));
+          dd = deals[0];
+        } else {
+          // Slug path: deal first (CONTAINS_TOKEN narrows, the endsWith check makes it exact -
+          // token search alone could match a subset address), then the associated contact.
+          const sr = await hs("/crm/v3/objects/deals/search", {
+            method: "POST",
+            body: JSON.stringify({
+              filterGroups: [{ filters: [
+                { propertyName: "pipeline", operator: "EQ", value: "2185322227" },
+                { propertyName: "ob_proposal_url", operator: "CONTAINS_TOKEN", value: slugIn },
+              ] }],
+              sorts: [{ propertyName: "hs_lastmodifieddate", direction: "DESCENDING" }],
+              properties: DEAL_PROPS, limit: 20,
+            }),
+          });
+          const sj = await sr.json().catch(() => ({}));
+          dd = (sj?.results ?? [])
+            .map((d: { id?: unknown; properties?: Record<string, string> }) => ({ id: String(d.id ?? ""), p: d.properties ?? {} }))
+            .filter((d: { id: string; p: Record<string, string> }) => String(d.p.ob_proposal_url ?? "").endsWith("p=" + slugIn))[0];
+          if (!dd) return j(headers, 200, { ok: true, proposal: {} });
+          const car = await hs(`/crm/v4/objects/deals/${dd.id}/associations/contacts?limit=5`);
+          const caj = await car.json().catch(() => ({}));
+          const cids = (caj?.results ?? []).map((x: { toObjectId?: unknown }) => x?.toObjectId).filter(Boolean);
+          if (cids.length) {
+            const cr2 = await hs(`/crm/v3/objects/contacts/${String(cids[0])}?properties=firstname,lastname,email`);
+            const cj2 = await cr2.json().catch(() => ({}));
+            c0 = (cj2?.properties ?? {}) as Record<string, string>;
+          }
+        }
         const d0 = dd?.p;
         if (!d0) return j(headers, 200, { ok: true, proposal: { ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" ") } });
         const name = String(d0.dealname ?? "").replace(/^\s*\[[^\]]*\]\s*/, "").trim();
@@ -611,6 +646,8 @@ app.post("/onboard-proxy", async (c) => {
         try { data = d0.ob_proposal_data ? JSON.parse(String(d0.ob_proposal_data)) : null; } catch { data = null; }
         const out: Record<string, unknown> = {
           ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" "),
+          // slug arrivals learn the prospect email here (Owner Preferences autosave targets it)
+          email: String(c0.email ?? ""),
           address, city,
           estimatedRent: String(d0.estimated_rent ?? ""),
           pricing: {
@@ -640,7 +677,7 @@ app.post("/onboard-proxy", async (c) => {
           out.zillow = String(d0.link ?? "");
           out.rentometer = String(d0.rentometer_link ?? "");
           out.dealName = String(d0.dealname ?? "");
-          out.dealId = dd.id;   // Save To Deal opens the deal record in HubSpot
+          out.dealId = dd?.id ?? "";   // Save To Deal opens the deal record in HubSpot
         }
         return j(headers, 200, { ok: true, proposal: out });
       } catch { return j(headers, 200, { ok: true, proposal: {} }); }
