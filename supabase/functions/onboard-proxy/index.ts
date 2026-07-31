@@ -339,7 +339,7 @@ app.post("/onboard-proxy", async (c) => {
       if (!ids.length) return j(headers, 404, { error: "no_deal", message: "No deal associated with that contact." });
       const br = await hs("/crm/v3/objects/deals/batch/read", {
         method: "POST",
-        body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "hs_lastmodifieddate", "authorization"] }),
+        body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "hs_lastmodifieddate", "authorization", "link"] }),
       });
       const bj = await br.json().catch(() => ({}));
       const deals = (bj?.results ?? []).filter((d: { properties?: Record<string, string> }) => d.properties?.pipeline === "2185322227")
@@ -357,6 +357,10 @@ app.post("/onboard-proxy", async (c) => {
       // - contract_start_date = proposal save date + 3 days, refreshed on every save
       if (propUrl) props.rentometer_link = propUrl;
       if (!String(deal.properties?.authorization ?? "").trim()) props.authorization = "1000";
+      // Zillow/Redfin link: subject-property Zillow URL, fill-blank only (a hand-pasted
+      // specific listing URL on the deal always wins over the generated search URL)
+      const zillowUrl = String(body.zillowUrl ?? "").trim().slice(0, 400);
+      if (/^https:\/\/www\.zillow\.com\//.test(zillowUrl) && !String(deal.properties?.link ?? "").trim()) props.link = zillowUrl;
       props.contract_start_date = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
       if (propData) props.ob_proposal_data = propData;
       if (/^https:\/\/\S+$/.test(agreementUrl)) props.ob_agreement_url = agreementUrl;
