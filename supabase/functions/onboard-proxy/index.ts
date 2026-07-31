@@ -650,6 +650,31 @@ app.post("/onboard-proxy", async (c) => {
       } catch { return j(headers, 502, { ok: false, error: "save failed" }); }
     }
 
+    // ---------- obPdf: the wizard uploads the owner's Onboarding Summary PDF ----------
+    // Open-but-contained: accepts ONLY a valid PDF, and ONLY onto a task that lives in
+    // Client Relations 2.0 or the Initial Onboard project (the tasks obSubmit just made).
+    if (action === "obPdf") {
+      const gid = String(body.taskGid ?? "").trim();
+      const b64 = String(body.pdfBase64 ?? "");
+      const fname = String(body.filename ?? "Onboarding-Summary.pdf").replace(/[^\w.-]+/g, "-").slice(0, 80) || "Onboarding-Summary.pdf";
+      if (!/^\d+$/.test(gid)) return j(headers, 400, { error: "bad_task" });
+      if (!b64 || b64.length > 9_000_000) return j(headers, 400, { error: "bad_pdf" });
+      let bytes: Uint8Array;
+      try { bytes = Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0)); } catch { return j(headers, 400, { error: "bad_pdf" }); }
+      if (bytes.length < 500 || String.fromCharCode(...bytes.slice(0, 5)) !== "%PDF-") return j(headers, 400, { error: "bad_pdf" });
+      const tk = await asana("GET", `/tasks/${gid}?opt_fields=projects.gid`).catch(() => null);
+      const allowed = ["1208917007356847", "1216860326210544"];
+      if (!tk || !(tk.projects ?? []).some((pr: { gid: string }) => allowed.includes(pr.gid))) {
+        return j(headers, 403, { error: "task_not_allowed" });
+      }
+      const fd = new FormData();
+      fd.append("file", new Blob([bytes.buffer as ArrayBuffer], { type: "application/pdf" }), fname);
+      const up = await fetch(`${ASANA}/tasks/${gid}/attachments`, { method: "POST", headers: { "Authorization": `Bearer ${ASANA_PAT}` }, body: fd });
+      if (!up.ok) return j(headers, 502, { error: "upload_failed" });
+      await asana("POST", `/tasks/${gid}/stories`, { html_text: storyHtml("Onboarding Summary PDF attached (copy for the client on request).") }).catch(() => null);
+      return j(headers, 200, { ok: true });
+    }
+
     // ---------- obAttach: owner shares document links onto their onboarding task ----------
     if (action === "obAttach") {
       const OB_PROJECT = "1216860326210544";
