@@ -427,6 +427,64 @@ app.post("/onboard-proxy", async (c) => {
       return j(headers, 200, { ok: true, taskGid: task.gid, taskUrl: `https://app.asana.com/0/0/${task.gid}`, crUrl, summarized: !!summary, dealStageMoved });
     }
 
+    // ---------- propQueue (internal, x-sv-key): deals waiting in Proposal Requested ----------
+    // Powers Step 0 of the biz dev workbench: everything in the Mgmt 3.0 "Proposal
+    // Requested" stage with the associated contact's email so one click starts the lookup.
+    if (action === "propQueue") {
+      if (!TEAM_KEY || c.req.header("x-sv-key") !== TEAM_KEY) return j(headers, 401, { error: "bad_key" });
+      const HS = Deno.env.get("HUBSPOT_CRM_TOKEN") ?? "";
+      if (!HS) return j(headers, 500, { error: "not_configured" });
+      const hs = (path: string, init?: RequestInit) => fetch("https://api.hubapi.com" + path, {
+        ...init, headers: { "Authorization": `Bearer ${HS}`, "Content-Type": "application/json" },
+      });
+      const sr = await hs("/crm/v3/objects/deals/search", {
+        method: "POST",
+        body: JSON.stringify({
+          filterGroups: [{ filters: [
+            { propertyName: "pipeline", operator: "EQ", value: "2185322227" },
+            { propertyName: "dealstage", operator: "EQ", value: "3505530581" },
+          ] }],
+          properties: ["dealname", "subject_city", "createdate", "bed__bath__sqft", "units"],
+          sorts: [{ propertyName: "createdate", direction: "ASCENDING" }],
+          limit: 25,
+        }),
+      });
+      const sj = await sr.json().catch(() => ({}));
+      const qdeals = ((sj?.results ?? []) as { id?: unknown; properties?: Record<string, string> }[])
+        .map((d) => ({ id: String(d.id ?? ""), p: d.properties ?? {} })).filter((d) => d.id);
+      const emails = new Map<string, { email: string; name: string }>();
+      if (qdeals.length) {
+        const ab = await hs("/crm/v4/associations/deals/contacts/batch/read", {
+          method: "POST", body: JSON.stringify({ inputs: qdeals.map((d) => ({ id: d.id })) }),
+        });
+        const abj = await ab.json().catch(() => ({}));
+        const contactByDeal = new Map<string, string>();
+        const cids = new Set<string>();
+        for (const r of (abj?.results ?? []) as { from?: { id?: unknown }; to?: { toObjectId?: unknown }[] }[]) {
+          const from = String(r?.from?.id ?? "");
+          const to = String(r?.to?.[0]?.toObjectId ?? "");
+          if (from && to) { contactByDeal.set(from, to); cids.add(to); }
+        }
+        if (cids.size) {
+          const cb = await hs("/crm/v3/objects/contacts/batch/read", {
+            method: "POST", body: JSON.stringify({ inputs: [...cids].map((id) => ({ id })), properties: ["email", "firstname", "lastname"] }),
+          });
+          const cbj = await cb.json().catch(() => ({}));
+          const byId = new Map(((cbj?.results ?? []) as { id?: unknown; properties?: Record<string, string> }[])
+            .map((cres) => [String(cres.id ?? ""), cres.properties ?? {}]));
+          for (const [did, cid] of contactByDeal) {
+            const cp = byId.get(cid);
+            if (cp) emails.set(did, { email: String(cp.email ?? ""), name: [cp.firstname, cp.lastname].filter(Boolean).join(" ") });
+          }
+        }
+      }
+      return j(headers, 200, { ok: true, queue: qdeals.map((d) => ({
+        dealId: d.id, dealName: String(d.p.dealname ?? ""), city: String(d.p.subject_city ?? ""),
+        created: String(d.p.createdate ?? ""), bedBathSqft: String(d.p.bed__bath__sqft ?? ""),
+        email: emails.get(d.id)?.email ?? "", ownerName: emails.get(d.id)?.name ?? "",
+      })) });
+    }
+
     // ---------- propSave (internal, x-sv-key): verify + save proposal numbers to the deal ----------
     if (action === "propSave") {
       if (!TEAM_KEY || c.req.header("x-sv-key") !== TEAM_KEY) return j(headers, 401, { error: "bad_key" });
