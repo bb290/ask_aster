@@ -339,7 +339,7 @@ app.post("/onboard-proxy", async (c) => {
       if (!ids.length) return j(headers, 404, { error: "no_deal", message: "No deal associated with that contact." });
       const br = await hs("/crm/v3/objects/deals/batch/read", {
         method: "POST",
-        body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "hs_lastmodifieddate"] }),
+        body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["dealname", "pipeline", "dealstage", "hs_lastmodifieddate", "authorization"] }),
       });
       const bj = await br.json().catch(() => ({}));
       const deals = (bj?.results ?? []).filter((d: { properties?: Record<string, string> }) => d.properties?.pipeline === "2185322227")
@@ -350,6 +350,14 @@ app.post("/onboard-proxy", async (c) => {
       const props: Record<string, string> = {};
       if (Number.isFinite(rent) && rent > 0) props.estimated_rent = String(rent);
       if (propUrl) props.ob_proposal_url = propUrl;
+      // Save To Deal defaults (Brittany 2026-07-31):
+      // - the client link also goes to the About-section "Proposal Link" field
+      //   (internal name rentometer_link - the property was repurposed/relabeled in HubSpot)
+      // - authorization defaults to 1000, FILL-BLANK ONLY (a negotiated amount survives re-saves)
+      // - contract_start_date = proposal save date + 3 days, refreshed on every save
+      if (propUrl) props.rentometer_link = propUrl;
+      if (!String(deal.properties?.authorization ?? "").trim()) props.authorization = "1000";
+      props.contract_start_date = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
       if (propData) props.ob_proposal_data = propData;
       if (/^https:\/\/\S+$/.test(agreementUrl)) props.ob_agreement_url = agreementUrl;
       else if (agreementUrl === "-") props.ob_agreement_url = "";   // explicit clear
