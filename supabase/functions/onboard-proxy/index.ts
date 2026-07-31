@@ -412,11 +412,12 @@ app.post("/onboard-proxy", async (c) => {
         });
         const bj = await br.json().catch(() => ({}));
         const deals = (bj?.results ?? [])
-          .map((d: { properties?: Record<string, string> }) => d.properties ?? {})
-          .filter((p: Record<string, string>) => p.pipeline === "2185322227");
-        deals.sort((a: Record<string, string>, b: Record<string, string>) =>
-          String(b.hs_lastmodifieddate ?? "").localeCompare(String(a.hs_lastmodifieddate ?? "")));
-        const d0 = deals[0];
+          .map((d: { id?: unknown; properties?: Record<string, string> }) => ({ id: String(d.id ?? ""), p: d.properties ?? {} }))
+          .filter((d: { id: string; p: Record<string, string> }) => d.p.pipeline === "2185322227");
+        deals.sort((a: { p: Record<string, string> }, b: { p: Record<string, string> }) =>
+          String(b.p.hs_lastmodifieddate ?? "").localeCompare(String(a.p.hs_lastmodifieddate ?? "")));
+        const dd = deals[0];
+        const d0 = dd?.p;
         if (!d0) return j(headers, 200, { ok: true, proposal: { ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" ") } });
         const name = String(d0.dealname ?? "").replace(/^\s*\[[^\]]*\]\s*/, "").trim();
         const city = String(d0.subject_city ?? "").trim();
@@ -454,6 +455,7 @@ app.post("/onboard-proxy", async (c) => {
           out.zillow = String(d0.link ?? "");
           out.rentometer = String(d0.rentometer_link ?? "");
           out.dealName = String(d0.dealname ?? "");
+          out.dealId = dd.id;   // Save To Deal opens the deal record in HubSpot
         }
         return j(headers, 200, { ok: true, proposal: out });
       } catch { return j(headers, 200, { ok: true, proposal: {} }); }
