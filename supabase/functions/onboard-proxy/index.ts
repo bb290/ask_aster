@@ -242,12 +242,39 @@ app.post("/onboard-proxy", async (c) => {
       // per-utility enum mapping (Tenant Account / Sagareus Pass Through / etc. is set at push, not here)
 
       const TITLE: Record<string, string> = { new_client: "Initial Onboarding", add_property: "Add Property", add_unit: "Add Unit" };
-      const task = await asana("POST", "/tasks", {
-        name: `${TITLE[kind]} | ${address}`,
-        projects: [OB_PROJECT],
-        notes: lines.join("\n").slice(0, 60000),
-        custom_fields: Object.keys(cf).length ? cf : undefined,
-      });
+      // readable rich-text version of the dump (Brittany 2026-07-31). Asana derives the
+      // plain-text notes from this: each <li> still yields a "Question: Answer" line and
+      // each section title its own line, so downstream parsers keep line-based access.
+      const hesc = (t: string) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const htmlParts: string[] = [`<b>INITIAL ONBOARDING SUBMISSION (${hesc(kind.replace("_", " "))}) | ${hesc(address)}</b>\n${hesc(lines[1])}\n`];
+      for (const sec of sectionsDump) {
+        htmlParts.push(`\n<b><u>${hesc(sec.title.toUpperCase())}</u></b>\n<ul>${sec.rows.map((r) => `<li><b>${hesc(r.q)}:</b> ${hesc(r.a)}</li>`).join("")}</ul>`);
+      }
+      if (units.length) {
+        htmlParts.push(`\n<b><u>UNITS</u></b>\n<ul>${units.map((u: Record<string, string>) => `<li><b>${hesc(u.label)}:</b> ${hesc([`${u.beds} bd / ${u.baths} ba${u.sqft ? " / " + u.sqft + " sqft" : ""}`,
+          u.laundry ? `Laundry: ${u.laundry}` : "", u.mail ? `Mail: ${u.mail}${u.mailnum ? " #" + u.mailnum : ""}` : "",
+          u.storage ? `Storage: ${u.storage}` : "", u.parking ? `Parking: ${u.parking}${u.parknum ? " #" + u.parknum : ""}` : "",
+          u.cooling ? `A/C: ${u.cooling}` : ""].filter(Boolean).join(" | "))}</li>`).join("")}</ul>`);
+      }
+      htmlParts.push(`\nPhotos, leases, and HOA documents: owner was directed to email them to onboarding@sagareus.com.`);
+      const htmlNotes = `<body>${htmlParts.join("")}</body>`.slice(0, 60000);
+      let task;
+      try {
+        task = await asana("POST", "/tasks", {
+          name: `${TITLE[kind]} | ${address}`,
+          projects: [OB_PROJECT],
+          html_notes: htmlNotes,
+          custom_fields: Object.keys(cf).length ? cf : undefined,
+        });
+      } catch {
+        // rich text rejected: fall back to the plain dump so a submission never fails on formatting
+        task = await asana("POST", "/tasks", {
+          name: `${TITLE[kind]} | ${address}`,
+          projects: [OB_PROJECT],
+          notes: lines.join("\n").slice(0, 60000),
+          custom_fields: Object.keys(cf).length ? cf : undefined,
+        });
+      }
       if (target) { try { await asana("POST", `/sections/${target.gid}/addTask`, { task: task.gid }); } catch { /* stays in default */ } }
 
       // Push 2 (new clients): instantiate the (CLIENT) template in Client Relations 2.0
@@ -268,6 +295,23 @@ app.post("/onboard-proxy", async (c) => {
           }
           if (crGid) {
             crUrl = `https://app.asana.com/0/0/${crGid}`;
+            // Communication Settings multi-enum on Client Relations 2.0 from the owner's
+            // wizard selections (Brittany 2026-07-31). Only ENABLED enum options are mapped;
+            // most Leasing options are disabled in Asana, so only "None" maps there.
+            try {
+              const COMM_FIELD = "1212930081639044";
+              const opts: string[] = [];
+              const disp = String(answers.dispatch ?? "");
+              if (disp === "Dispatch") opts.push("1212930081639047");                       // Maintenance - No Owner Communication
+              else if (disp === "Dispatch + Notify") opts.push("1212930081639045");         // Maintenance - Notify & Dispatch
+              else if (disp === "100% Owner Provide Instruction") opts.push("1212930081639046"); // Maintenance - Approval Needed
+              const ren = String(answers.renewal ?? "");
+              if (ren === "Owner Approval Required") opts.push("1212930081639054");
+              else if (ren === "Notify Only") opts.push("1212930081639055");
+              else if (ren === "No Owner Communication") opts.push("1212930081639056");
+              if (/\bNone\b/.test(String(answers.notifs ?? ""))) opts.push("1212930081639053"); // Leasing - No Owner Communication
+              if (opts.length) await asana("PUT", `/tasks/${crGid}`, { custom_fields: { [COMM_FIELD]: opts } });
+            } catch { /* comm settings are best-effort */ }
             await asana("POST", `/tasks/${crGid}/stories`, { html_text: storyHtml(`Created by the onboarding wizard. Full onboarding data: https://app.asana.com/0/0/${task.gid}`) }).catch(() => null);
             await asana("POST", `/tasks/${task.gid}/stories`, { html_text: storyHtml(`Client Relations task created: ${crUrl}`) }).catch(() => null);
           }
@@ -401,6 +445,13 @@ app.post("/onboard-proxy", async (c) => {
       // specific listing URL on the deal always wins over the generated search URL)
       const zillowUrl = String(body.zillowUrl ?? "").trim().slice(0, 400);
       if (/^https:\/\/www\.zillow\.com\//.test(zillowUrl) && !String(deal.properties?.link ?? "").trim()) props.link = zillowUrl;
+      // property facts, editable in the workbench (Brittany 2026-07-31)
+      const unitsIn = String(body.units ?? "").trim().slice(0, 10);
+      const bbsIn = String(body.bedBathSqft ?? "").trim().slice(0, 40);
+      const cityIn = String(body.subjectCity ?? "").trim().slice(0, 80);
+      if (unitsIn) props.units = unitsIn;
+      if (bbsIn) props.bed__bath__sqft = bbsIn;
+      if (cityIn) props.subject_city = cityIn;
       props.contract_start_date = new Date(Date.now() + 3 * 86400000).toISOString().slice(0, 10);
       if (propData) props.ob_proposal_data = propData;
       if (/^https:\/\/\S+$/.test(agreementUrl)) props.ob_agreement_url = agreementUrl;
@@ -632,6 +683,7 @@ app.post("/onboard-proxy", async (c) => {
         const hit = jr?.results?.[0];
         const c0 = hit?.properties ?? {};
         let dealAddress = "";
+        let dealCity = "";
         let dealNotes = "", dealUnits = "", dealRent = "";
         let dealFields: Record<string, string> = {};
         if (hit?.id) {
@@ -687,14 +739,15 @@ app.post("/onboard-proxy", async (c) => {
               ubGarbage: String(d0?.ob_ub_garbage ?? ""),
               ubGas: String(d0?.ob_ub_gas ?? ""),
             };
+            dealCity = String(d0?.subject_city ?? "").trim();
             if (d0?.dealname) {
               const name = String(d0.dealname).replace(/^\s*\[[^\]]*\]\s*/, "").trim();  // strip "[MGMT]"-style prefixes
-              const city = String(d0.subject_city ?? "").trim();
-              dealAddress = city && !name.toLowerCase().includes(city.toLowerCase()) ? `${name}, ${city}` : name;
+              dealAddress = dealCity && !name.toLowerCase().includes(dealCity.toLowerCase()) ? `${name}, ${dealCity}` : name;
             }
           }
         }
         return j(headers, 200, { ok: true, prefill: {
+          city: dealCity,
           ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" "),
           email: c0.email ?? "", phone: c0.phone ?? "",
           address: dealAddress || [c0.address, c0.city, c0.state, c0.zip].filter(Boolean).join(", "),
