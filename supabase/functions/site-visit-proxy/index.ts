@@ -1268,8 +1268,14 @@ app.post("*", async (c) => {
       if ((draft.match(/\S+/g) ?? []).length < 12) {
         return j(headers, 400, { error: "draft_too_short", message: "Write at least 12 words of your own comment first, then polish." });
       }
-      const isPre = String(body.context ?? "") === "prelisting";
-      const facts = isPre ? [
+      const ctx = String(body.context ?? "");
+      const isPre = ctx === "prelisting";
+      const isProposal = ctx === "proposal";
+      const facts = isProposal ? [
+        `Property: ${String(body.address ?? "").slice(0, 120)}`,
+        body.marketRent != null ? `Verified market rent going on the proposal: $${n(body.marketRent)}/mo.` : "",
+        body.marketPosition ? `Market position: ${String(body.marketPosition).slice(0, 240)}` : "",
+      ].filter(Boolean).join("\n") : isPre ? [
         `Property: ${String(body.address ?? "").slice(0, 120)}`,
         body.marketRent != null ? `Estimated market rent from comps: $${n(body.marketRent)}/mo.` : "",
         body.marketPosition ? `Market position: ${String(body.marketPosition).slice(0, 240)}` : "",
@@ -1284,11 +1290,15 @@ app.post("*", async (c) => {
         arr(body.recommendations).length ? `Recommendations going to the owner: ${arr(body.recommendations).join("; ")}` : "",
       ].filter(Boolean).join("\n");
       const SYSTEM = [
-        isPre
+        isProposal
+          ? "You polish the NOTES FROM OUR TEAM a Sagareus biz dev agent wrote for a property management proposal that goes to a PROSPECTIVE owner deciding whether to sign. It sits directly under the rent analysis on the proposal."
+          : isPre
           ? "You polish the AGENT COMMENTS a Sagareus leasing agent wrote for a PreListing report that goes to a property owner before their unit is listed."
           : "You polish the AGENT COMMENTS a Sagareus leasing agent wrote for the weekly activity report that goes to a property owner.",
         "The agent's draft is the source of truth: keep every fact, observation, and intention they wrote, and keep their first-person voice. Fix grammar, spelling, and clarity; tighten rambling; make the tone professional, direct, steady.",
-        isPre
+        isProposal
+          ? "Do not add information the agent did not write. The verified rent, market range, and comparables already appear on the proposal above the note (given to you as context) — never pad the note by reciting them. Only pull a specific from context when the agent's draft clearly alludes to it and needs it to make sense. Never promise outcomes; keep any pricing talk consistent with the verified rent."
+          : isPre
           ? "Do not add information the agent did not write. The rent estimate, comps, and strategy already appear in the report above the comments (given to you as context) — never pad the comment by reciting them. Only pull a specific from context when the agent's draft clearly alludes to it and needs it to make sense."
           : "Do not add information the agent did not write. The week's numbers, feedback, and updates already appear in the report above the comments (given to you as context) — never pad the comment by reciting them. Only pull a specific from context when the agent's draft clearly alludes to it and needs it to make sense.",
         "Length: roughly the agent's length, 2 to 5 sentences, 90 words max. Plain text only: no markdown, no bullets, no emojis, never an em dash.",
