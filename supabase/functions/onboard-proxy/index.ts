@@ -308,7 +308,47 @@ app.post("/onboard-proxy", async (c) => {
         }
       } catch { /* summary is best-effort */ }
 
-      return j(headers, 200, { ok: true, taskGid: task.gid, taskUrl: `https://app.asana.com/0/0/${task.gid}`, crUrl, summarized: !!summary });
+      // New-client submissions also advance the HubSpot deal to Full Service PM / Onboard
+      // (Brittany 2026-07-31). Best effort: an Asana push that already succeeded is never
+      // failed by a CRM hiccup. Guarded to only move FORWARD from pre-onboard stages.
+      let dealStageMoved = false;
+      if (kind === "new_client") {
+        try {
+          const HS = Deno.env.get("HUBSPOT_CRM_TOKEN") ?? "";
+          const firstEmail = (String(answers.ownerEmails ?? "").match(/[^\s,;]+@[^\s,;]+\.[^\s,;]+/) || [""])[0];
+          if (HS && firstEmail) {
+            const hs = (path: string, init?: RequestInit) => fetch("https://api.hubapi.com" + path, {
+              ...init, headers: { "Authorization": `Bearer ${HS}`, "Content-Type": "application/json" },
+            });
+            const r0 = await hs("/crm/v3/objects/contacts/search", {
+              method: "POST",
+              body: JSON.stringify({ filterGroups: [{ filters: [{ propertyName: "email", operator: "EQ", value: firstEmail }] }], properties: ["email"], limit: 1 }),
+            });
+            const cid = (await r0.json().catch(() => ({})))?.results?.[0]?.id;
+            if (cid) {
+              const ar = await hs(`/crm/v4/objects/contacts/${cid}/associations/deals?limit=50`);
+              const dids = ((await ar.json().catch(() => ({})))?.results ?? []).map((x: { toObjectId?: unknown }) => x?.toObjectId).filter(Boolean);
+              if (dids.length) {
+                const br2 = await hs("/crm/v3/objects/deals/batch/read", {
+                  method: "POST",
+                  body: JSON.stringify({ inputs: dids.map((id: unknown) => ({ id: String(id) })), properties: ["pipeline", "dealstage", "hs_lastmodifieddate"] }),
+                });
+                const ds = (((await br2.json().catch(() => ({})))?.results ?? []) as { id?: unknown; properties?: Record<string, string> }[])
+                  .map((d) => ({ id: String(d.id ?? ""), p: d.properties ?? {} }))
+                  .filter((d) => d.id && d.p.pipeline === "2185322227")
+                  .sort((a2, b2) => String(b2.p.hs_lastmodifieddate ?? "").localeCompare(String(a2.p.hs_lastmodifieddate ?? "")));
+                const dd2 = ds[0];
+                const PRE_ONBOARD = ["3505530579", "3505530580", "3505530581", "3505530582", "3505530583", "3505670863", "3505670865"];
+                if (dd2 && PRE_ONBOARD.includes(String(dd2.p.dealstage ?? ""))) {
+                  const um = await hs(`/crm/v3/objects/deals/${dd2.id}`, { method: "PATCH", body: JSON.stringify({ properties: { dealstage: "3505530584" } }) });
+                  dealStageMoved = um.ok;
+                }
+              }
+            }
+          }
+        } catch { /* best effort */ }
+      }
+      return j(headers, 200, { ok: true, taskGid: task.gid, taskUrl: `https://app.asana.com/0/0/${task.gid}`, crUrl, summarized: !!summary, dealStageMoved });
     }
 
     // ---------- propSave (internal, x-sv-key): verify + save proposal numbers to the deal ----------
