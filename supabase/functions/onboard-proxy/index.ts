@@ -119,6 +119,79 @@ function displayValue(cf: Record<string, unknown>): string {
   return String(cf.display_value ?? "").trim();
 }
 
+// ---------- proposal deal locator (shared by propTerms / propAccept) ----------
+// Finds the prospect's latest Mgmt 3.0 deal by contact email OR by the address slug
+// carried in ob_proposal_url, plus the emails of the deal's associated contacts.
+async function locateMgmtDeal(HS: string, email: string, slug: string, props: string[]):
+  Promise<{ id: string; p: Record<string, string>; contactEmails: string[] } | null> {
+  const hs = (path: string, init?: RequestInit) => fetch("https://api.hubapi.com" + path, {
+    ...init, headers: { "Authorization": `Bearer ${HS}`, "Content-Type": "application/json" },
+  });
+  const want = [...new Set(["pipeline", "hs_lastmodifieddate", "ob_proposal_url", ...props])];
+  let dealId = "", dealProps: Record<string, string> = {};
+  if (email) {
+    const r = await hs("/crm/v3/objects/contacts/search", {
+      method: "POST",
+      body: JSON.stringify({ filterGroups: [{ filters: [{ propertyName: "email", operator: "EQ", value: email }] }], properties: ["email"], limit: 1 }),
+    });
+    const jr = await r.json().catch(() => ({}));
+    const hit = jr?.results?.[0];
+    if (!hit?.id) return null;
+    const ar = await hs(`/crm/v4/objects/contacts/${hit.id}/associations/deals?limit=50`);
+    const aj = await ar.json().catch(() => ({}));
+    const ids = (aj?.results ?? []).map((x: { toObjectId?: unknown }) => x?.toObjectId).filter(Boolean);
+    if (!ids.length) return null;
+    const br = await hs("/crm/v3/objects/deals/batch/read", {
+      method: "POST",
+      body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: want }),
+    });
+    const bj = await br.json().catch(() => ({}));
+    const deals = (bj?.results ?? [])
+      .map((d: { id?: unknown; properties?: Record<string, string> }) => ({ id: String(d.id ?? ""), p: d.properties ?? {} }))
+      .filter((d: { id: string; p: Record<string, string> }) => d.id && d.p.pipeline === "2185322227");
+    deals.sort((a: { p: Record<string, string> }, b: { p: Record<string, string> }) =>
+      String(b.p.hs_lastmodifieddate ?? "").localeCompare(String(a.p.hs_lastmodifieddate ?? "")));
+    if (!deals[0]) return null;
+    dealId = deals[0].id; dealProps = deals[0].p;
+  } else if (slug) {
+    const sr = await hs("/crm/v3/objects/deals/search", {
+      method: "POST",
+      body: JSON.stringify({
+        filterGroups: [{ filters: [
+          { propertyName: "pipeline", operator: "EQ", value: "2185322227" },
+          { propertyName: "ob_proposal_url", operator: "CONTAINS_TOKEN", value: slug },
+        ] }],
+        sorts: [{ propertyName: "hs_lastmodifieddate", direction: "DESCENDING" }],
+        properties: want, limit: 20,
+      }),
+    });
+    const sj = await sr.json().catch(() => ({}));
+    const dd = (sj?.results ?? [])
+      .map((d: { id?: unknown; properties?: Record<string, string> }) => ({ id: String(d.id ?? ""), p: d.properties ?? {} }))
+      .filter((d: { id: string; p: Record<string, string> }) => String(d.p.ob_proposal_url ?? "").endsWith("p=" + slug))[0];
+    if (!dd) return null;
+    dealId = dd.id; dealProps = dd.p;
+  } else return null;
+  const contactEmails: string[] = email ? [email] : [];
+  if (!email) {
+    const car = await hs(`/crm/v4/objects/deals/${dealId}/associations/contacts?limit=5`);
+    const caj = await car.json().catch(() => ({}));
+    const cids = (caj?.results ?? []).map((x: { toObjectId?: unknown }) => String(x?.toObjectId ?? "")).filter(Boolean);
+    if (cids.length) {
+      const cbr = await fetch("https://api.hubapi.com/crm/v3/objects/contacts/batch/read", {
+        method: "POST", headers: { "Authorization": `Bearer ${HS}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ inputs: cids.map((id: string) => ({ id })), properties: ["email"] }),
+      });
+      const cbj = await cbr.json().catch(() => ({}));
+      for (const ct of (cbj?.results ?? [])) {
+        const em = String(ct?.properties?.email ?? "").trim();
+        if (em) contactEmails.push(em);
+      }
+    }
+  }
+  return { id: dealId, p: dealProps, contactEmails };
+}
+
 app.options("*", (c) => new Response(null, { status: 204, headers: corsHeaders(c.req.header("origin")) }));
 
 app.post("/onboard-proxy", async (c) => {
@@ -646,8 +719,6 @@ app.post("/onboard-proxy", async (c) => {
         try { data = d0.ob_proposal_data ? JSON.parse(String(d0.ob_proposal_data)) : null; } catch { data = null; }
         const out: Record<string, unknown> = {
           ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" "),
-          // slug arrivals learn the prospect email here (Owner Preferences autosave targets it)
-          email: String(c0.email ?? ""),
           address, city,
           estimatedRent: String(d0.estimated_rent ?? ""),
           pricing: {
@@ -658,7 +729,9 @@ app.post("/onboard-proxy", async (c) => {
             annual_inspection_fee: String(d0.annual_inspection_fee ?? ""),
           },
           units: String(d0.units ?? ""),
-          agreementUrl: String(d0.ob_agreement_url ?? ""),
+          // The PandaDoc URL never rides the open payload (Vincent 2026-07-31): the client
+          // gets a flag, and the URL itself only leaves via propAccept after an email match.
+          hasAgreement: /^https:\/\//.test(String(d0.ob_agreement_url ?? "")),
           // bed/bath/sqft of the prospect's own property is proposal-safe; the client
           // header renders beds/baths from it (moved from staff-only 2026-07-29).
           bedBathSqft: String(d0.bed__bath__sqft ?? ""),
@@ -674,6 +747,8 @@ app.post("/onboard-proxy", async (c) => {
         };
         if (staff) {
           out.stage = String(d0.dealstage ?? "");
+          out.email = String(c0.email ?? "");
+          out.agreementUrl = String(d0.ob_agreement_url ?? "");   // workbench Step 6 prefill
           out.zillow = String(d0.link ?? "");
           out.rentometer = String(d0.rentometer_link ?? "");
           out.dealName = String(d0.dealname ?? "");
@@ -690,8 +765,9 @@ app.post("/onboard-proxy", async (c) => {
     if (action === "propTerms") {
       const HS = Deno.env.get("HUBSPOT_CRM_TOKEN") ?? "";
       const email = String(body.email ?? "").trim().slice(0, 200);
+      const slug = String(body.slug ?? "").trim().toLowerCase().slice(0, 120).replace(/[^a-z0-9-]/g, "");
       const t = (body.terms ?? {}) as Record<string, unknown>;
-      if (!HS || !email) return j(headers, 400, { ok: false, error: "missing email" });
+      if (!HS || (!email && !slug)) return j(headers, 400, { ok: false, error: "missing locator" });
       const OPTS: Record<string, string[]> = {
         ob_maintenance_dispatch: ["Dispatch", "Dispatch + Notify", "100% Owner Provide Instruction"],
         ob_renewal_notice: ["No Owner Communication", "Notify Only", "Owner Approval Required"],
@@ -713,36 +789,36 @@ app.post("/onboard-proxy", async (c) => {
       }
       if (!Object.keys(props).length) return j(headers, 400, { ok: false, error: "nothing to save" });
       try {
-        const hs = (path: string, init?: RequestInit) => fetch("https://api.hubapi.com" + path, {
-          ...init, headers: { "Authorization": `Bearer ${HS}`, "Content-Type": "application/json" },
-        });
-        const r = await hs("/crm/v3/objects/contacts/search", {
-          method: "POST",
-          body: JSON.stringify({ filterGroups: [{ filters: [{ propertyName: "email", operator: "EQ", value: email }] }], properties: ["email"], limit: 1 }),
-        });
-        const jr = await r.json().catch(() => ({}));
-        const hit = jr?.results?.[0];
-        if (!hit?.id) return j(headers, 404, { ok: false, error: "no contact" });
-        const ar = await hs(`/crm/v4/objects/contacts/${hit.id}/associations/deals?limit=50`);
-        const aj = await ar.json().catch(() => ({}));
-        const ids = (aj?.results ?? []).map((x: { toObjectId?: unknown }) => x?.toObjectId).filter(Boolean);
-        if (!ids.length) return j(headers, 404, { ok: false, error: "no deal" });
-        const br = await hs("/crm/v3/objects/deals/batch/read", {
-          method: "POST",
-          body: JSON.stringify({ inputs: ids.map((id: unknown) => ({ id: String(id) })), properties: ["pipeline", "hs_lastmodifieddate"] }),
-        });
-        const bj = await br.json().catch(() => ({}));
-        const deals = (bj?.results ?? [])
-          .map((d: { id?: unknown; properties?: Record<string, string> }) => ({ id: String(d.id ?? ""), p: d.properties ?? {} }))
-          .filter((d: { id: string; p: Record<string, string> }) => d.id && d.p.pipeline === "2185322227");
-        deals.sort((a: { p: Record<string, string> }, b: { p: Record<string, string> }) =>
-          String(b.p.hs_lastmodifieddate ?? "").localeCompare(String(a.p.hs_lastmodifieddate ?? "")));
-        const deal = deals[0];
+        const deal = await locateMgmtDeal(HS, email, slug, []);
         if (!deal) return j(headers, 404, { ok: false, error: "no deal" });
-        const ur = await hs(`/crm/v3/objects/deals/${deal.id}`, { method: "PATCH", body: JSON.stringify({ properties: props }) });
+        const ur = await fetch(`https://api.hubapi.com/crm/v3/objects/deals/${deal.id}`, {
+          method: "PATCH", headers: { "Authorization": `Bearer ${HS}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ properties: props }),
+        });
         if (!ur.ok) return j(headers, 502, { ok: false, error: "save failed" });
         return j(headers, 200, { ok: true, saved: Object.keys(props) });
       } catch { return j(headers, 502, { ok: false, error: "save failed" }); }
+    }
+
+    // ---------- propAccept: email-match gate in front of the PandaDoc agreement ----------
+    // Open-but-contained (Vincent 2026-07-31): the proposal page never receives the agreement
+    // URL. Clicking Accept asks the visitor for the email the proposal was sent to; only when
+    // it matches a contact on the deal does the URL come back. Mismatches get one generic
+    // failure - no hint whether the deal exists or which part was wrong.
+    if (action === "propAccept") {
+      const HS = Deno.env.get("HUBSPOT_CRM_TOKEN") ?? "";
+      const email = String(body.email ?? "").trim().slice(0, 200);
+      const slug = String(body.slug ?? "").trim().toLowerCase().slice(0, 120).replace(/[^a-z0-9-]/g, "");
+      const verify = String(body.verifyEmail ?? "").trim().toLowerCase().slice(0, 200);
+      if (!HS || (!email && !slug) || !verify || !/@.+\./.test(verify)) return j(headers, 200, { ok: false });
+      try {
+        const deal = await locateMgmtDeal(HS, email, slug, ["ob_agreement_url"]);
+        if (!deal) return j(headers, 200, { ok: false });
+        const match = deal.contactEmails.some((em) => em.toLowerCase() === verify);
+        const url = String(deal.p.ob_agreement_url ?? "");
+        if (!match || !/^https:\/\//.test(url)) return j(headers, 200, { ok: false });
+        return j(headers, 200, { ok: true, agreementUrl: url });
+      } catch { return j(headers, 200, { ok: false }); }
     }
 
     // ---------- obPdf: the wizard uploads the owner's Onboarding Summary PDF ----------
