@@ -216,6 +216,25 @@ function feedItem(prKey: string, t: FeedTask, open: boolean): FeedItem {
   if (prKey === "annualinspection" || prKey === "mfinspection") {
     return { label: unit ? "Unit " + unit : "Building inspection", info: "", due, done };
   }
+  if (prKey === "leasing") {
+    // owner-facing lifecycle dates from the Leasing task (Brittany 2026-08-01)
+    const fmt = (v: string) => {
+      const s = (v || "").slice(0, 10);
+      if (!s) return "";
+      const d = new Date(s + "T12:00:00Z");
+      return isNaN(d.getTime()) ? s : d.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    };
+    const bits: string[] = [];
+    const mo = fmt(cf["\u{1F64C} Tenant Move-Out Date"]); if (mo) bits.push("Move Out " + mo);
+    const ld = fmt(cf["\u{1F481} List Date"]); if (ld) bits.push("Listed " + ld);
+    const mi = fmt(cf["\u{1F64C} Move in Date"]); if (mi) bits.push("Move In " + mi);
+    const lhead = feedScrub(name.split(/[|<]/)[0].trim()) || "Leasing";
+    return {
+      label: unit ? "Unit " + unit : lhead,
+      info: bits.length ? bits.join(" · ") : (unit ? lhead : ""),
+      due, done,
+    };
+  }
   // maintenance / resident relations / leasing: title segment before the separator, scrubbed
   const head = feedScrub(name.split(/\/\/|[|<]/)[0].trim());
   if (!head) return null;
