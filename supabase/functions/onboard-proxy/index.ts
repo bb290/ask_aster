@@ -139,7 +139,23 @@ const FEED_HIDDEN_FIELDS = new Set(["Playbook", "Latitude", "Longitude", "Lease 
 // shown when filled, but never owner-fillable (staff join keys / staff-only judgment)
 const FEED_STAFF_FIELDS = new Set(["Property ID", "Unit ID", "Unit #", "Auto Utility Processing Mode"]);
 type FeedTask = { gid?: unknown; name?: unknown; due_on?: unknown; completed_at?: unknown; custom_fields?: { name?: unknown; display_value?: unknown }[]; memberships?: { project?: { gid?: unknown }; section?: { name?: unknown } }[] };
-type FeedItem = { label: string; info: string; due: string; done: string } | null;
+type FeedItem = { label: string; info: string; due: string; done: string; group?: string; gid?: string; reports?: { gid: string; name: string }[] } | null;
+const FEED_INSPECTION_GIDS = new Set(["1205841857464078", "1211332673219694"]);
+// owner-friendly grouping of the Leasing | Human View board sections; agent-name
+// and assignment columns all read as "With Leasing Team"
+function feedLeaseGroup(sec: string): string {
+  const s = sec.toLowerCase();
+  if (/active listing/.test(s)) return "Active Listings";
+  if (/move out/.test(s)) return "Move Out Pending";
+  if (/move in/.test(s)) return "Move In";
+  if (/pending application/.test(s)) return "Pending Applications";
+  if (/quick turn|turn ?over/.test(s)) return "Turnover";
+  if (/security deposit/.test(s)) return "Security Deposits";
+  if (/parking|storage/.test(s)) return "Parking & Storage";
+  if (/selling|off market/.test(s)) return "Temporarily Off Market";
+  if (/complete/.test(s)) return "Complete";
+  return "With Leasing Team";
+}
 function feedScrub(s: string): string {
   return s.replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "").replace(/(\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}/g, "").replace(/\s{2,}/g, " ").trim();
 }
@@ -214,7 +230,8 @@ function feedItem(prKey: string, t: FeedTask, open: boolean): FeedItem {
     return { label: unit ? "Unit " + unit : "Renewal", info, due, done };
   }
   if (prKey === "annualinspection" || prKey === "mfinspection") {
-    return { label: unit ? "Unit " + unit : "Building inspection", info: "", due, done };
+    // gid rides along so feedLoad can look up report attachments; stripped before response
+    return { label: unit ? "Unit " + unit : "Building inspection", info: "", due, done, gid: String(t.gid ?? "") };
   }
   if (prKey === "leasing") {
     // owner-facing lifecycle dates from the Leasing task (Brittany 2026-08-01)
@@ -229,10 +246,12 @@ function feedItem(prKey: string, t: FeedTask, open: boolean): FeedItem {
     const ld = fmt(cf["\u{1F481} List Date"]); if (ld) bits.push("Listed " + ld);
     const mi = fmt(cf["\u{1F64C} Move in Date"]); if (mi) bits.push("Move In " + mi);
     const lhead = feedScrub(name.split(/[|<]/)[0].trim()) || "Leasing";
+    const lsec = (t.memberships ?? []).find((m) => String(m?.project?.gid) === "1208297375044026");
     return {
       label: unit ? "Unit " + unit : lhead,
       info: bits.length ? bits.join(" · ") : (unit ? lhead : ""),
       due, done,
+      group: open ? feedLeaseGroup(String(lsec?.section?.name ?? "")) : "",
     };
   }
   // maintenance / resident relations / leasing: title segment before the separator, scrubbed
@@ -1260,6 +1279,26 @@ app.post("/onboard-proxy", async (c) => {
           return { key: pr.key, title: pr.title, open, done };
         });
 
+        // inspection report attachments (Multifamily reports live on the tasks today;
+        // Annual items light up automatically if staff start attaching reports)
+        const inspItems: { gid: string; item: Record<string, unknown> }[] = [];
+        for (const sec of sections) {
+          if (sec.key !== "annualinspection" && sec.key !== "mfinspection") continue;
+          for (const it of [...sec.open, ...sec.done]) {
+            const rec = it as unknown as Record<string, unknown>;
+            if (rec && rec.gid) inspItems.push({ gid: String(rec.gid), item: rec });
+          }
+        }
+        const attLists = await Promise.all(inspItems.map((x) =>
+          asana("GET", `/tasks/${x.gid}/attachments?opt_fields=gid,name`).catch(() => [])));
+        inspItems.forEach((x, idx) => {
+          const reps = ((attLists[idx] ?? []) as { gid?: unknown; name?: unknown }[])
+            .map((a) => ({ gid: String(a.gid ?? ""), name: String(a.name ?? "") }))
+            .filter((a) => a.gid);
+          if (reps.length) x.item.reports = reps;
+          delete x.item.gid;
+        });
+
         const propFields = psFull ? feedFields(psFull.custom_fields ?? []) : [];
         const units = (psSubs ?? []).map((s: { gid?: unknown; name?: unknown; custom_fields?: unknown[] }) => ({
           taskGid: String(s.gid ?? ""),
@@ -1280,6 +1319,41 @@ app.post("/onboard-proxy", async (c) => {
           settings: ps ? { taskGid: String(ps.gid), fields: propFields, units } : null,
         });
       } catch { return j(headers, 200, { ok: false, error: "load_failed" }); }
+    }
+
+    // ---------- feedReport: gated fetch of an inspection report attachment link ----------
+    // The owner clicks View Report; we verify the email gate, confirm the attachment hangs
+    // on an inspection task for THIS property, and hand back Asana's signed download URL.
+    if (action === "feedReport") {
+      const pid = String(body.propertyId ?? "").replace(/\D/g, "").slice(0, 12);
+      const email = String(body.email ?? "").trim().toLowerCase().slice(0, 200);
+      const attGid = String(body.attGid ?? "").replace(/\D/g, "");
+      if (!pid || !/@.+\./.test(email) || !attGid) return j(headers, 200, { ok: false, error: "verify" });
+      const enc = encodeURIComponent;
+      try {
+        const [crRes, psRes] = await Promise.all([
+          asana("GET", `/workspaces/${FEED_WS}/tasks/search?projects.any=${FEED_CR}&custom_fields.${FEED_PID_FIELD}.value=${enc(pid)}&opt_fields=gid,name,notes&limit=2`).catch(() => []),
+          asana("GET", `/workspaces/${FEED_WS}/tasks/search?projects.any=${FEED_PS}&custom_fields.${FEED_PID_FIELD}.value=${enc(pid)}&is_subtask=false&opt_fields=gid,name&limit=2`).catch(() => []),
+        ]);
+        const cr = (crRes ?? [])[0];
+        if (!cr) return j(headers, 200, { ok: false, error: "verify" });
+        const ownerEmails = (String(cr.notes ?? "").match(/[\w.+-]+@[\w-]+\.[\w.-]+/g) ?? []).map((e: string) => e.toLowerCase());
+        if (!ownerEmails.includes(email)) return j(headers, 200, { ok: false, error: "verify" });
+        const ps = (psRes ?? [])[0];
+        let address = ps ? (String(ps.name ?? "").split("//")[2] ?? "").trim() : "";
+        if (!address) address = String(cr.name ?? "").split("//")[0].split(",")[0].trim();
+        const att = await asana("GET", `/attachments/${attGid}?opt_fields=name,download_url,parent.gid`);
+        const parentGid = String(att?.parent?.gid ?? "");
+        const url = String(att?.download_url ?? "");
+        if (!parentGid || !/^https:\/\//.test(url)) return j(headers, 200, { ok: false, error: "no_report" });
+        const parent = await asana("GET", `/tasks/${parentGid}?opt_fields=name,projects.gid`);
+        const inInsp = (parent.projects ?? []).some((pr: { gid?: unknown }) => FEED_INSPECTION_GIDS.has(String(pr.gid)));
+        const toks = feedSearchText(address).toLowerCase().split(/\s+/).filter(Boolean);
+        const pname = String(parent.name ?? "").toLowerCase();
+        const isOurs = toks.length > 0 && toks.every((tk) => pname.includes(tk));
+        if (!inInsp || !isOurs) return j(headers, 403, { ok: false, error: "not_allowed" });
+        return j(headers, 200, { ok: true, url, name: String(att.name ?? "Inspection Report") });
+      } catch { return j(headers, 200, { ok: false, error: "no_report" }); }
     }
 
     // ---------- feedFill: owner fills a BLANK settings field (never edits existing data) ----------
