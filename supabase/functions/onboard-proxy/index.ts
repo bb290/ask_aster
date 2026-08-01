@@ -119,6 +119,109 @@ function displayValue(cf: Record<string, unknown>): string {
   return String(cf.display_value ?? "").trim();
 }
 
+// ---------- Owner Feed constants + helpers ----------
+const FEED_WS = "706990140225747";
+const FEED_CR = "1208917007356847";            // Client Relations 2.0 (gate + About)
+const FEED_PS = "1211134623744906";            // Property Settings (data + unit subtasks)
+const FEED_PID_FIELD = "1213183108704512";     // Property ID custom field (the join key)
+const FEED_PROJECTS = [
+  { key: "maintenance", title: "Maintenance", gid: "1210320631715650" },
+  { key: "rentcollection", title: "Rent Collection", gid: "1201903129380637" },
+  { key: "residentrelations", title: "Resident Relations", gid: "1201903129380625" },
+  { key: "renewal", title: "Lease Renewal", gid: "1205087214629788" },
+  { key: "leasing", title: "Leasing", gid: "1208297375044026" },
+  { key: "annualinspection", title: "Annual Inspection", gid: "1205841857464078" },
+  { key: "mfinspection", title: "Multifamily Inspection", gid: "1211332673219694" },
+];
+const FEED_CF_OPT = "gid,name,custom_fields.gid,custom_fields.name,custom_fields.type,custom_fields.display_value,custom_fields.enum_options.gid,custom_fields.enum_options.name,custom_fields.enum_options.enabled";
+// never shown to owners (internal links / geo / plumbing)
+const FEED_HIDDEN_FIELDS = new Set(["Playbook", "Latitude", "Longitude", "Lease ID"]);
+// shown when filled, but never owner-fillable (staff join keys / staff-only judgment)
+const FEED_STAFF_FIELDS = new Set(["Property ID", "Unit ID", "Unit #", "Auto Utility Processing Mode"]);
+type FeedTask = { gid?: unknown; name?: unknown; due_on?: unknown; completed_at?: unknown; custom_fields?: { name?: unknown; display_value?: unknown }[]; memberships?: { project?: { gid?: unknown }; section?: { name?: unknown } }[] };
+type FeedItem = { label: string; info: string; due: string; done: string } | null;
+function feedScrub(s: string): string {
+  return s.replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "").replace(/(\+?1[\s.-]?)?\(?\d{3}\)?[\s.-]\d{3}[\s.-]\d{4}/g, "").replace(/\s{2,}/g, " ").trim();
+}
+function feedUnit(name: string): string {
+  const m = name.match(/#\s*([A-Za-z0-9-]+)/);
+  return m ? m[1] : "";
+}
+function feedUnitFromName(name: string): string {
+  return feedUnit(name) || name.split("//").pop()?.trim() || name;
+}
+function feedSearchText(address: string): string {
+  const STOP = new Set(["n", "s", "e", "w", "ne", "nw", "se", "sw", "north", "south", "east", "west", "st", "street", "ave", "avenue", "rd", "road", "blvd", "boulevard", "way", "dr", "drive", "ct", "court", "pl", "place", "ln", "lane", "hwy", "apt", "unit"]);
+  return address.split(/\s+/).filter((t) => !STOP.has(t.toLowerCase().replace(/[.,]/g, ""))).join(" ").trim() || address;
+}
+function feedOwnerNames(notes: string): string {
+  // the (CLIENT) task description opens with "Owner Contact(s)" then the names line
+  const lines = notes.split("\n").map((l) => l.trim());
+  const i = lines.findIndex((l) => /^owner contact/i.test(l));
+  const cand = i > -1 ? (lines[i + 1] ?? "") : "";
+  return /@/.test(cand) ? "" : cand;
+}
+function feedDateVal(v: string): string {
+  const s = v.trim();
+  if (!s) return "";
+  if (s.startsWith("9999")) return "N/A";
+  return s.slice(0, 10);
+}
+function feedFields(cfs: Record<string, unknown>[]): { gid: string; name: string; type: string; value: string; blank: boolean; fillable: boolean; options?: string[] }[] {
+  const out: { gid: string; name: string; type: string; value: string; blank: boolean; fillable: boolean; options?: string[] }[] = [];
+  for (const c of cfs ?? []) {
+    const name = String(c.name ?? "");
+    if (FEED_HIDDEN_FIELDS.has(name)) continue;
+    const type = String(c.type ?? "");
+    let value = String(c.display_value ?? "").trim();
+    if (type === "date") value = feedDateVal(value);
+    const blank = !value;
+    if (blank && FEED_STAFF_FIELDS.has(name)) continue;   // blank staff keys are noise to owners
+    const fillable = blank && !FEED_STAFF_FIELDS.has(name) && ["text", "number", "date", "enum", "multi_enum"].includes(type);
+    const row: { gid: string; name: string; type: string; value: string; blank: boolean; fillable: boolean; options?: string[] } = {
+      gid: String(c.gid ?? ""), name, type, value, blank, fillable,
+    };
+    if (fillable && (type === "enum" || type === "multi_enum")) {
+      row.options = ((c.enum_options ?? []) as { name?: unknown; enabled?: boolean }[]).filter((o) => o.enabled !== false).map((o) => String(o.name ?? ""));
+    }
+    out.push(row);
+  }
+  return out;
+}
+function feedItem(prKey: string, t: FeedTask, open: boolean): FeedItem {
+  const cf: Record<string, string> = {};
+  for (const c of t.custom_fields ?? []) cf[String(c.name)] = String(c.display_value ?? "").trim();
+  const name = String(t.name ?? "");
+  const unit = feedUnit(name);
+  const due = open ? String(t.due_on ?? "") : "";
+  const done = !open ? String(t.completed_at ?? "").slice(0, 10) : "";
+  if (prKey === "rentcollection") {
+    // vacated / payment-plan / 3rd-party collections are out of scope, and titles can
+    // carry resident names, so these items NEVER render from the raw title
+    const sec = (t.memberships ?? []).map((m) => String(m?.section?.name ?? "")).join(" | ").toLowerCase();
+    if (/vacated|payment plan|3rd party|third party/.test(sec)) return null;
+    const bits: string[] = [];
+    if (cf["Balance"]) bits.push("Balance $" + cf["Balance"]);
+    if (cf["Status"]) bits.push(cf["Status"]);
+    if (!open && !bits.length) bits.push("Resolved");
+    return { label: unit ? "Unit " + unit : "Rent collection item", info: bits.join(" · "), due, done };
+  }
+  if (prKey === "renewal") {
+    const from = cf["\u{1F916} Current Total"], to = cf["\u{1F916} New Total"];
+    const TYPE_LABEL: Record<string, string> = { "Renew": "Renewed", "N2V": "Notice To Vacate" };
+    const typeLbl = TYPE_LABEL[cf["Type"] ?? ""] ?? (cf["Type"] || "");
+    const info = from && to && Number(to) > 0 ? "Rent $" + from + " → $" + to : typeLbl;
+    return { label: unit ? "Unit " + unit : "Renewal", info, due, done };
+  }
+  if (prKey === "annualinspection" || prKey === "mfinspection") {
+    return { label: unit ? "Unit " + unit : "Building inspection", info: "", due, done };
+  }
+  // maintenance / resident relations / leasing: title segment before the separator, scrubbed
+  const head = feedScrub(name.split(/\/\/|[|<]/)[0].trim());
+  if (!head) return null;
+  return { label: head, info: unit ? "Unit " + unit : "", due, done };
+}
+
 // ---------- proposal deal locator (shared by propTerms / propAccept) ----------
 // Finds the prospect's latest Mgmt 3.0 deal by contact email OR by the address slug
 // carried in ob_proposal_url, plus the emails of the deal's associated contacts.
@@ -1075,6 +1178,161 @@ app.post("/onboard-proxy", async (c) => {
         ),
       });
       return j(headers, 200, { saved: Object.keys(payload).length, remaining: empty });
+    }
+
+    // ================= OWNER FEED (live per-property page at /owner-feed?p={PropertyID}) =================
+    // Open-but-gated: every call requires the visitor's email to match an owner email on the
+    // property's (CLIENT) task in Client Relations 2.0. Line items are built server-side from
+    // task fields and the pre-// title segment, scrubbed of emails/phones; resident names in
+    // Collection titles never render (those items show as Unit NN + Balance/Status only).
+
+    // ---------- feedLoad: the whole feed in one call ----------
+    if (action === "feedLoad") {
+      const pid = String(body.propertyId ?? "").replace(/\D/g, "").slice(0, 12);
+      const email = String(body.email ?? "").trim().toLowerCase().slice(0, 200);
+      if (!pid || !/@.+\./.test(email)) return j(headers, 200, { ok: false, error: "verify" });
+      const enc = encodeURIComponent;
+      try {
+        const [crRes, psRes] = await Promise.all([
+          asana("GET", `/workspaces/${FEED_WS}/tasks/search?projects.any=${FEED_CR}&custom_fields.${FEED_PID_FIELD}.value=${enc(pid)}&opt_fields=gid,name,notes,custom_fields.name,custom_fields.display_value&limit=2`).catch(() => []),
+          asana("GET", `/workspaces/${FEED_WS}/tasks/search?projects.any=${FEED_PS}&custom_fields.${FEED_PID_FIELD}.value=${enc(pid)}&is_subtask=false&opt_fields=gid,name&limit=2`).catch(() => []),
+        ]);
+        const cr = (crRes ?? [])[0];
+        if (!cr) return j(headers, 200, { ok: false, error: "verify" });
+        const ownerEmails = (String(cr.notes ?? "").match(/[\w.+-]+@[\w-]+\.[\w.-]+/g) ?? []).map((e: string) => e.toLowerCase());
+        if (!ownerEmails.includes(email)) return j(headers, 200, { ok: false, error: "verify" });
+
+        // property identity: prefer the Settings task name (Settings // Short // Address // City)
+        const ps = (psRes ?? [])[0];
+        let shortName = "", address = "", city = "";
+        if (ps) {
+          const parts = String(ps.name ?? "").split("//").map((s: string) => s.trim());
+          shortName = parts[1] ?? ""; address = parts[2] ?? ""; city = parts[3] ?? "";
+        }
+        if (!address) {
+          const head = String(cr.name ?? "").split("//")[0].trim();
+          const ci = head.lastIndexOf(",");
+          address = ci > -1 ? head.slice(0, ci).trim() : head;
+          city = ci > -1 ? head.slice(ci + 1).trim() : "";
+        }
+        const crCf: Record<string, string> = {};
+        for (const c of (cr.custom_fields ?? [])) crCf[String(c.name)] = String(c.display_value ?? "").trim();
+
+        const text = feedSearchText(address);
+        const cutoff = new Date(Date.now() - 40 * 86400000).toISOString().slice(0, 10);
+        const OPT = "gid,name,due_on,completed_at,custom_fields.name,custom_fields.display_value,memberships.project.gid,memberships.section.name";
+        const searches = FEED_PROJECTS.flatMap((pr) => [
+          asana("GET", `/workspaces/${FEED_WS}/tasks/search?text=${enc(text)}&projects.any=${pr.gid}&completed=false&is_subtask=false&opt_fields=${OPT}&limit=50`).catch(() => []),
+          asana("GET", `/workspaces/${FEED_WS}/tasks/search?text=${enc(text)}&projects.any=${pr.gid}&completed=true&completed_on.after=${cutoff}&is_subtask=false&opt_fields=${OPT}&limit=50`).catch(() => []),
+        ]);
+        const settingsFetch = ps ? Promise.all([
+          asana("GET", `/tasks/${ps.gid}?opt_fields=${FEED_CF_OPT}`).catch(() => null),
+          asana("GET", `/tasks/${ps.gid}/subtasks?limit=100&opt_fields=${FEED_CF_OPT}`).catch(() => []),
+        ]) : Promise.resolve([null, []]);
+        const [results, [psFull, psSubs]] = await Promise.all([Promise.all(searches), settingsFetch]);
+
+        let totOpen = 0, totDone = 0;
+        const sections = FEED_PROJECTS.map((pr, i) => {
+          const open = (results[i * 2] ?? []).map((t: FeedTask) => feedItem(pr.key, t, true)).filter(Boolean);
+          const done = (results[i * 2 + 1] ?? []).map((t: FeedTask) => feedItem(pr.key, t, false)).filter(Boolean);
+          open.sort((a: FeedItem, b: FeedItem) => String(a?.due || "9999").localeCompare(String(b?.due || "9999")));
+          done.sort((a: FeedItem, b: FeedItem) => String(b?.done ?? "").localeCompare(String(a?.done ?? "")));
+          totOpen += open.length; totDone += done.length;
+          return { key: pr.key, title: pr.title, open, done };
+        });
+
+        const propFields = psFull ? feedFields(psFull.custom_fields ?? []) : [];
+        const units = (psSubs ?? []).map((s: { gid?: unknown; name?: unknown; custom_fields?: unknown[] }) => ({
+          taskGid: String(s.gid ?? ""),
+          unit: feedUnitFromName(String(s.name ?? "")),
+          fields: feedFields((s.custom_fields ?? []) as Record<string, unknown>[]),
+        })).sort((a: { unit: string }, b: { unit: string }) => a.unit.localeCompare(b.unit, undefined, { numeric: true }));
+
+        return j(headers, 200, {
+          ok: true,
+          property: {
+            shortName, address, city, propertyId: pid,
+            units: crCf["Unit Count"] || String((psSubs ?? []).length || ""),
+            commSettings: (crCf["Communication Settings"] || "").split(",").map((s: string) => s.trim()).filter(Boolean),
+            ownerNames: feedOwnerNames(String(cr.notes ?? "")),
+          },
+          totals: { open: totOpen, done: totDone },
+          sections,
+          settings: ps ? { taskGid: String(ps.gid), fields: propFields, units } : null,
+        });
+      } catch { return j(headers, 200, { ok: false, error: "load_failed" }); }
+    }
+
+    // ---------- feedFill: owner fills a BLANK settings field (never edits existing data) ----------
+    if (action === "feedFill") {
+      const pid = String(body.propertyId ?? "").replace(/\D/g, "").slice(0, 12);
+      const email = String(body.email ?? "").trim().toLowerCase().slice(0, 200);
+      const taskGid = String(body.taskGid ?? "").replace(/\D/g, "");
+      const fieldGid = String(body.fieldGid ?? "").replace(/\D/g, "");
+      if (!pid || !/@.+\./.test(email) || !taskGid || !fieldGid) return j(headers, 200, { ok: false, error: "verify" });
+      const enc = encodeURIComponent;
+      try {
+        const [crRes, psRes] = await Promise.all([
+          asana("GET", `/workspaces/${FEED_WS}/tasks/search?projects.any=${FEED_CR}&custom_fields.${FEED_PID_FIELD}.value=${enc(pid)}&opt_fields=gid,notes&limit=2`).catch(() => []),
+          asana("GET", `/workspaces/${FEED_WS}/tasks/search?projects.any=${FEED_PS}&custom_fields.${FEED_PID_FIELD}.value=${enc(pid)}&is_subtask=false&opt_fields=gid&limit=2`).catch(() => []),
+        ]);
+        const cr = (crRes ?? [])[0], ps = (psRes ?? [])[0];
+        if (!cr || !ps) return j(headers, 200, { ok: false, error: "verify" });
+        const ownerEmails = (String(cr.notes ?? "").match(/[\w.+-]+@[\w-]+\.[\w.-]+/g) ?? []).map((e: string) => e.toLowerCase());
+        if (!ownerEmails.includes(email)) return j(headers, 200, { ok: false, error: "verify" });
+        // containment: only the property's own Settings task or one of its unit subtasks
+        let allowed = taskGid === String(ps.gid);
+        if (!allowed) {
+          const subs = await asana("GET", `/tasks/${ps.gid}/subtasks?limit=100&opt_fields=gid`).catch(() => []);
+          allowed = (subs ?? []).some((s: { gid?: unknown }) => String(s.gid) === taskGid);
+        }
+        if (!allowed) return j(headers, 403, { ok: false, error: "not_allowed" });
+        const task = await asana("GET", `/tasks/${taskGid}?opt_fields=${FEED_CF_OPT}`);
+        const cf = (task.custom_fields ?? []).find((c: { gid?: unknown }) => String(c.gid) === fieldGid);
+        if (!cf) return j(headers, 400, { ok: false, error: "no_field" });
+        const fname = String(cf.name ?? "");
+        if (FEED_HIDDEN_FIELDS.has(fname) || FEED_STAFF_FIELDS.has(fname)) return j(headers, 403, { ok: false, error: "not_allowed" });
+        if (String(cf.display_value ?? "").trim()) return j(headers, 409, { ok: false, error: "already_filled", message: "This field already has a value. Existing data can only be changed by our team." });
+        const type = String(cf.type ?? "");
+        const val = body.value;
+        const cfPayload: Record<string, unknown> = {};
+        if (type === "text") {
+          const s = String(val ?? "").trim().slice(0, 2000);
+          if (!s) return j(headers, 400, { ok: false, error: "bad_value" });
+          cfPayload[fieldGid] = s;
+        } else if (type === "number") {
+          const n = Number(val);
+          if (!Number.isFinite(n)) return j(headers, 400, { ok: false, error: "bad_value" });
+          cfPayload[fieldGid] = n;
+        } else if (type === "date") {
+          const s = String(val ?? "").trim();
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return j(headers, 400, { ok: false, error: "bad_value" });
+          cfPayload[fieldGid] = { date: s };
+        } else if (type === "enum") {
+          const opt = (cf.enum_options ?? []).find((o: { gid?: unknown; name?: unknown; enabled?: boolean }) =>
+            o.enabled !== false && (String(o.gid) === String(val) || String(o.name).trim() === String(val ?? "").trim()));
+          if (!opt) return j(headers, 400, { ok: false, error: "bad_value" });
+          cfPayload[fieldGid] = String(opt.gid);
+        } else if (type === "multi_enum") {
+          const wants = (Array.isArray(val) ? val : String(val ?? "").split(";")).map((v) => String(v).trim()).filter(Boolean);
+          const gids: string[] = [];
+          for (const w of wants) {
+            const opt = (cf.enum_options ?? []).find((o: { gid?: unknown; name?: unknown; enabled?: boolean }) =>
+              o.enabled !== false && (String(o.gid) === w || String(o.name).trim() === w));
+            if (!opt) return j(headers, 400, { ok: false, error: "bad_value" });
+            gids.push(String(opt.gid));
+          }
+          if (!gids.length) return j(headers, 400, { ok: false, error: "bad_value" });
+          cfPayload[fieldGid] = gids;
+        } else return j(headers, 400, { ok: false, error: "bad_value" });
+        await asana("PUT", `/tasks/${taskGid}`, { custom_fields: cfPayload });
+        await asana("POST", `/tasks/${taskGid}/stories`, {
+          html_text: storyHtml(`Owner Feed: "${fname}" was blank and has been filled in by the property owner (${email}) through the live Owner Feed page. Done by Claude (Owner Feed) on behalf of the owner.`),
+        }).catch(() => null);
+        const after = await asana("GET", `/tasks/${taskGid}?opt_fields=custom_fields.gid,custom_fields.display_value`).catch(() => null);
+        const now = after ? (after.custom_fields ?? []).find((c: { gid?: unknown }) => String(c.gid) === fieldGid) : null;
+        return j(headers, 200, { ok: true, value: String(now?.display_value ?? "").trim() });
+      } catch { return j(headers, 200, { ok: false, error: "save_failed" }); }
     }
 
     return j(headers, 400, { error: "unknown_action" });
