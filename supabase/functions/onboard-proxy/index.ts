@@ -202,6 +202,20 @@ function feedAddrRegex(address: string): RegExp | null {
     "gi",
   );
 }
+// building nickname ("Stone Ct" / "Stone Court") is stripped from everything owners see;
+// the base word alone is NOT matched (a "stone tile" repair must survive), so the
+// pattern requires base + a building-suffix word
+function feedNameRegex(shortName: string): RegExp | null {
+  const toks = shortName.trim().split(/\s+/).filter(Boolean);
+  if (!toks.length) return null;
+  const SUF = "(?:ct|court|st|street|apts?|apartments?|bldg|building|manor|place|pl|villas?|estates?|terrace|commons?)";
+  const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const last = toks[toks.length - 1].toLowerCase();
+  const isSuf = new RegExp("^" + SUF + "$", "i").test(last);
+  const base = (isSuf ? toks.slice(0, -1) : toks).map(escRe).join("\\s+");
+  if (!base) return null;
+  return new RegExp("\\b" + base + "\\s+" + SUF + "\\b", "gi");
+}
 function feedOwnerNames(notes: string): string {
   // the (CLIENT) task description opens with "Owner Contact(s)" then the names line
   const lines = notes.split("\n").map((l) => l.trim());
@@ -1319,16 +1333,24 @@ app.post("/onboard-proxy", async (c) => {
           return { key: pr.key, title: pr.title, open, done };
         });
 
-        // mask the street address wherever staff typed it into a title
+        // mask the street address and the building nickname wherever staff typed them into titles
         const addrRe = feedAddrRegex(address);
-        if (addrRe) {
-          const masked = feedMaskAddr(address, "");
+        const nameRe = feedNameRegex(shortName);
+        const masked = feedMaskAddr(address, "");
+        const clean = (s: string) => {
+          let out = s;
+          if (addrRe) out = out.replace(addrRe, masked);
+          if (nameRe) out = out.replace(nameRe, "");
+          out = out.replace(/\s{2,}/g, " ").replace(/^[\s\-–—:,]+/, "").trim();
+          return out ? out.charAt(0).toUpperCase() + out.slice(1) : out;
+        };
+        if (addrRe || nameRe) {
           for (const sec of sections) {
             for (const it of [...sec.open, ...sec.done]) {
               const rec = it as unknown as Record<string, unknown>;
               if (!rec) continue;
-              rec.label = String(rec.label ?? "").replace(addrRe, masked).replace(/\s{2,}/g, " ").trim();
-              if (rec.info) rec.info = String(rec.info).replace(addrRe, masked).replace(/\s{2,}/g, " ").trim();
+              rec.label = clean(String(rec.label ?? "")) || "Property item";
+              if (rec.info) rec.info = clean(String(rec.info));
             }
           }
         }
@@ -1408,7 +1430,8 @@ app.post("/onboard-proxy", async (c) => {
         return j(headers, 200, {
           ok: true,
           property: {
-            shortName, address: feedMaskAddr(address, city), city, propertyId: pid,
+            // building nickname withheld from the page entirely (Brittany 2026-08-01)
+            shortName: "", address: feedMaskAddr(address, city), city, propertyId: pid,
             units: psCf["Unit #"] || crCf["Unit Count"] || String((psSubs ?? []).length || ""),
             commSettings: (crCf["Communication Settings"] || "").split(",").map((s: string) => s.trim()).filter(Boolean),
             ownerNames: feedOwnerNames(String(cr.notes ?? "")),
