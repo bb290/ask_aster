@@ -1408,7 +1408,11 @@ app.post("/onboard-proxy", async (c) => {
           asana("GET", `/tasks/${x.gid}/attachments?opt_fields=gid,name`).catch(() => [])));
         inspItems.forEach((x, idx) => {
           const reps = ((attLists[idx] ?? []) as { gid?: unknown; name?: unknown }[])
-            .map((a) => ({ gid: String(a.gid ?? ""), name: String(a.name ?? "") }))
+            .map((a) => {
+              // attachment filenames carry the full address; owners get a generic label + date
+              const dm = String(a.name ?? "").match(/\d{4}-\d{2}-\d{2}/);
+              return { gid: String(a.gid ?? ""), name: "Inspection Report" + (dm ? " " + dm[0] : "") };
+            })
             .filter((a) => a.gid);
           if (reps.length) x.item.reports = reps;
           delete x.item.gid;
@@ -1498,7 +1502,7 @@ app.post("/onboard-proxy", async (c) => {
         const pname = String(parent.name ?? "").toLowerCase();
         const isOurs = toks.length > 0 && toks.every((tk) => pname.includes(tk));
         if (!inInsp || !isOurs) return j(headers, 403, { ok: false, error: "not_allowed" });
-        return j(headers, 200, { ok: true, url, name: String(att.name ?? "Inspection Report") });
+        return j(headers, 200, { ok: true, url, name: "Inspection Report" });
       } catch { return j(headers, 200, { ok: false, error: "no_report" }); }
     }
 
