@@ -139,7 +139,14 @@ const FEED_HIDDEN_FIELDS = new Set(["Playbook", "Latitude", "Longitude", "Lease 
 // shown when filled, but never owner-fillable (staff join keys / staff-only judgment)
 const FEED_STAFF_FIELDS = new Set(["Property ID", "Unit ID", "Unit #", "Auto Utility Processing Mode"]);
 type FeedTask = { gid?: unknown; name?: unknown; due_on?: unknown; completed_at?: unknown; custom_fields?: { name?: unknown; display_value?: unknown }[]; memberships?: { project?: { gid?: unknown }; section?: { name?: unknown } }[] };
-type FeedItem = { label: string; info: string; due: string; done: string; group?: string; gid?: string; reports?: { gid: string; name: string }[]; steps?: { label: string; due: string; done: boolean }[] } | null;
+type FeedItem = { label: string; info: string; due: string; done: string; group?: string; gid?: string; reports?: { gid: string; name: string }[]; steps?: { label: string; due: string; done: boolean }[]; pills?: string[] } | null;
+// vendor enum values carry trade codes / regions / phone numbers ("GC - Everywhere -
+// J&J Construction - (206) 535-4492"); owners get the company name only
+function feedVendor(v: string): string {
+  const parts = v.split(" - ").map((s) => s.trim()).filter((s) =>
+    s && !/^\(?\+?\d/.test(s) && !/^everywhere$/i.test(s) && !/^[A-Z]{1,3}$/.test(s));
+  return parts.join(" - ").replace(/\s*everywhere\s*$/i, "").trim();
+}
 // the leasing parent's lifecycle subtasks, in Brittany's order; labels are OURS
 // (subtask titles can carry resident names and never render)
 const FEED_LEASE_STEPS: [RegExp, string][] = [
@@ -258,16 +265,23 @@ function feedItem(prKey: string, t: FeedTask, open: boolean): FeedItem {
     const lsec = (t.memberships ?? []).find((m) => String(m?.project?.gid) === "1208297375044026");
     return {
       label: unit ? "Unit " + unit : lhead,
-      info: bits.length ? bits.join(" · ") : (unit ? lhead : ""),
+      info: "",
+      pills: bits,   // Move Out / Listed / Move In dates render as pills (Brittany 2026-08-01)
       due, done,
       group: open ? feedLeaseGroup(String(lsec?.section?.name ?? "")) : "",
       gid: open && unit ? String(t.gid ?? "") : "",   // open unit items get lifecycle steps
     };
   }
-  // maintenance / resident relations / leasing: title segment before the separator, scrubbed
+  // maintenance / resident relations: title segment before the separator, scrubbed
   const head = feedScrub(name.split(/\/\/|[|<]/)[0].trim());
   if (!head) return null;
-  return { label: head, info: unit ? "Unit " + unit : "", due, done };
+  const pills: string[] = [];
+  if (prKey === "maintenance") {
+    if (cf["Severity"]) pills.push(cf["Severity"] + " Severity");
+    const vn = feedVendor(cf["Vendor"] ?? "");
+    if (vn) pills.push(vn);
+  }
+  return { label: head, info: unit ? "Unit " + unit : "", due, done, ...(pills.length ? { pills } : {}) };
 }
 
 // ---------- proposal deal locator (shared by propTerms / propAccept) ----------
