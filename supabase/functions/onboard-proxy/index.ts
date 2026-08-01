@@ -139,7 +139,16 @@ const FEED_HIDDEN_FIELDS = new Set(["Playbook", "Latitude", "Longitude", "Lease 
 // shown when filled, but never owner-fillable (staff join keys / staff-only judgment)
 const FEED_STAFF_FIELDS = new Set(["Property ID", "Unit ID", "Unit #", "Auto Utility Processing Mode"]);
 type FeedTask = { gid?: unknown; name?: unknown; due_on?: unknown; completed_at?: unknown; custom_fields?: { name?: unknown; display_value?: unknown }[]; memberships?: { project?: { gid?: unknown }; section?: { name?: unknown } }[] };
-type FeedItem = { label: string; info: string; due: string; done: string; group?: string; gid?: string; reports?: { gid: string; name: string }[] } | null;
+type FeedItem = { label: string; info: string; due: string; done: string; group?: string; gid?: string; reports?: { gid: string; name: string }[]; steps?: { label: string; due: string; done: boolean }[] } | null;
+// the leasing parent's lifecycle subtasks, in Brittany's order; labels are OURS
+// (subtask titles can carry resident names and never render)
+const FEED_LEASE_STEPS: [RegExp, string][] = [
+  [/^pre[\s-]*move/i, "Pre Move Out"],
+  [/^move[\s-]*out/i, "Move Out"],
+  [/^turn\s*over/i, "Turn Over"],
+  [/^lu\b/i, "Lease Up"],
+  [/^process\s*deposit/i, "Process Deposit"],
+];
 const FEED_INSPECTION_GIDS = new Set(["1205841857464078", "1211332673219694"]);
 // owner-friendly grouping of the Leasing | Human View board sections; agent-name
 // and assignment columns all read as "With Leasing Team"
@@ -252,6 +261,7 @@ function feedItem(prKey: string, t: FeedTask, open: boolean): FeedItem {
       info: bits.length ? bits.join(" · ") : (unit ? lhead : ""),
       due, done,
       group: open ? feedLeaseGroup(String(lsec?.section?.name ?? "")) : "",
+      gid: open && unit ? String(t.gid ?? "") : "",   // open unit items get lifecycle steps
     };
   }
   // maintenance / resident relations / leasing: title segment before the separator, scrubbed
@@ -1277,6 +1287,45 @@ app.post("/onboard-proxy", async (c) => {
           done.sort((a: FeedItem, b: FeedItem) => String(b?.done ?? "").localeCompare(String(a?.done ?? "")));
           totOpen += open.length; totDone += done.length;
           return { key: pr.key, title: pr.title, open, done };
+        });
+
+        // leasing lifecycle steps: Pre Move Out / Move Out / Turn Over / Lease Up /
+        // Move In (child of LU) / Process Deposit, each with due date + done state
+        const leaseItems: { gid: string; item: Record<string, unknown> }[] = [];
+        for (const sec of sections) {
+          if (sec.key !== "leasing") continue;
+          for (const it of sec.open) {
+            const rec = it as unknown as Record<string, unknown>;
+            if (rec && rec.gid) leaseItems.push({ gid: String(rec.gid), item: rec });
+          }
+        }
+        const subLists = await Promise.all(leaseItems.map((x) =>
+          asana("GET", `/tasks/${x.gid}/subtasks?opt_fields=gid,name,due_on,completed&limit=30`).catch(() => [])));
+        const luFetches: { itemIdx: number; promise: Promise<unknown> }[] = [];
+        const stepsByItem: { label: string; due: string; done: boolean }[][] = leaseItems.map(() => []);
+        subLists.forEach((subs, idx) => {
+          for (const s of (subs ?? []) as { gid?: unknown; name?: unknown; due_on?: unknown; completed?: boolean }[]) {
+            const head = String(s.name ?? "").split(/[|<]/)[0].trim();
+            for (const [re, label] of FEED_LEASE_STEPS) {
+              if (!re.test(head)) continue;
+              stepsByItem[idx].push({ label, due: String(s.due_on ?? ""), done: s.completed === true });
+              if (label === "Lease Up") luFetches.push({ itemIdx: idx, promise: asana("GET", `/tasks/${String(s.gid)}/subtasks?opt_fields=name,due_on,completed&limit=40`).catch(() => []) });
+              break;
+            }
+          }
+        });
+        const luChildren = await Promise.all(luFetches.map((f) => f.promise));
+        luFetches.forEach((f, i) => {
+          const mi = ((luChildren[i] ?? []) as { name?: unknown; due_on?: unknown; completed?: boolean }[])
+            .find((s) => /^move[\s-]*in/i.test(String(s.name ?? "").trim()));
+          if (mi) stepsByItem[f.itemIdx].push({ label: "Move In", due: String(mi.due_on ?? ""), done: mi.completed === true });
+        });
+        const STEP_ORDER = ["Pre Move Out", "Move Out", "Turn Over", "Lease Up", "Move In", "Process Deposit"];
+        leaseItems.forEach((x, idx) => {
+          const steps = stepsByItem[idx];
+          steps.sort((a, b) => STEP_ORDER.indexOf(a.label) - STEP_ORDER.indexOf(b.label));
+          if (steps.length) x.item.steps = steps;
+          delete x.item.gid;
         });
 
         // inspection report attachments (Multifamily reports live on the tasks today;
