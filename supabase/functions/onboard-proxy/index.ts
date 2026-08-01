@@ -186,6 +186,22 @@ function feedSearchText(address: string): string {
   const STOP = new Set(["n", "s", "e", "w", "ne", "nw", "se", "sw", "north", "south", "east", "west", "st", "street", "ave", "avenue", "rd", "road", "blvd", "boulevard", "way", "dr", "drive", "ct", "court", "pl", "place", "ln", "lane", "hwy", "apt", "unit"]);
   return address.split(/\s+/).filter((t) => !STOP.has(t.toLowerCase().replace(/[.,]/g, ""))).join(" ").trim() || address;
 }
+// display address is anonymized but recognizable: "1151 N 94th St" + Seattle -> "1151 **** Seattle"
+// (the full address stays server-side for the Asana searches)
+function feedMaskAddr(address: string, city: string): string {
+  const num = (address.trim().split(/\s+/)[0] || "").replace(/[^\w-]/g, "");
+  return [num, "****", city.trim()].filter(Boolean).join(" ");
+}
+// staff sometimes type the street address inside issue titles; mask any occurrence
+// (street number + directionals/street tokens/unit refs) down to "1151 ****"
+function feedAddrRegex(address: string): RegExp | null {
+  const num = (address.trim().split(/\s+/)[0] || "").replace(/[^\w-]/g, "");
+  if (!num || !/\d/.test(num)) return null;
+  return new RegExp(
+    "\\b" + num + "(\\s+(?:n|s|e|w|ne|nw|se|sw|north|south|east|west)\\.?\\b|\\s+\\d+(?:st|nd|rd|th)?\\w*|\\s+(?:st|street|ave|avenue|rd|road|blvd|boulevard|way|dr|drive|ct|court|pl|place|ln|lane)\\.?\\b|\\s+#\\s*\\w+)*",
+    "gi",
+  );
+}
 function feedOwnerNames(notes: string): string {
   // the (CLIENT) task description opens with "Owner Contact(s)" then the names line
   const lines = notes.split("\n").map((l) => l.trim());
@@ -1303,6 +1319,20 @@ app.post("/onboard-proxy", async (c) => {
           return { key: pr.key, title: pr.title, open, done };
         });
 
+        // mask the street address wherever staff typed it into a title
+        const addrRe = feedAddrRegex(address);
+        if (addrRe) {
+          const masked = feedMaskAddr(address, "");
+          for (const sec of sections) {
+            for (const it of [...sec.open, ...sec.done]) {
+              const rec = it as unknown as Record<string, unknown>;
+              if (!rec) continue;
+              rec.label = String(rec.label ?? "").replace(addrRe, masked).replace(/\s{2,}/g, " ").trim();
+              if (rec.info) rec.info = String(rec.info).replace(addrRe, masked).replace(/\s{2,}/g, " ").trim();
+            }
+          }
+        }
+
         // leasing lifecycle steps: Pre Move Out / Move Out / Turn Over / Lease Up /
         // Move In (child of LU) / Process Deposit, each with due date + done state
         const leaseItems: { gid: string; item: Record<string, unknown> }[] = [];
@@ -1378,7 +1408,7 @@ app.post("/onboard-proxy", async (c) => {
         return j(headers, 200, {
           ok: true,
           property: {
-            shortName, address, city, propertyId: pid,
+            shortName, address: feedMaskAddr(address, city), city, propertyId: pid,
             units: psCf["Unit #"] || crCf["Unit Count"] || String((psSubs ?? []).length || ""),
             commSettings: (crCf["Communication Settings"] || "").split(",").map((s: string) => s.trim()).filter(Boolean),
             ownerNames: feedOwnerNames(String(cr.notes ?? "")),
@@ -1388,6 +1418,30 @@ app.post("/onboard-proxy", async (c) => {
           settings: ps ? { taskGid: String(ps.gid), fields: propFields, units } : null,
         });
       } catch { return j(headers, 200, { ok: false, error: "load_failed" }); }
+    }
+
+    // ---------- feedFeedback: owner feedback -> subtask under the (CLIENT) task ----------
+    if (action === "feedFeedback") {
+      const pid = String(body.propertyId ?? "").replace(/\D/g, "").slice(0, 12);
+      const email = String(body.email ?? "").trim().toLowerCase().slice(0, 200);
+      const text = String(body.text ?? "").trim().slice(0, 4000);
+      if (!pid || !/@.+\./.test(email) || text.length < 5) return j(headers, 200, { ok: false, error: "verify" });
+      const enc = encodeURIComponent;
+      try {
+        const crRes = await asana("GET", `/workspaces/${FEED_WS}/tasks/search?projects.any=${FEED_CR}&custom_fields.${FEED_PID_FIELD}.value=${enc(pid)}&opt_fields=gid,name,notes&limit=2`).catch(() => []);
+        const cr = (crRes ?? [])[0];
+        if (!cr) return j(headers, 200, { ok: false, error: "verify" });
+        const ownerEmails = (String(cr.notes ?? "").match(/[\w.+-]+@[\w-]+\.[\w.-]+/g) ?? []).map((e: string) => e.toLowerCase());
+        if (!ownerEmails.includes(email)) return j(headers, 200, { ok: false, error: "verify" });
+        const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+        await asana("POST", `/tasks/${cr.gid}/subtasks`, {
+          name: `Owner Feed Feedback // ${String(cr.name ?? "").split("//")[0].trim()} // ${today}`,
+          assignee: "bb@sagareus.com",
+          due_on: today,
+          notes: `${text}\n\nSubmitted by the property owner (${email}) through the Owner Feed page. Done by Claude (Owner Feed) on behalf of the owner.`,
+        });
+        return j(headers, 200, { ok: true });
+      } catch { return j(headers, 200, { ok: false, error: "save_failed" }); }
     }
 
     // ---------- feedReport: gated fetch of an inspection report attachment link ----------
