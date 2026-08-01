@@ -1355,11 +1355,17 @@ app.post("/onboard-proxy", async (c) => {
           fields: feedFields((s.custom_fields ?? []) as Record<string, unknown>[]),
         })).sort((a: { unit: string }, b: { unit: string }) => a.unit.localeCompare(b.unit, undefined, { numeric: true }));
 
+        // unit count: Property Settings "Unit #" is the source of truth (Brittany 2026-08-01);
+        // the CR-task Unit Count and the subtask count are fallbacks only
+        const psCf: Record<string, string> = {};
+        for (const c of ((psFull?.custom_fields ?? []) as { name?: unknown; display_value?: unknown }[])) {
+          psCf[String(c.name)] = String(c.display_value ?? "").trim();
+        }
         return j(headers, 200, {
           ok: true,
           property: {
             shortName, address, city, propertyId: pid,
-            units: crCf["Unit Count"] || String((psSubs ?? []).length || ""),
+            units: psCf["Unit #"] || crCf["Unit Count"] || String((psSubs ?? []).length || ""),
             commSettings: (crCf["Communication Settings"] || "").split(",").map((s: string) => s.trim()).filter(Boolean),
             ownerNames: feedOwnerNames(String(cr.notes ?? "")),
           },
