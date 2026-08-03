@@ -21,6 +21,7 @@
 // Plan of record: clients/sagareus/projects/applicant-portal/PLAN.md
 
 import { Hono } from "hono";
+import { underwrite, type HouseholdInput } from "./engine.ts";
 
 const B_ID = Deno.env.get("BUILDIUM_SCREENING_CLIENT_ID") ?? "";
 const B_SECRET = Deno.env.get("BUILDIUM_SCREENING_CLIENT_SECRET") ?? "";
@@ -389,6 +390,25 @@ app.post("*", async (c) => {
 
       const asana = await findAsanaTasks(members.map((m) => m.name).filter((n) => n !== "Unnamed"));
       return j(headers, 200, { members, asana });
+    }
+
+    // ---------- underwrite: deterministic tier math (engine.ts) ----------
+    // Structured input in, tier results out. No writes, no Buildium calls.
+    // This is the engine that replaces the /screening skill's arithmetic;
+    // document parsing feeds it once the docs API question is answered.
+    if (action === "underwrite") {
+      const household = (body as { household?: unknown }).household as HouseholdInput | undefined;
+      if (!household || !Array.isArray(household.applicants) || !household.applicants.length) {
+        return j(headers, 400, { error: "bad_household", message: "Pass household: { applicants: [...], asOf?: 'YYYY-MM-DD' }." });
+      }
+      if (household.applicants.length > 10) return j(headers, 400, { error: "too_many_applicants" });
+      if (!household.asOf) household.asOf = new Date().toISOString().slice(0, 10);
+      try {
+        return j(headers, 200, { result: underwrite(household) });
+      } catch (e) {
+        console.error("underwrite failed:", e);
+        return j(headers, 400, { error: "underwrite_failed", message: "Input shape did not compute. Check the household payload." });
+      }
     }
 
     // ---------- setStatus: update the household's Buildium application status ----------
