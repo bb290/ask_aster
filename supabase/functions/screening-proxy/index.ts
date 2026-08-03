@@ -391,6 +391,38 @@ app.post("*", async (c) => {
       return j(headers, 200, { members, asana });
     }
 
+    // ---------- setStatus: update the household's Buildium application status ----------
+    // The widget drives Buildium status as steps complete (Brittany,
+    // 2026-08-03). Applicant-level Status derives from the application, so we
+    // PUT each submitted application's ApplicationStatus.
+    if (action === "setStatus") {
+      const ids = (Array.isArray(body.applicantIds) ? body.applicantIds : [])
+        .map((x) => parseInt(String(x), 10)).filter((n) => Number.isFinite(n) && n > 0);
+      const status = String((body as { status?: unknown }).status ?? "");
+      const ALLOWED = new Set(["Undecided", "Deferred", "Approved", "Rejected"]);
+      if (!ids.length || ids.length > 10) return j(headers, 400, { error: "bad_applicant_ids" });
+      if (!ALLOWED.has(status)) return j(headers, 400, { error: "bad_status", message: `Status must be one of: ${[...ALLOWED].join(", ")}` });
+      const results = await Promise.all(ids.map(async (id) => {
+        try {
+          const a = await bGet(`/applicants/${id}`) as Applicant;
+          const apps = (a.Applications ?? []).map((ap) => ap.Id).filter((x): x is number => x != null);
+          if (!apps.length) return { id, ok: false, message: "no submitted application" };
+          for (const appId of apps) {
+            const res = await fetch(`${BUILDIUM}/applicants/${id}/applications/${appId}`, {
+              method: "PUT",
+              headers: { ...BH, "Content-Type": "application/json" },
+              body: JSON.stringify({ ApplicationStatus: status }),
+            });
+            if (!res.ok) return { id, ok: false, message: `buildium ${res.status}` };
+          }
+          return { id, ok: true };
+        } catch {
+          return { id, ok: false, message: "fetch failed" };
+        }
+      }));
+      return j(headers, 200, { status, results, ok: results.every((r) => r.ok) });
+    }
+
     // ---------- createTask: file the household's application task in Asana ----------
     // The household is whoever the assistant loaded: all adults on the
     // application share ONE task (Brittany, 2026-08-03). Name template:
@@ -544,17 +576,36 @@ app.post("*", async (c) => {
         })
       ) as { gid?: string; permalink_url?: string; name?: string };
 
-      const note = mode === "pending"
+      // Pushing to Asana means work has started: flip New applications to
+      // Undecided in Buildium so the queue batches track reality. Best-effort.
+      let statusFlipped = false;
+      try {
+        for (const m of members) {
+          for (const ap of m.Applications ?? []) {
+            if (ap.Id != null && (ap.Status ?? (ap as { ApplicationStatus?: string }).ApplicationStatus) !== "Undecided") {
+              const res = await fetch(`${BUILDIUM}/applicants/${m.Id}/applications/${ap.Id}`, {
+                method: "PUT",
+                headers: { ...BH, "Content-Type": "application/json" },
+                body: JSON.stringify({ ApplicationStatus: "Undecided" }),
+              });
+              if (res.ok) statusFlipped = true;
+            }
+          }
+        }
+      } catch { /* status flip is best-effort */ }
+
+      const note = (mode === "pending"
         ? "Property pending: the task is in Pending Applications with an email draft to confirm the address with the applicant."
         : mode === "roommate"
         ? "No open lease-up matched: filed as Roommate Addendum in Pending Applications, due in 2 days, per the Roommate / Sublet SOP."
-        : undefined;
+        : undefined);
+      const statusNote = statusFlipped ? "Buildium status moved to Undecided." : undefined;
 
       return j(headers, 200, {
         created: true, mode,
         task: { name: made.name ?? taskName, url: made.permalink_url ?? "" },
         parent: luHit ? { name: luHit.name } : null,
-        note,
+        note: [note, statusNote].filter(Boolean).join(" ") || undefined,
       });
     }
 
