@@ -147,8 +147,13 @@ app.post("*", async (c) => {
   try {
     // ---------- queue: pending households, oldest first ----------
     if (action === "queue") {
+      // Buildium returns applicants OLDEST-FIRST and this portfolio has years
+      // of them, so an unfiltered page walk returns 2020-2023 rows and never
+      // reaches the live pipeline. lastupdatedfrom (verified 2026-08-03) makes
+      // Buildium do the 90-day cut server-side.
+      const fromDate = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
       const [applicants, rentals] = await Promise.all([
-        bGetAll("/applicants") as Promise<Applicant[]>,
+        bGetAll(`/applicants?lastupdatedfrom=${fromDate}`) as Promise<Applicant[]>,
         bGetAll("/rentals") as Promise<Rental[]>,
       ]);
       const propName = new Map<number, { name: string; city: string }>();
