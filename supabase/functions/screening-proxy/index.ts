@@ -27,8 +27,14 @@ const B_SECRET = Deno.env.get("BUILDIUM_SCREENING_CLIENT_SECRET") ?? "";
 const TEAM_KEY = Deno.env.get("SCREENING_KEY") ?? "";
 const ASANA_PAT = Deno.env.get("ASANA_PAT") ?? "";
 const WORKSPACE = "706990140225747";
+const LEASING_LU_PROJECT = "1213171756304238"; // Leasing | LU (same as site-visit-proxy)
+const ASANA = "https://app.asana.com/api/1.0";
 const BUILDIUM = "https://api.buildium.com/v1";
 const BH = { "x-buildium-client-id": B_ID, "x-buildium-client-secret": B_SECRET };
+// Staff-facing Buildium UI deep link (not the API). Path shape mirrors the
+// vendor links that appear in the SOPs; Buildium redirects within the app if
+// the trailing segment drifts between versions.
+const B_UI = "https://sagareus.managebuilding.com/manager/app/rentals/applicants";
 
 const ALLOWED_ORIGINS = (Deno.env.get("ALLOWED_ORIGINS") ??
   "https://www.sagareus.com,https://sagareus.com")
@@ -105,6 +111,101 @@ type Rental = {
 const SETTLED = new Set([
   "approved", "rejected", "addedtolease", "cancelled", "canceled", "notneeded",
 ]);
+
+async function asanaCall(method: string, path: string, body?: unknown): Promise<unknown> {
+  const res = await fetch(`${ASANA}${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${ASANA_PAT}`, ...(body ? { "Content-Type": "application/json" } : {}) },
+    body: body ? JSON.stringify({ data: body }) : undefined,
+  });
+  const json = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`asana ${method} ${path} -> ${res.status}`);
+  return (json as { data?: unknown }).data;
+}
+
+// Address normalization, ported from site-visit-proxy: tokenizes and expands
+// abbreviations so "5200 Roosevelt Way NE #403" matches "5200 Roosevelt Way
+// Northeast Apt 403".
+const ADDR_EXPAND: Record<string, string> = {
+  st: "street", ave: "avenue", av: "avenue", rd: "road", dr: "drive", blvd: "boulevard",
+  pl: "place", ct: "court", ln: "lane", ter: "terrace", hwy: "highway", pkwy: "parkway",
+  cir: "circle", n: "north", s: "south", e: "east", w: "west",
+  ne: "northeast", nw: "northwest", se: "southeast", sw: "southwest",
+};
+function addrTokens(s: string): string[] {
+  const raw = s.toLowerCase().replace(/[.,]/g, " ").split(/\s+/).filter(Boolean);
+  const out: string[] = [];
+  for (let i = 0; i < raw.length; i++) {
+    let w = raw[i];
+    if ((w === "unit" || w === "apt" || w === "ste" || w === "suite") && raw[i + 1]) {
+      out.push("#" + raw[++i].replace(/^#/, ""));
+      continue;
+    }
+    w = ADDR_EXPAND[w] ?? w;
+    if (w === "wa" || w === "washington") continue;
+    if (i > 0 && /^9\d{4}(-\d{4})?$/.test(w)) continue;
+    out.push(w);
+  }
+  return out;
+}
+function normAddr(s: string): string {
+  return addrTokens(s).join(" ");
+}
+function addressFromTaskName(name: string): string {
+  const afterBar = name.includes("|") ? name.split("|").slice(1).join("|").trim() : name.trim();
+  return afterBar.split(" - ")[0].trim();
+}
+
+// Open LU/TP/PreLease tasks from the Leasing | LU project via paged listing
+// (workspace search caps at 100 recently-modified results and silently drops
+// tasks; see the same warning in site-visit-proxy).
+let luCache: { at: number; tasks: Array<{ gid: string; name: string; address: string }> } | null = null;
+async function openLuTasks(): Promise<Array<{ gid: string; name: string; address: string }>> {
+  if (luCache && Date.now() - luCache.at < 2 * 60 * 1000) return luCache.tasks;
+  const out: Array<{ gid: string; name: string; address: string }> = [];
+  let offset = "";
+  for (let page = 0; page < 12; page++) {
+    const res = await fetch(
+      `${ASANA}/projects/${LEASING_LU_PROJECT}/tasks?completed=false&limit=100&opt_fields=name,completed${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+      { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
+    );
+    const json = await res.json().catch(() => ({})) as {
+      data?: Array<{ gid: string; name: string; completed?: boolean }>;
+      next_page?: { offset?: string } | null;
+    };
+    if (!res.ok) throw new Error(`asana lu page ${page}`);
+    for (const t of json.data ?? []) {
+      if (t.completed) continue;
+      if (!/^(LU|TP|PreLease)\s*\|/i.test(t.name)) continue;
+      const address = addressFromTaskName(t.name);
+      if (!address || address.includes("<")) continue;
+      out.push({ gid: t.gid, name: t.name, address });
+    }
+    offset = json.next_page?.offset ?? "";
+    if (!offset) break;
+  }
+  luCache = { at: Date.now(), tasks: out };
+  return out;
+}
+
+// Best LU parent for a Buildium address: exact normalized match, else same
+// street number with at most one unmatched token.
+function matchLu(tasks: Array<{ gid: string; name: string; address: string }>, target: string):
+  { hit?: { gid: string; name: string; address: string }; near: string[] } {
+  const t = addrTokens(target);
+  if (!t.length) return { near: [] };
+  const wanted = t.join(" ");
+  const exact = tasks.find((k) => normAddr(k.address) === wanted);
+  if (exact) return { hit: exact, near: [] };
+  const cands = tasks.filter((k) => {
+    const kt = addrTokens(k.address);
+    if (kt[0] !== t[0]) return false;
+    const set = new Set(kt);
+    return t.filter((w) => !set.has(w)).length <= 1;
+  });
+  if (cands.length === 1) return { hit: cands[0], near: [] };
+  return { near: cands.slice(0, 3).map((c) => c.address) };
+}
 
 // Find the household's Asana application task. The SOP template names tasks
 // "Application // <names>" (older ones "<Application> // <names>") in the
@@ -285,6 +386,93 @@ app.post("*", async (c) => {
 
       const asana = await findAsanaTasks(members.map((m) => m.name).filter((n) => n !== "Unnamed"));
       return j(headers, 200, { members, asana });
+    }
+
+    // ---------- createTask: file the household's application task in Asana ----------
+    // The household is whoever the assistant loaded: all adults on the
+    // application share ONE task (Brittany, 2026-08-03). Name template:
+    //   Application / <names> / <address>
+    // Description: Buildium application links + each applicant's contact.
+    // Created as a subtask of the matching open LU/TP/PreLease task.
+    // dryRun:true resolves everything and creates nothing.
+    if (action === "createTask") {
+      const ids = (Array.isArray(body.applicantIds) ? body.applicantIds : [])
+        .map((x) => parseInt(String(x), 10)).filter((n) => Number.isFinite(n) && n > 0);
+      if (!ids.length || ids.length > 10) {
+        return j(headers, 400, { error: "bad_applicant_ids", message: "Pass 1-10 applicant IDs." });
+      }
+      const dryRun = (body as { dryRun?: unknown }).dryRun === true;
+
+      const members = await Promise.all(ids.map((id) => bGet(`/applicants/${id}`) as Promise<Applicant>));
+      const names = members.map(fullName).filter((n) => n !== "Unnamed");
+      if (!names.length) return j(headers, 400, { error: "no_names", message: "Buildium has no names for these applicants." });
+
+      // Address: unit record when the applicant has one (LU tasks are per
+      // unit), property record otherwise.
+      let address = "";
+      const unitId = members[0].UnitId, propId = members[0].PropertyId;
+      if (unitId != null) {
+        try {
+          const u = await bGet(`/rentals/units/${unitId}`) as { UnitNumber?: string; Address?: { AddressLine1?: string; City?: string } };
+          const line = u.Address?.AddressLine1 ?? "";
+          const num = u.UnitNumber && line && !line.includes(String(u.UnitNumber)) ? ` #${u.UnitNumber}` : "";
+          address = line ? `${line}${num}${u.Address?.City ? ", " + u.Address.City : ""}` : "";
+        } catch { /* fall through to property */ }
+      }
+      if (!address && propId != null) {
+        try {
+          const p = await bGet(`/rentals/${propId}`) as Rental;
+          address = p.Address?.AddressLine1 ? `${p.Address.AddressLine1}${p.Address.City ? ", " + p.Address.City : ""}` : (p.Name ?? "");
+        } catch { /* stays empty */ }
+      }
+      if (!address) {
+        return j(headers, 422, { error: "no_address", message: "Buildium has no property or unit on this application yet. Add it in Buildium first, or create the task by hand." });
+      }
+
+      // Duplicate guard: an existing open application task for this household wins.
+      const existing = (await findAsanaTasks(names)).filter((t) => !t.completed);
+      if (existing.length) {
+        return j(headers, 200, { created: false, existing: existing[0], message: "An open application task already exists." });
+      }
+
+      const lu = matchLu(await openLuTasks(), address);
+      if (!lu.hit) {
+        return j(headers, 422, {
+          error: "no_lu_match",
+          message: `No open LU task matched "${address}".${lu.near.length ? " Close: " + lu.near.join("; ") : ""} Create the task by hand for now.`,
+        });
+      }
+
+      const streetOnly = address.split(",")[0].trim();
+      const taskName = `Application / ${names.join(" + ")} / ${streetOnly}`;
+      // html_notes is parsed as XML by Asana; escape user-derived text.
+      const x = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+      const contactHtml = members.map((m) => {
+        const phones = (m.PhoneNumbers ?? []).map((p) => p.Number ?? "").filter(Boolean).join(", ");
+        return `<strong>${x(fullName(m))}</strong>\n` +
+          `Email: ${x(m.Email ?? "none on file")}\n` +
+          `Phone: ${x(phones || "none on file")}\n` +
+          `Buildium: <a href="${B_UI}/${m.Id}/summary">${B_UI}/${m.Id}/summary</a>`;
+      }).join("\n\n");
+      const notes = `<body><strong>Applicant contact details</strong>\n\n${contactHtml}\n\n` +
+        `Created from the Screening Workbench. Buildium is the system of record for documents.</body>`;
+
+      if (dryRun) {
+        return j(headers, 200, {
+          created: false, dryRun: true, wouldCreate: taskName,
+          parent: { gid: lu.hit.gid, name: lu.hit.name },
+        });
+      }
+
+      const made = await asanaCall("POST", `/tasks/${lu.hit.gid}/subtasks`, {
+        name: taskName, html_notes: notes,
+      }) as { gid?: string; permalink_url?: string; name?: string };
+
+      return j(headers, 200, {
+        created: true,
+        task: { name: made.name ?? taskName, url: made.permalink_url ?? "" },
+        parent: { name: lu.hit.name },
+      });
     }
 
     return j(headers, 400, { error: "unknown_action" });
