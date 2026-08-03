@@ -25,6 +25,8 @@ import { Hono } from "hono";
 const B_ID = Deno.env.get("BUILDIUM_SCREENING_CLIENT_ID") ?? "";
 const B_SECRET = Deno.env.get("BUILDIUM_SCREENING_CLIENT_SECRET") ?? "";
 const TEAM_KEY = Deno.env.get("SCREENING_KEY") ?? "";
+const ASANA_PAT = Deno.env.get("ASANA_PAT") ?? "";
+const WORKSPACE = "706990140225747";
 const BUILDIUM = "https://api.buildium.com/v1";
 const BH = { "x-buildium-client-id": B_ID, "x-buildium-client-secret": B_SECRET };
 
@@ -103,6 +105,31 @@ type Rental = {
 const SETTLED = new Set([
   "approved", "rejected", "addedtolease", "cancelled", "canceled", "notneeded",
 ]);
+
+// Find the household's Asana application task. The SOP template names tasks
+// "Application // <names>" (older ones "<Application> // <names>") in the
+// Leasing project, so typeahead on the applicant's name and keep tasks whose
+// name mentions "application". Best-effort: no PAT or no match returns [].
+async function findAsanaTasks(names: string[]): Promise<{ name: string; url: string; completed: boolean }[]> {
+  if (!ASANA_PAT) return [];
+  const seen = new Map<string, { name: string; url: string; completed: boolean }>();
+  for (const q of names.slice(0, 4)) {
+    try {
+      const u = `https://app.asana.com/api/1.0/workspaces/${WORKSPACE}/typeahead?resource_type=task&query=${
+        encodeURIComponent(q)
+      }&count=10&opt_fields=name,permalink_url,completed`;
+      const res = await fetch(u, { headers: { Authorization: `Bearer ${ASANA_PAT}` } });
+      if (!res.ok) continue;
+      const data = (await res.json())?.data as { gid?: string; name?: string; permalink_url?: string; completed?: boolean }[];
+      for (const t of data ?? []) {
+        if (!t.gid || !t.name || !t.permalink_url) continue;
+        if (!/application/i.test(t.name)) continue;
+        seen.set(t.gid, { name: t.name, url: t.permalink_url, completed: !!t.completed });
+      }
+    } catch { /* best-effort */ }
+  }
+  return [...seen.values()].slice(0, 5);
+}
 
 function fullName(a: Applicant): string {
   return [a.FirstName, a.LastName].filter(Boolean).join(" ").trim() || "Unnamed";
@@ -256,7 +283,8 @@ app.post("*", async (c) => {
         };
       }));
 
-      return j(headers, 200, { members });
+      const asana = await findAsanaTasks(members.map((m) => m.name).filter((n) => n !== "Unnamed"));
+      return j(headers, 200, { members, asana });
     }
 
     return j(headers, 400, { error: "unknown_action" });
