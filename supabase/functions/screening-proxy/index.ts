@@ -161,7 +161,18 @@ app.post("*", async (c) => {
         }
       }
 
-      const pending = applicants.filter((a) => !SETTLED.has((a.Status ?? "").toLowerCase()));
+      // 90-day window (Brittany, 2026-08-03): only surface applications with
+      // activity in the last 90 days. Application date when Buildium has one,
+      // otherwise last-updated. Older deferred/stale applicants stay in
+      // Buildium but out of the queue.
+      const cutoff = new Date(Date.now() - 90 * 86400000).toISOString();
+      const recent = (a: Applicant) => {
+        const applied = (a.Applications ?? []).map((ap) => ap.ApplicationDate ?? "").sort().at(-1) ?? "";
+        return (applied || a.LastUpdatedDateTime || "") >= cutoff;
+      };
+      const pending = applicants.filter((a) =>
+        !SETTLED.has((a.Status ?? "").toLowerCase()) && recent(a)
+      );
 
       // Group households. ApplicantGroupId when Buildium assigned one;
       // otherwise the applicant is their own group.
