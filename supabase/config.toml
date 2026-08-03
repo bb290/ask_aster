@@ -28,3 +28,9 @@ verify_jwt = false
 # function ("link" generation stays team-key gated). Disable gateway JWT so the
 # public page can reach it.
 verify_jwt = false
+
+[functions.screening-proxy]
+# Internal screening workbench (/workbench): auth = origin allowlist + shared
+# team key header (x-sv-key, SCREENING_KEY secret) checked inside the function;
+# Buildium screening credential stays server-side. Read-only against Buildium.
+verify_jwt = false
