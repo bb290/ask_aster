@@ -542,18 +542,53 @@ app.post("/onboard-proxy", async (c) => {
     // Assigned to Brittany with due = +3 days; every obProgress save rolls the due date
     // forward, so the task surfaces in her My Tasks only after 3 quiet days (no cron).
     if (action === "obStart") {
+      const kind = ["new_client", "add_property", "add_unit"].includes(String(body.kind)) ? String(body.kind) : "new_client";
+      const TITLE: Record<string, string> = { new_client: "Initial Onboarding", add_property: "Add Property", add_unit: "Add Unit" };
       const address = String(body.address ?? "").trim().slice(0, 200);
+      const ownerName = String(body.ownerName ?? "").trim().slice(0, 80);
+      const ownerEmail = String(body.ownerEmail ?? "").trim().slice(0, 120);
       if (!address) return j(headers, 400, { ok: false, error: "missing_address" });
       try {
         const task = await asana("POST", "/tasks", {
-          name: `Initial Onboarding | ${address} (IN PROGRESS)`,
+          name: `${TITLE[kind]} | ${address} (IN PROGRESS)`,
           projects: [OB_PROJECT_GID],
           assignee: "bb@sagareus.com",
           due_on: obDuePT(3),
-          notes: `Onboarding wizard started for ${address}. Answers fill in here as the owner works through the form; the task renames and moves to New Submissions when they submit.\n\nIf this surfaces on its due date, the owner has gone quiet for 3 days - worth a follow up.\n\nCreated by Claude (onboarding wizard) on behalf of the owner.`,
+          notes: `${TITLE[kind]} wizard started for ${address}${ownerName ? ` by ${ownerName}${ownerEmail ? " (" + ownerEmail + ")" : ""}` : ""}. Answers fill in here as the owner works through the form; the task renames and moves out of Wizard In Progress when they submit.\n\nIf this surfaces on its due date, the owner has gone quiet for 3 days - worth a follow up.\n\nCreated by Claude (onboarding wizard) on behalf of the owner.`,
         });
         await asana("POST", `/sections/${OB_WIP_SECTION}/addTask`, { task: task.gid }).catch(() => null);
-        return j(headers, 200, { ok: true, taskGid: String(task.gid), token: await makeToken(String(task.gid)) });
+        // Existing-client adds also spawn the Client Relations tracking task NOW, with the
+        // staff PMA step assigned to Brittany due today (Brittany 2026-08-03)
+        let crUrl = "";
+        if (kind !== "new_client") {
+          try {
+            const TPL = kind === "add_property" ? "1214028249129139" : "1214029792896122";   // (PROPERTY) / (UNIT) templates
+            const SUB = kind === "add_property" ? "Send | PMA - Existing client adding property" : "Verify | PMA - Includes all units";
+            const label = kind === "add_property" ? "(PROPERTY)" : "(UNIT)";
+            const job = await asana("POST", `/task_templates/${TPL}/instantiateTask`, {
+              name: `${label} ${address}${ownerName ? " / " + ownerName : ""}`,
+            });
+            let crGid = job?.new_task?.gid ?? "";
+            for (let i = 0; i < 10 && !crGid; i++) {
+              await new Promise((res) => setTimeout(res, 700));
+              const jb = await asana("GET", `/jobs/${job.gid}`);
+              if (jb?.status === "succeeded" || jb?.new_task?.gid) crGid = jb?.new_task?.gid ?? "";
+              if (jb?.status === "failed") break;
+            }
+            if (crGid) {
+              crUrl = `https://app.asana.com/0/0/${crGid}`;
+              const today = obDuePT(0);
+              const subs = await asana("GET", `/tasks/${crGid}/subtasks?limit=100&opt_fields=gid,name`).catch(() => []);
+              const pma = (subs ?? []).find((s: { name?: unknown }) => /pma/i.test(String(s.name ?? "")));
+              if (pma) await asana("PUT", `/tasks/${pma.gid}`, { assignee: "bb@sagareus.com", due_on: today }).catch(() => null);
+              else await asana("POST", `/tasks/${crGid}/subtasks`, { name: SUB, assignee: "bb@sagareus.com", due_on: today }).catch(() => null);
+              if (ownerEmail) await asana("PUT", `/tasks/${crGid}`, { custom_fields: { [CR_OWNER_EMAILS_FIELD]: ownerEmail } }).catch(() => null);
+              await asana("POST", `/tasks/${crGid}/stories`, { html_text: storyHtml(`Created by the onboarding wizard (${TITLE[kind]}, requested by ${ownerName || "the owner"}${ownerEmail ? ", " + ownerEmail : ""}). Onboarding data fills in at: https://app.asana.com/0/0/${task.gid}`) }).catch(() => null);
+              await asana("POST", `/tasks/${task.gid}/stories`, { html_text: storyHtml(`Client Relations task created: ${crUrl}`) }).catch(() => null);
+            }
+          } catch { /* CR task is best-effort; the data task is already safe */ }
+        }
+        return j(headers, 200, { ok: true, taskGid: String(task.gid), token: await makeToken(String(task.gid)), crUrl });
       } catch { return j(headers, 200, { ok: false, error: "start_failed" }); }
     }
 
@@ -576,7 +611,8 @@ app.post("/onboard-proxy", async (c) => {
         const cf = obMapAnswers(byName, answers);
         const { lines, htmlNotes } = obDump("new_client", address || "(address pending)", sectionsDump, units, true);
         const base: Record<string, unknown> = { due_on: obDuePT(3), custom_fields: Object.keys(cf).length ? cf : undefined };
-        if (address) base.name = `Initial Onboarding | ${address} (IN PROGRESS)`;
+        const prefix = String(t0.name ?? "").split(" | ")[0].trim() || "Initial Onboarding";
+        if (address) base.name = `${prefix} | ${address} (IN PROGRESS)`;
         try { await asana("PUT", `/tasks/${gid}`, { ...base, html_notes: htmlNotes }); }
         catch { await asana("PUT", `/tasks/${gid}`, { ...base, notes: lines.join("\n").slice(0, 60000) }); }
         return j(headers, 200, { ok: true });
