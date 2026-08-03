@@ -383,6 +383,7 @@ app.post("*", async (c) => {
           })),
           updated: a.LastUpdatedDateTime ?? "",
           files,
+          buildium: `${B_UI}/${a.Id}/summary`,
         };
       }));
 
@@ -511,7 +512,15 @@ app.post("*", async (c) => {
           `4. Apply the $200 Change in Occupancy Fee to the existing resident's ledger, category Admin CC (EXCEPT in Seattle)\n`;
       }
 
-      const notes = `<body><strong>Applicant contact details</strong>\n\n${contactHtml}\n${extra}\n` +
+      // Applicant docs and the screening report are NOT retrievable via the
+      // Buildium open API (verified 2026-08-03), so attaching them stays a
+      // manual step and the task says so explicitly.
+      const nextSteps = mode === "roommate" ? "" :
+        `\n<strong>Next steps</strong>\n` +
+        `1. Buildium Applicant Summary: download the applicant's documents and the credit / criminal report, attach them to THIS task\n` +
+        `2. In Claude, run /screening and paste this task's link\n` +
+        `3. Aster posts READY FOR MANAGER REVIEW here; assign to the Leasing Manager\n`;
+      const notes = `<body><strong>Applicant contact details</strong>\n\n${contactHtml}\n${extra}${nextSteps}\n` +
         `Created from the Screening Workbench. Buildium is the system of record for documents.</body>`;
 
       if (dryRun) {
