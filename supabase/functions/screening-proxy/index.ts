@@ -29,6 +29,7 @@ const ASANA_PAT = Deno.env.get("ASANA_PAT") ?? "";
 const WORKSPACE = "706990140225747";
 const LEASING_LU_PROJECT = "1213171756304238"; // Leasing | LU (same as site-visit-proxy)
 const LEASING_HUMAN_VIEW = "1208297375044026"; // Leasing | Human View: where application tasks are homed
+const PENDING_APPLICATIONS_SECTION = "1208297375044039"; // its "Pending Applications" section (per Roommate / Sublet SOP)
 const ASANA = "https://app.asana.com/api/1.0";
 const BUILDIUM = "https://api.buildium.com/v1";
 const BH = { "x-buildium-client-id": B_ID, "x-buildium-client-secret": B_SECRET };
@@ -448,7 +449,31 @@ app.post("*", async (c) => {
       }
 
       const streetOnly = address ? address.split(",")[0].trim() : "Property Pending";
-      const taskName = `Application / ${names.join(" + ")} / ${streetOnly}`;
+
+      // Per-property application numbering (Brittany, 2026-08-03): the Nth
+      // application received for a property is labeled so First-In-Time order
+      // is visible at a glance ("2nd Application", "3rd Application" - the
+      // convention already in the project). Count = existing application
+      // subtasks under the LU parent, completed included (they were received).
+      let ordinal = "";
+      if (mode === "lu" && luHit) {
+        try {
+          const subs = await asanaCall("GET", `/tasks/${luHit.gid}/subtasks?limit=100&opt_fields=name`) as { name?: string }[];
+          const prior = (subs ?? []).filter((s) =>
+            /application/i.test(s.name ?? "") && !/roommate addendum/i.test(s.name ?? "")
+          ).length;
+          const n = prior + 1;
+          if (n > 1) {
+            const suffix = n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] ?? "th";
+            ordinal = `${n}${suffix} `;
+          }
+        } catch { /* numbering is best-effort; an unlabeled task beats no task */ }
+      }
+
+      // Roommate mode uses its own template per the Roommate / Sublet SOP.
+      const taskName = mode === "roommate"
+        ? `Roommate Addendum // ${streetOnly}`
+        : `${ordinal}Application / ${names.join(" + ")} / ${streetOnly}`;
       // html_notes is parsed as XML by Asana; escape user-derived text.
       const x = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
       const contactHtml = members.map((m) => {
@@ -477,11 +502,13 @@ app.post("*", async (c) => {
           `Applications are reviewed in the order they are completed, so a quick reply keeps your place in line.\n\n` +
           `Best regards,\nMary + Bryan\nSagareus Leasing Support Team\nleasing@sagareus.com\nCall/Text: 425-390-8122\n`;
       } else if (mode === "roommate") {
-        extra = `\n<strong>NO OPEN LEASE-UP FOR THIS ADDRESS</strong>\n` +
-          `No open LU / TP / PreLease task matched ${x(address)}, so this is likely an applicant ` +
-          `joining an existing tenancy. Process per the Roommate / Sublet SOP: ` +
-          `same screening procedures as an initial application (fee, proof of income, completeness), ` +
-          `then prepare the roommate addendum template in PandaDoc instead of a new lease.\n`;
+        extra = `\n<strong>ROOMMATE ADDENDUM PATH</strong>\n` +
+          `No open LU / TP / PreLease task matched ${x(address)}, so this applicant is likely ` +
+          `joining an existing tenancy. Per the Roommate / Sublet SOP:\n` +
+          `1. Same screening procedures as an initial application: charge the fee, request proof of income, review for completeness, verify income standards\n` +
+          `2. PandaDoc: Templates, Lease + Move In Instructions folder, Roommate Addendum; send to all existing and new residents for e-signature\n` +
+          `3. Attach the signed addendum to the Lease Record in Buildium\n` +
+          `4. Apply the $200 Change in Occupancy Fee to the existing resident's ledger, category Admin CC (EXCEPT in Seattle)\n`;
       }
 
       const notes = `<body><strong>Applicant contact details</strong>\n\n${contactHtml}\n${extra}\n` +
@@ -494,15 +521,24 @@ app.post("*", async (c) => {
         });
       }
 
+      // Standalone modes land in the Pending Applications section; roommate
+      // gets the SOP's 2-day due date (Seattle-ish date math, same as
+      // site-visit-proxy).
+      const due = new Date(Date.now() + 2 * 86400000 - 7 * 3600 * 1000).toISOString().slice(0, 10);
       const made = (mode === "lu" && luHit
         ? await asanaCall("POST", `/tasks/${luHit.gid}/subtasks`, { name: taskName, html_notes: notes })
-        : await asanaCall("POST", `/tasks`, { name: taskName, html_notes: notes, projects: [LEASING_HUMAN_VIEW] })
+        : await asanaCall("POST", `/tasks`, {
+          name: taskName,
+          html_notes: notes,
+          memberships: [{ project: LEASING_HUMAN_VIEW, section: PENDING_APPLICATIONS_SECTION }],
+          ...(mode === "roommate" ? { due_on: due } : {}),
+        })
       ) as { gid?: string; permalink_url?: string; name?: string };
 
       const note = mode === "pending"
-        ? "Property pending: the task carries an email draft to confirm the address with the applicant."
+        ? "Property pending: the task is in Pending Applications with an email draft to confirm the address with the applicant."
         : mode === "roommate"
-        ? "No open lease-up matched: the task is flagged for the Roommate / Sublet SOP (roommate addendum)."
+        ? "No open lease-up matched: filed as Roommate Addendum in Pending Applications, due in 2 days, per the Roommate / Sublet SOP."
         : undefined;
 
       return j(headers, 200, {
