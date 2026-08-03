@@ -2,11 +2,12 @@
 title: Initial Review
 service_line: applicant screening
 sop_owner: brittany@sagareus.com
+outline_url: https://sagareus.getoutline.com/doc/initial-review-hBDQTgS9g9
 status: active
-last_reviewed: 2026-05-01
+last_reviewed: 2026-08-03
 visibility_tier: ic
-version: 1
-tags: [applicant-screening, credit-check, background-check, criminal-check, income-verification, approval-decision, buildium]
+version: 2
+tags: [applicant-screening, credit-check, background-check, criminal-check, income-verification, approval-decision, buildium, ask-aster]
 created_but_never_updated: false
 ---
 
@@ -139,14 +140,42 @@ Send from leasing@sagareus.com
 
 ---
 
-### Create Underwriting Decision Report PDF
+### Run the Screening Report (Ask Aster)
 
 
-1. Run Through ChatGPT [Sagareus Applicant Screening GPT](https://chatgpt.com/g/g-698cb109575c8191b3683b7555d283cc-sagareus-applicant-screening)
-2. Create Decision Report
-   * Open Underwriting [Decision Report template](https://docs.google.com/document/d/1l-xHiG7TDLFeNwna-45atJQMqsuVVDiIXMACpoxU2JY/edit?usp=sharing)
-   * Download PDF
-   * Upload to Asana
+:::warning
+**Ask Aster replaced the Sagareus Applicant Screening GPT and the Google Doc Underwriting Decision Report in August 2026.** Both are sunset. Do not use them.
+
+:::
+
+
+:::info
+**Aster reads the Asana task, not the chat.** Every document Aster needs must be attached to the application task before you run it.
+
+:::
+
+
+1. Attach all documents to the Asana application task
+   * Credit / background report
+   * All proof of income documents
+2. In Claude, run `/screening` and paste the Asana task URL
+   * The task URL is the only input
+   * Do not upload documents into the chat; if documents are missing, attach them to the task first
+3. Aster reads the task, applies Sagareus screening criteria, and prints a draft report
+   * Maximum approved rent is calculated for all three tiers (Lenient 2.0x, Standard 2.5x, Stringent 3.0x)
+   * The report is property-agnostic; the Leasing Manager applies the tier matching the property
+4. Review the draft → Did Aster flag anything you missed?
+5. Aster asks once whether to add anything to Assistant Notes for Manager
+   * Reply "no" to ship as-is, or paste your notes
+6. Aster posts the report as a comment on the same Asana task, headed `READY FOR MANAGER REVIEW`
+   * You do not create a PDF
+   * You do not upload anything to Asana; Aster posts it
+
+
+:::warning
+**Old underwriting decision PDFs are skipped on purpose.** If a task still has an Underwriting Decision Report attached from the old workflow, Aster will ignore it and note that it did. The old system had known income calculation errors, so every figure is re-derived from source documents. Do not re-enter numbers from an old report.
+
+:::
 
 
 ---

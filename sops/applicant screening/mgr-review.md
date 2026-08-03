@@ -2,11 +2,12 @@
 title: Mgr Review
 service_line: applicant screening
 sop_owner: brittany@sagareus.com
+outline_url: https://sagareus.getoutline.com/doc/mgr-review-ekhiZgRBbG
 status: active
-last_reviewed: 2026-05-01
+last_reviewed: 2026-08-03
 visibility_tier: ic
-version: 1
-tags: [applicant-screening, credit-check, income-verification, approval-decision]
+version: 2
+tags: [applicant-screening, credit-check, income-verification, approval-decision, ask-aster]
 created_but_never_updated: false
 ---
 
@@ -28,8 +29,9 @@ created_but_never_updated: false
      * Verify dates represent the most recent pay period
      * Critically examine → Do these documents seem suspicious at all?
    * Credit Screening
-     * Confirm Experian Score
-       * Disregard AI Score
+     * Confirm Equifax FICO Score (300-850)
+       * This is the only score that qualifies an applicant
+       * Disregard the AI Score (RealPage AI Score or similar), even when it appears on the report
 
 
 ---
@@ -62,17 +64,8 @@ Bad Tenant = 2+ years of drama
 5. Document Everything
    * In case clients ask, you will not remember your reasons
    * Also forces you to think about whether or not this is a good call
-   * [Applicant Screening GPT Link](https://chatgpt.com/g/g-698cb109575c8191b3683b7555d283cc-sagareus-applicant-screening)
-
-
----
-
-## Applicant Screening GPT — COSTAR Prompt
-
-
-:::info
-This is the full system prompt used by the Sagareus Applicant Screening GPT. The GPT generates a structured underwriting decision report for each applicant.
-
-:::
-
-(See full prompt content in source document — uses COSTAR framework with C/O/S/T/A/R sections covering Context, Objective, Scope & Decision Rules, Tech-Forward Modern Layout System, Audience, and Response Constraints. Key rules: 2.5x income, three-tier credit thresholds (600/650/700), median household scoring, co-signer eligibility within 50 points, automatic denial criteria for >50pt gap, funds owed to landlord, evictions, open bankruptcy, fraud.)
+   * The Ask Aster screening report is already posted as a comment on the application task, headed `READY FOR MANAGER REVIEW`
+     * Add your reasoning as a further comment on the same task
+   * Examples
+     * [Changed to pet policy](https://app.asana.com/1/706990140225747/project/1203784856974608/task/1213318246384233?focus=true)
+     * [Sometimes you gotta make a judgment call](https://app.asana.com/1/706990140225747/project/1208297375044026/task/1213220158231023?focus=true)
