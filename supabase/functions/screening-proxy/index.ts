@@ -28,6 +28,7 @@ const TEAM_KEY = Deno.env.get("SCREENING_KEY") ?? "";
 const ASANA_PAT = Deno.env.get("ASANA_PAT") ?? "";
 const WORKSPACE = "706990140225747";
 const LEASING_LU_PROJECT = "1213171756304238"; // Leasing | LU (same as site-visit-proxy)
+const LEASING_HUMAN_VIEW = "1208297375044026"; // Leasing | Human View: where application tasks are homed
 const ASANA = "https://app.asana.com/api/1.0";
 const BUILDIUM = "https://api.buildium.com/v1";
 const BH = { "x-buildium-client-id": B_ID, "x-buildium-client-secret": B_SECRET };
@@ -425,25 +426,28 @@ app.post("*", async (c) => {
           address = p.Address?.AddressLine1 ? `${p.Address.AddressLine1}${p.Address.City ? ", " + p.Address.City : ""}` : (p.Name ?? "");
         } catch { /* stays empty */ }
       }
-      if (!address) {
-        return j(headers, 422, { error: "no_address", message: "Buildium has no property or unit on this application yet. Add it in Buildium first, or create the task by hand." });
-      }
-
       // Duplicate guard: an existing open application task for this household wins.
       const existing = (await findAsanaTasks(names)).filter((t) => !t.completed);
       if (existing.length) {
         return j(headers, 200, { created: false, existing: existing[0], message: "An open application task already exists." });
       }
 
-      const lu = matchLu(await openLuTasks(), address);
-      if (!lu.hit) {
-        return j(headers, 422, {
-          error: "no_lu_match",
-          message: `No open LU task matched "${address}".${lu.near.length ? " Close: " + lu.near.join("; ") : ""} Create the task by hand for now.`,
-        });
+      // Three creation modes (Brittany, 2026-08-03). Every path files a task;
+      // nothing bounces back to "create it by hand".
+      //   lu       - address matched an open LU/TP/PreLease task: subtask of it.
+      //   pending  - no property on the application: standalone task in
+      //              Leasing | Human View with an address-confirmation email
+      //              draft for the applicant (drafts only; a human sends it).
+      //   roommate - address but no open lease-up: standalone task flagged for
+      //              the Roommate / Sublet SOP (roommate addendum template).
+      let mode: "lu" | "pending" | "roommate" = "pending";
+      let luHit: { gid: string; name: string } | null = null;
+      if (address) {
+        const lu = matchLu(await openLuTasks(), address);
+        if (lu.hit) { mode = "lu"; luHit = lu.hit; } else mode = "roommate";
       }
 
-      const streetOnly = address.split(",")[0].trim();
+      const streetOnly = address ? address.split(",")[0].trim() : "Property Pending";
       const taskName = `Application / ${names.join(" + ")} / ${streetOnly}`;
       // html_notes is parsed as XML by Asana; escape user-derived text.
       const x = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -454,24 +458,58 @@ app.post("*", async (c) => {
           `Phone: ${x(phones || "none on file")}\n` +
           `Buildium: <a href="${B_UI}/${m.Id}/summary">${B_UI}/${m.Id}/summary</a>`;
       }).join("\n\n");
-      const notes = `<body><strong>Applicant contact details</strong>\n\n${contactHtml}\n\n` +
+
+      let extra = "";
+      if (mode === "pending") {
+        // Address-confirmation email draft, ready to copy into leasing@.
+        // Sagareus voice: no em dashes; signature per the Initial Review SOP
+        // email template. DRAFT ONLY - a human reviews and sends.
+        const first = members.map((m) => x(m.FirstName ?? "")).filter(Boolean).join(" and ") || "there";
+        extra = `\n<strong>PROPERTY ADDRESS PENDING</strong>\n` +
+          `This application arrived without a property attached in Buildium. ` +
+          `Confirm the address with the applicant, set it in Buildium, then move this task under the right LU task.\n\n` +
+          `<strong>Email draft (send from leasing@sagareus.com)</strong>\n` +
+          `Subject: Your Sagareus application, one quick question\n\n` +
+          `Hi ${first},\n\n` +
+          `Thanks for applying with Sagareus! Your application came through without a property attached, ` +
+          `so we want to confirm which home you are applying for. Reply with the property address ` +
+          `(including the unit number if there is one) and we will keep your application moving right away.\n\n` +
+          `Applications are reviewed in the order they are completed, so a quick reply keeps your place in line.\n\n` +
+          `Best regards,\nMary + Bryan\nSagareus Leasing Support Team\nleasing@sagareus.com\nCall/Text: 425-390-8122\n`;
+      } else if (mode === "roommate") {
+        extra = `\n<strong>NO OPEN LEASE-UP FOR THIS ADDRESS</strong>\n` +
+          `No open LU / TP / PreLease task matched ${x(address)}, so this is likely an applicant ` +
+          `joining an existing tenancy. Process per the Roommate / Sublet SOP: ` +
+          `same screening procedures as an initial application (fee, proof of income, completeness), ` +
+          `then prepare the roommate addendum template in PandaDoc instead of a new lease.\n`;
+      }
+
+      const notes = `<body><strong>Applicant contact details</strong>\n\n${contactHtml}\n${extra}\n` +
         `Created from the Screening Workbench. Buildium is the system of record for documents.</body>`;
 
       if (dryRun) {
         return j(headers, 200, {
-          created: false, dryRun: true, wouldCreate: taskName,
-          parent: { gid: lu.hit.gid, name: lu.hit.name },
+          created: false, dryRun: true, mode, wouldCreate: taskName,
+          parent: luHit ? { gid: luHit.gid, name: luHit.name } : null,
         });
       }
 
-      const made = await asanaCall("POST", `/tasks/${lu.hit.gid}/subtasks`, {
-        name: taskName, html_notes: notes,
-      }) as { gid?: string; permalink_url?: string; name?: string };
+      const made = (mode === "lu" && luHit
+        ? await asanaCall("POST", `/tasks/${luHit.gid}/subtasks`, { name: taskName, html_notes: notes })
+        : await asanaCall("POST", `/tasks`, { name: taskName, html_notes: notes, projects: [LEASING_HUMAN_VIEW] })
+      ) as { gid?: string; permalink_url?: string; name?: string };
+
+      const note = mode === "pending"
+        ? "Property pending: the task carries an email draft to confirm the address with the applicant."
+        : mode === "roommate"
+        ? "No open lease-up matched: the task is flagged for the Roommate / Sublet SOP (roommate addendum)."
+        : undefined;
 
       return j(headers, 200, {
-        created: true,
+        created: true, mode,
         task: { name: made.name ?? taskName, url: made.permalink_url ?? "" },
-        parent: { name: lu.hit.name },
+        parent: luHit ? { name: luHit.name } : null,
+        note,
       });
     }
 
