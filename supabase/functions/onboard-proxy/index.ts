@@ -1536,45 +1536,51 @@ app.post("/onboard-proxy", async (c) => {
         const fname = String(cf.name ?? "");
         if (FEED_HIDDEN_FIELDS.has(fname) || FEED_STAFF_FIELDS.has(fname)) return j(headers, 403, { ok: false, error: "not_allowed" });
         if (String(cf.display_value ?? "").trim()) return j(headers, 409, { ok: false, error: "already_filled", message: "This field already has a value. Existing data can only be changed by our team." });
+        // NO WRITE to settings from the feed (Brittany 2026-08-01): validate the value,
+        // then file a review subtask under the (CLIENT) task, exactly like feedback.
+        // Staff enters the data; Property/Unit Settings stay staff-only.
         const type = String(cf.type ?? "");
         const val = body.value;
-        const cfPayload: Record<string, unknown> = {};
+        let shown = "";
         if (type === "text") {
-          const s = String(val ?? "").trim().slice(0, 2000);
-          if (!s) return j(headers, 400, { ok: false, error: "bad_value" });
-          cfPayload[fieldGid] = s;
+          shown = String(val ?? "").trim().slice(0, 2000);
+          if (!shown) return j(headers, 400, { ok: false, error: "bad_value" });
         } else if (type === "number") {
           const n = Number(val);
           if (!Number.isFinite(n)) return j(headers, 400, { ok: false, error: "bad_value" });
-          cfPayload[fieldGid] = n;
+          shown = String(n);
         } else if (type === "date") {
-          const s = String(val ?? "").trim();
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return j(headers, 400, { ok: false, error: "bad_value" });
-          cfPayload[fieldGid] = { date: s };
+          shown = String(val ?? "").trim();
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(shown)) return j(headers, 400, { ok: false, error: "bad_value" });
         } else if (type === "enum") {
           const opt = (cf.enum_options ?? []).find((o: { gid?: unknown; name?: unknown; enabled?: boolean }) =>
             o.enabled !== false && (String(o.gid) === String(val) || String(o.name).trim() === String(val ?? "").trim()));
           if (!opt) return j(headers, 400, { ok: false, error: "bad_value" });
-          cfPayload[fieldGid] = String(opt.gid);
+          shown = String(opt.name);
         } else if (type === "multi_enum") {
           const wants = (Array.isArray(val) ? val : String(val ?? "").split(";")).map((v) => String(v).trim()).filter(Boolean);
-          const gids: string[] = [];
+          const names: string[] = [];
           for (const w of wants) {
             const opt = (cf.enum_options ?? []).find((o: { gid?: unknown; name?: unknown; enabled?: boolean }) =>
               o.enabled !== false && (String(o.gid) === w || String(o.name).trim() === w));
             if (!opt) return j(headers, 400, { ok: false, error: "bad_value" });
-            gids.push(String(opt.gid));
+            names.push(String(opt.name));
           }
-          if (!gids.length) return j(headers, 400, { ok: false, error: "bad_value" });
-          cfPayload[fieldGid] = gids;
+          if (!names.length) return j(headers, 400, { ok: false, error: "bad_value" });
+          shown = names.join("; ");
         } else return j(headers, 400, { ok: false, error: "bad_value" });
-        await asana("PUT", `/tasks/${taskGid}`, { custom_fields: cfPayload });
-        await asana("POST", `/tasks/${taskGid}/stories`, {
-          html_text: storyHtml(`Owner Feed: "${fname}" was blank and has been filled in by the property owner (${email}) through the live Owner Feed page. Done by Claude (Owner Feed) on behalf of the owner.`),
-        }).catch(() => null);
-        const after = await asana("GET", `/tasks/${taskGid}?opt_fields=custom_fields.gid,custom_fields.display_value`).catch(() => null);
-        const now = after ? (after.custom_fields ?? []).find((c: { gid?: unknown }) => String(c.gid) === fieldGid) : null;
-        return j(headers, 200, { ok: true, value: String(now?.display_value ?? "").trim() });
+        const um = String(task.name ?? "").match(/#\s*(\w+)/);
+        const where = um ? "Unit " + um[1] : "Property";
+        const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+        await asana("POST", `/tasks/${cr.gid}/subtasks`, {
+          name: `Owner Feed Data Update // ${fname} // ${where} // ${today}`,
+          assignee: "bb@sagareus.com",
+          due_on: today,
+          notes: `The owner submitted a value for a missing settings field through the Owner Feed. Nothing was written; please review and enter it on the settings task.\n\n` +
+            `Field: ${fname}\nWhere: ${String(task.name ?? "")} (https://app.asana.com/0/0/${taskGid}/f)\nSubmitted value: ${shown}\n\n` +
+            `Submitted by the property owner (${email}) through the Owner Feed page. Done by Claude (Owner Feed) on behalf of the owner.`,
+        });
+        return j(headers, 200, { ok: true, value: shown });
       } catch { return j(headers, 200, { ok: false, error: "save_failed" }); }
     }
 
