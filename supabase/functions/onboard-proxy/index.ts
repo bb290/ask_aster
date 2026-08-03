@@ -216,6 +216,13 @@ function feedNameRegex(shortName: string): RegExp | null {
   if (!base) return null;
   return new RegExp("\\b" + base + "\\s+" + SUF + "\\b", "gi");
 }
+// Owner Feed access emails: the Owner Email(s) field on the (CLIENT) task is the
+// canonical source (Brittany 2026-08-03); the description scrape is the legacy fallback
+function feedGateEmails(cr: { notes?: unknown; custom_fields?: { gid?: unknown; name?: unknown; display_value?: unknown }[] }): string[] {
+  const cf = (cr.custom_fields ?? []).find((c) => String(c.gid) === "1217116783105713" || String(c.name) === "Owner Email(s)");
+  const src = String(cf?.display_value ?? "").trim() || String(cr.notes ?? "");
+  return (src.match(/[\w.+-]+@[\w-]+\.[\w.-]+/g) ?? []).map((e) => e.toLowerCase());
+}
 function feedOwnerNames(notes: string): string {
   // the (CLIENT) task description opens with "Owner Contact(s)" then the names line
   const lines = notes.split("\n").map((l) => l.trim());
@@ -314,6 +321,132 @@ function feedItem(prKey: string, t: FeedTask, open: boolean): FeedItem {
   return { label: head, info: unit ? "Unit " + unit : "", due, done, ...(pills.length ? { pills } : {}) };
 }
 
+// ---------- onboarding wizard shared builders (obStart / obProgress / obSubmit) ----------
+const OB_PROJECT_GID = "1216860326210544";
+const OB_WIP_SECTION = "1217116571349206";               // Wizard In Progress
+const CR_OWNER_EMAILS_FIELD = "1217116783105713";        // Owner Email(s) on Client Relations 2.0 (the Owner Feed gate reads it)
+type ObUnit = { label: string; beds: string; baths: string; sqft: string; laundry: string; mail: string; mailnum: string; storage: string; parking: string; parknum: string; cooling: string };
+function obParseAnswers(body: Record<string, unknown>): Record<string, string> {
+  return (body.answers && typeof body.answers === "object") ? body.answers as Record<string, string> : {};
+}
+function obParseUnits(body: Record<string, unknown>): ObUnit[] {
+  return (Array.isArray(body.units) ? body.units : []).slice(0, 30).map((u: Record<string, unknown>) => ({
+    label: String(u.label ?? "").slice(0, 40), beds: String(u.beds ?? "").slice(0, 10),
+    baths: String(u.baths ?? "").slice(0, 10), sqft: String(u.sqft ?? "").slice(0, 10),
+    laundry: String(u.laundry ?? "").slice(0, 60), mail: String(u.mail ?? "").slice(0, 60),
+    mailnum: String(u.mailnum ?? "").slice(0, 20), storage: String(u.storage ?? "").slice(0, 60),
+    parking: String(u.parking ?? "").slice(0, 60), parknum: String(u.parknum ?? "").slice(0, 20),
+    cooling: String(u.cooling ?? "").slice(0, 40),
+  })).filter((u: { label: string }) => u.label);
+}
+function obParseSections(body: Record<string, unknown>): { title: string; rows: { q: string; a: string }[] }[] {
+  return (Array.isArray(body.sections) ? body.sections : []).slice(0, 20).map((sec: Record<string, unknown>) => ({
+    title: String(sec.title ?? "").slice(0, 80),
+    rows: (Array.isArray(sec.rows) ? sec.rows : []).slice(0, 60).map((r: Record<string, unknown>) => ({
+      q: String(r.q ?? "").slice(0, 160), a: String(r.a ?? "").slice(0, 1500),
+    })).filter((r: { q: string; a: string }) => r.q && r.a),
+  })).filter((sec: { rows: unknown[] }) => sec.rows.length);
+}
+function obUnitLine(u: Record<string, string>): string {
+  return [`${u.beds} bd / ${u.baths} ba${u.sqft ? " / " + u.sqft + " sqft" : ""}`,
+    u.laundry ? `Laundry: ${u.laundry}` : "", u.mail ? `Mail: ${u.mail}${u.mailnum ? " #" + u.mailnum : ""}` : "",
+    u.storage ? `Storage: ${u.storage}` : "", u.parking ? `Parking: ${u.parking}${u.parknum ? " #" + u.parknum : ""}` : "",
+    u.cooling ? `A/C: ${u.cooling}` : ""].filter(Boolean).join(" | ");
+}
+function obDump(kind: string, address: string, sectionsDump: { title: string; rows: { q: string; a: string }[] }[], units: ObUnit[], inProgress: boolean): { lines: string[]; htmlNotes: string } {
+  const stamp = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 16).replace("T", " ");
+  const head = inProgress ? `INITIAL ONBOARDING (IN PROGRESS) | ${address}` : `INITIAL ONBOARDING SUBMISSION (${kind.replace("_", " ")}) | ${address}`;
+  const sub = inProgress
+    ? `The owner is still working through the /onboard wizard. Last synced ${stamp} (Seattle time); answers below update as they go.`
+    : `Submitted via the /onboard wizard on ${stamp} (Seattle time).`;
+  const lines: string[] = [head, sub, ""];
+  for (const sec of sectionsDump) {
+    lines.push(`=== ${sec.title.toUpperCase()} ===`);
+    for (const r of sec.rows) lines.push(`${r.q}: ${r.a}`);
+    lines.push("");
+  }
+  if (units.length) {
+    lines.push("=== UNITS ===");
+    units.forEach((u) => lines.push(`${u.label}: ${obUnitLine(u)}`));
+    lines.push("");
+  }
+  lines.push("Photos, leases, and HOA documents: owner was directed to email them to onboarding@sagareus.com.");
+  const hesc = (t: string) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const htmlParts: string[] = [`<b>${hesc(head)}</b>\n${hesc(sub)}\n`];
+  for (const sec of sectionsDump) {
+    htmlParts.push(`\n<b><u>${hesc(sec.title.toUpperCase())}</u></b>\n<ul>${sec.rows.map((r) => `<li><b>${hesc(r.q)}:</b> ${hesc(r.a)}</li>`).join("")}</ul>`);
+  }
+  if (units.length) {
+    htmlParts.push(`\n<b><u>UNITS</u></b>\n<ul>${units.map((u) => `<li><b>${hesc(u.label)}:</b> ${hesc(obUnitLine(u))}</li>`).join("")}</ul>`);
+  }
+  htmlParts.push(`\nPhotos, leases, and HOA documents: owner was directed to email them to onboarding@sagareus.com.`);
+  return { lines, htmlNotes: `<body>${htmlParts.join("")}</body>`.slice(0, 60000) };
+}
+async function obFieldSettings(): Promise<Map<string, { gid: string; type: string; options: { gid: string; name: string }[] }>> {
+  const settings = await asana("GET", `/projects/${OB_PROJECT_GID}/custom_field_settings?limit=100&opt_fields=custom_field.gid,custom_field.name,custom_field.resource_subtype,custom_field.enum_options.gid,custom_field.enum_options.name`);
+  const byName = new Map<string, { gid: string; type: string; options: { gid: string; name: string }[] }>();
+  for (const st of settings ?? []) {
+    const f = st.custom_field;
+    byName.set(String(f.name).toLowerCase(), { gid: f.gid, type: f.resource_subtype, options: f.enum_options ?? [] });
+  }
+  return byName;
+}
+function obMapAnswers(byName: Map<string, { gid: string; type: string; options: { gid: string; name: string }[] }>, answers: Record<string, string>): Record<string, unknown> {
+  const cf: Record<string, unknown> = {};
+  const setText = (name: string, val: string) => {
+    const f = byName.get(name.toLowerCase());
+    if (f && val) cf[f.gid] = String(val).slice(0, 1000);
+  };
+  const setEnum = (name: string, val: string) => {
+    const f = byName.get(name.toLowerCase());
+    if (!f || !val) return;
+    const hit = f.options.find((o) => o.name.toLowerCase() === val.toLowerCase()) ??
+      f.options.find((o) => val.toLowerCase().startsWith(o.name.slice(0, 12).toLowerCase()) || o.name.toLowerCase().startsWith(val.slice(0, 12).toLowerCase()));
+    if (hit) cf[f.gid] = hit.gid;
+  };
+  const setMulti = (name: string, val: string) => {
+    const f = byName.get(name.toLowerCase());
+    if (!f || !val) return;
+    const gids = String(val).split(",").map((v) => v.trim()).filter(Boolean).map((v) => {
+      const hit = f.options.find((o) => o.name.toLowerCase() === v.toLowerCase()) ??
+        f.options.find((o) => v.toLowerCase().startsWith(o.name.slice(0, 10).toLowerCase()) || o.name.toLowerCase().startsWith(v.slice(0, 10).toLowerCase()));
+      return hit?.gid;
+    }).filter(Boolean);
+    if (gids.length) cf[f.gid] = gids;
+  };
+  const setNum = (name: string, val: string) => {
+    const f = byName.get(name.toLowerCase());
+    const n = Number(val);
+    if (f && Number.isFinite(n) && n > 0) cf[f.gid] = n;
+  };
+  setEnum("Applicant Criteria", answers.criteria ?? "");
+  setEnum("Pet Policy", answers.pets ?? "");
+  setText("Construction Plans", answers.construction ?? "");
+  setNum("Year Built", answers.yearBuilt ?? "");
+  setText("\u{1F646} Owner Phone(s)", answers.ownerPhones ?? "");
+  setText("\u{1F646} Owner Name(s)", answers.ownerNames ?? "");
+  setText("\u{1F646} Owner e-mail(s)", answers.ownerEmails ?? "");
+  setText("Mailbox", answers.mailbox ?? "");
+  setText("Storage", answers.storage ?? "");
+  setText("Parking", answers.parking ?? "");
+  setText("Cooling", answers.cooling ?? "");
+  setText("EV Charger", answers.ev ?? "");
+  setText("Internet Provider", answers.internetProvider ?? "");
+  setText("Utilities", answers.utilities ?? "");
+  setText("Appliances", answers.appliances ?? "");
+  setText("Heating Type", answers.heating ?? "");
+  setMulti("Laundry", answers.laundry ?? "");
+  setNum("\u{1F916} Estimated Market Rent", answers.estimatedRent ?? "");
+  setText("Owner Preferences", answers.ownerPreferences ?? "");
+  setText("Special Note", answers.specialNote ?? "");
+  setText("Pest Control", answers.pest ?? "");
+  setText("Common Area Cleaning", answers.commonArea ?? "");
+  return cf;
+}
+function obDuePT(days: number): string {
+  return new Date(Date.now() + days * 86400000).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+}
+
 // ---------- proposal deal locator (shared by propTerms / propAccept) ----------
 // Finds the prospect's latest Mgmt 3.0 deal by contact email OR by the address slug
 // carried in ob_proposal_url, plus the emails of the deal's associated contacts.
@@ -404,144 +537,111 @@ app.post("/onboard-proxy", async (c) => {
   const action = String(body.action ?? "");
 
   try {
+    // ---------- obStart: address step creates the Initial Onboarding task up front ----------
+    // Open-but-contained: creates ONLY in the Wizard In Progress section of Initial Onboard.
+    // Assigned to Brittany with due = +3 days; every obProgress save rolls the due date
+    // forward, so the task surfaces in her My Tasks only after 3 quiet days (no cron).
+    if (action === "obStart") {
+      const address = String(body.address ?? "").trim().slice(0, 200);
+      if (!address) return j(headers, 400, { ok: false, error: "missing_address" });
+      try {
+        const task = await asana("POST", "/tasks", {
+          name: `Initial Onboarding | ${address} (IN PROGRESS)`,
+          projects: [OB_PROJECT_GID],
+          assignee: "bb@sagareus.com",
+          due_on: obDuePT(3),
+          notes: `Onboarding wizard started for ${address}. Answers fill in here as the owner works through the form; the task renames and moves to New Submissions when they submit.\n\nIf this surfaces on its due date, the owner has gone quiet for 3 days - worth a follow up.\n\nCreated by Claude (onboarding wizard) on behalf of the owner.`,
+        });
+        await asana("POST", `/sections/${OB_WIP_SECTION}/addTask`, { task: task.gid }).catch(() => null);
+        return j(headers, 200, { ok: true, taskGid: String(task.gid), token: await makeToken(String(task.gid)) });
+      } catch { return j(headers, 200, { ok: false, error: "start_failed" }); }
+    }
+
+    // ---------- obProgress: debounced autosave from the wizard onto the obStart task ----------
+    // Token-gated to the exact task obStart minted; contained to the Initial Onboard project.
+    if (action === "obProgress") {
+      const gid = String(body.taskGid ?? "").replace(/\D/g, "");
+      const tok = String(body.token ?? "");
+      if (!gid || (await verifyToken(tok)) !== gid) return j(headers, 401, { ok: false, error: "bad_token" });
+      const address = String(body.address ?? "").trim().slice(0, 200);
+      const answers = obParseAnswers(body);
+      const units = obParseUnits(body);
+      const sectionsDump = obParseSections(body);
+      try {
+        const t0 = await asana("GET", `/tasks/${gid}?opt_fields=gid,name,projects.gid,completed`);
+        if (!(t0.projects ?? []).some((p: { gid?: unknown }) => String(p.gid) === OB_PROJECT_GID)) return j(headers, 403, { ok: false, error: "not_allowed" });
+        // once finalized (suffix gone), autosave stops touching it
+        if (!/\(IN PROGRESS\)/.test(String(t0.name ?? ""))) return j(headers, 200, { ok: true, finalized: true });
+        const byName = await obFieldSettings();
+        const cf = obMapAnswers(byName, answers);
+        const { lines, htmlNotes } = obDump("new_client", address || "(address pending)", sectionsDump, units, true);
+        const base: Record<string, unknown> = { due_on: obDuePT(3), custom_fields: Object.keys(cf).length ? cf : undefined };
+        if (address) base.name = `Initial Onboarding | ${address} (IN PROGRESS)`;
+        try { await asana("PUT", `/tasks/${gid}`, { ...base, html_notes: htmlNotes }); }
+        catch { await asana("PUT", `/tasks/${gid}`, { ...base, notes: lines.join("\n").slice(0, 60000) }); }
+        return j(headers, 200, { ok: true });
+      } catch { return j(headers, 200, { ok: false, error: "save_failed" }); }
+    }
+
     // ---------- obSubmit: /onboard wizard -> Client Relations // Initial Onboard ----------
     // OPEN endpoint by design (open-but-contained): writes ONLY to the Initial Onboard
     // project. Nothing here touches Property/Unit Settings; the push is a later staff step.
     if (action === "obSubmit") {
-      const OB_PROJECT = "1216860326210544";
+      const OB_PROJECT = OB_PROJECT_GID;
       const SECTIONS: Record<string, string> = { new_client: "New Submissions", add_property: "Existing Client Requests", add_unit: "Existing Client Requests" };
       const kind = ["new_client", "add_property", "add_unit"].includes(String(body.kind)) ? String(body.kind) : "new_client";
       const address = String(body.address ?? "").trim().slice(0, 200);
       if (!address) return j(headers, 400, { error: "missing_address", message: "Property address is required." });
-      const answers = (body.answers && typeof body.answers === "object") ? body.answers as Record<string, string> : {};
-      const units = (Array.isArray(body.units) ? body.units : []).slice(0, 30).map((u: Record<string, unknown>) => ({
-        label: String(u.label ?? "").slice(0, 40), beds: String(u.beds ?? "").slice(0, 10),
-        baths: String(u.baths ?? "").slice(0, 10), sqft: String(u.sqft ?? "").slice(0, 10),
-        laundry: String(u.laundry ?? "").slice(0, 60), mail: String(u.mail ?? "").slice(0, 60),
-        mailnum: String(u.mailnum ?? "").slice(0, 20), storage: String(u.storage ?? "").slice(0, 60),
-        parking: String(u.parking ?? "").slice(0, 60), parknum: String(u.parknum ?? "").slice(0, 20),
-        cooling: String(u.cooling ?? "").slice(0, 40),
-      })).filter((u: { label: string }) => u.label);
-      const sectionsDump = (Array.isArray(body.sections) ? body.sections : []).slice(0, 20).map((sec: Record<string, unknown>) => ({
-        title: String(sec.title ?? "").slice(0, 80),
-        rows: (Array.isArray(sec.rows) ? sec.rows : []).slice(0, 60).map((r: Record<string, unknown>) => ({
-          q: String(r.q ?? "").slice(0, 160), a: String(r.a ?? "").slice(0, 1500),
-        })).filter((r: { q: string; a: string }) => r.q && r.a),
-      })).filter((sec: { rows: unknown[] }) => sec.rows.length);
+      const answers = obParseAnswers(body);
+      const units = obParseUnits(body);
+      const sectionsDump = obParseSections(body);
 
       // task description: the full structured dump (source of record for unmapped answers)
-      const lines: string[] = [`INITIAL ONBOARDING SUBMISSION (${kind.replace("_", " ")}) | ${address}`, `Submitted via the /onboard wizard on ${new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 16).replace("T", " ")} (Seattle time).`, ""];
-      for (const sec of sectionsDump) {
-        lines.push(`=== ${sec.title.toUpperCase()} ===`);
-        for (const r of sec.rows) lines.push(`${r.q}: ${r.a}`);
-        lines.push("");
-      }
-      if (units.length) {
-        lines.push("=== UNITS ===");
-        units.forEach((u: Record<string, string>) => lines.push([`${u.label}: ${u.beds} bd / ${u.baths} ba${u.sqft ? " / " + u.sqft + " sqft" : ""}`,
-          u.laundry ? `Laundry: ${u.laundry}` : "", u.mail ? `Mail: ${u.mail}${u.mailnum ? " #" + u.mailnum : ""}` : "",
-          u.storage ? `Storage: ${u.storage}` : "", u.parking ? `Parking: ${u.parking}${u.parknum ? " #" + u.parknum : ""}` : "",
-          u.cooling ? `A/C: ${u.cooling}` : ""].filter(Boolean).join(" | ")));
-        lines.push("");
-      }
-      lines.push("Photos, leases, and HOA documents: owner was directed to email them to onboarding@sagareus.com.");
+      const { lines, htmlNotes } = obDump(kind, address, sectionsDump, units, false);
 
       // find target section
       const secs = await asana("GET", `/projects/${OB_PROJECT}/sections?opt_fields=name`);
       const target = (secs ?? []).find((x: { name: string }) => x.name === SECTIONS[kind]) ?? null;
 
-      // enum matching helper against the project's own fields
-      const settings = await asana("GET", `/projects/${OB_PROJECT}/custom_field_settings?limit=100&opt_fields=custom_field.gid,custom_field.name,custom_field.resource_subtype,custom_field.enum_options.gid,custom_field.enum_options.name`);
-      const byName = new Map<string, { gid: string; type: string; options: { gid: string; name: string }[] }>();
-      for (const st of settings ?? []) {
-        const f = st.custom_field;
-        byName.set(String(f.name).toLowerCase(), { gid: f.gid, type: f.resource_subtype, options: f.enum_options ?? [] });
-      }
-      const cf: Record<string, unknown> = {};
-      const setText = (name: string, val: string) => {
-        const f = byName.get(name.toLowerCase());
-        if (f && val) cf[f.gid] = String(val).slice(0, 1000);
-      };
-      const setEnum = (name: string, val: string) => {
-        const f = byName.get(name.toLowerCase());
-        if (!f || !val) return;
-        const hit = f.options.find((o) => o.name.toLowerCase() === val.toLowerCase()) ??
-          f.options.find((o) => val.toLowerCase().startsWith(o.name.slice(0, 12).toLowerCase()) || o.name.toLowerCase().startsWith(val.slice(0, 12).toLowerCase()));
-        if (hit) cf[f.gid] = hit.gid;
-      };
-      const setMulti = (name: string, val: string) => {
-        const f = byName.get(name.toLowerCase());
-        if (!f || !val) return;
-        const gids = String(val).split(",").map((v) => v.trim()).filter(Boolean).map((v) => {
-          const hit = f.options.find((o) => o.name.toLowerCase() === v.toLowerCase()) ??
-            f.options.find((o) => v.toLowerCase().startsWith(o.name.slice(0, 10).toLowerCase()) || o.name.toLowerCase().startsWith(v.slice(0, 10).toLowerCase()));
-          return hit?.gid;
-        }).filter(Boolean);
-        if (gids.length) cf[f.gid] = gids;
-      };
-      const setNum = (name: string, val: string) => {
-        const f = byName.get(name.toLowerCase());
-        const n = Number(val);
-        if (f && Number.isFinite(n) && n > 0) cf[f.gid] = n;
-      };
-      setEnum("Applicant Criteria", answers.criteria ?? "");
-      setEnum("Pet Policy", answers.pets ?? "");
-      setText("Construction Plans", answers.construction ?? "");
-      setNum("Year Built", answers.yearBuilt ?? "");
-      setText("🙆 Owner Phone(s)", answers.ownerPhones ?? "");
-      setText("🙆 Owner Name(s)", answers.ownerNames ?? "");
-      setText("🙆 Owner e-mail(s)", answers.ownerEmails ?? "");
-      setText("Mailbox", answers.mailbox ?? "");
-      setText("Storage", answers.storage ?? "");
-      setText("Parking", answers.parking ?? "");
-      setText("Cooling", answers.cooling ?? "");
-      setText("EV Charger", answers.ev ?? "");
-      setText("Internet Provider", answers.internetProvider ?? "");
-      setText("Utilities", answers.utilities ?? "");
-      setText("Appliances", answers.appliances ?? "");
-      setText("Heating Type", answers.heating ?? "");
-      setMulti("Laundry", answers.laundry ?? "");
-      setNum("🤖 Estimated Market Rent", answers.estimatedRent ?? "");
-      setText("Owner Preferences", answers.ownerPreferences ?? "");
-      setText("Special Note", answers.specialNote ?? "");
-      setText("Pest Control", answers.pest ?? "");
-      setText("Common Area Cleaning", answers.commonArea ?? "");
-      setText("Utilities - Electricity", ""); // enum-only; skip unless mapped
-      // per-utility enum mapping (Tenant Account / Sagareus Pass Through / etc. is set at push, not here)
+      const byName = await obFieldSettings();
+      const cf = obMapAnswers(byName, answers);
 
       const TITLE: Record<string, string> = { new_client: "Initial Onboarding", add_property: "Add Property", add_unit: "Add Unit" };
-      // readable rich-text version of the dump (Brittany 2026-07-31). Asana derives the
-      // plain-text notes from this: each <li> still yields a "Question: Answer" line and
-      // each section title its own line, so downstream parsers keep line-based access.
-      const hesc = (t: string) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-      const htmlParts: string[] = [`<b>INITIAL ONBOARDING SUBMISSION (${hesc(kind.replace("_", " "))}) | ${hesc(address)}</b>\n${hesc(lines[1])}\n`];
-      for (const sec of sectionsDump) {
-        htmlParts.push(`\n<b><u>${hesc(sec.title.toUpperCase())}</u></b>\n<ul>${sec.rows.map((r) => `<li><b>${hesc(r.q)}:</b> ${hesc(r.a)}</li>`).join("")}</ul>`);
+      // obStart may have created the task at the address step: finalize IN PLACE (rename,
+      // full dump + fields, drop the 3-quiet-days assignment) instead of creating a duplicate
+      let existingGid = "";
+      const upGid = String(body.taskGid ?? "").replace(/\D/g, "");
+      const upTok = String(body.token ?? "");
+      if (upGid && upTok && (await verifyToken(upTok)) === upGid) {
+        const t0 = await asana("GET", `/tasks/${upGid}?opt_fields=gid,projects.gid`).catch(() => null);
+        if (t0 && (t0.projects ?? []).some((p: { gid?: unknown }) => String(p.gid) === OB_PROJECT)) existingGid = upGid;
       }
-      if (units.length) {
-        htmlParts.push(`\n<b><u>UNITS</u></b>\n<ul>${units.map((u: Record<string, string>) => `<li><b>${hesc(u.label)}:</b> ${hesc([`${u.beds} bd / ${u.baths} ba${u.sqft ? " / " + u.sqft + " sqft" : ""}`,
-          u.laundry ? `Laundry: ${u.laundry}` : "", u.mail ? `Mail: ${u.mail}${u.mailnum ? " #" + u.mailnum : ""}` : "",
-          u.storage ? `Storage: ${u.storage}` : "", u.parking ? `Parking: ${u.parking}${u.parknum ? " #" + u.parknum : ""}` : "",
-          u.cooling ? `A/C: ${u.cooling}` : ""].filter(Boolean).join(" | "))}</li>`).join("")}</ul>`);
-      }
-      htmlParts.push(`\nPhotos, leases, and HOA documents: owner was directed to email them to onboarding@sagareus.com.`);
-      const htmlNotes = `<body>${htmlParts.join("")}</body>`.slice(0, 60000);
       let task;
-      try {
-        task = await asana("POST", "/tasks", {
-          name: `${TITLE[kind]} | ${address}`,
-          projects: [OB_PROJECT],
-          html_notes: htmlNotes,
-          custom_fields: Object.keys(cf).length ? cf : undefined,
-        });
-      } catch {
-        // rich text rejected: fall back to the plain dump so a submission never fails on formatting
-        task = await asana("POST", "/tasks", {
-          name: `${TITLE[kind]} | ${address}`,
-          projects: [OB_PROJECT],
-          notes: lines.join("\n").slice(0, 60000),
-          custom_fields: Object.keys(cf).length ? cf : undefined,
-        });
+      if (existingGid) {
+        const fin = { name: `${TITLE[kind]} | ${address}`, custom_fields: Object.keys(cf).length ? cf : undefined, assignee: null, due_on: null };
+        try {
+          await asana("PUT", `/tasks/${existingGid}`, { ...fin, html_notes: htmlNotes });
+        } catch {
+          await asana("PUT", `/tasks/${existingGid}`, { ...fin, notes: lines.join("\n").slice(0, 60000) });
+        }
+        task = { gid: existingGid };
+      } else {
+        try {
+          task = await asana("POST", "/tasks", {
+            name: `${TITLE[kind]} | ${address}`,
+            projects: [OB_PROJECT],
+            html_notes: htmlNotes,
+            custom_fields: Object.keys(cf).length ? cf : undefined,
+          });
+        } catch {
+          // rich text rejected: fall back to the plain dump so a submission never fails on formatting
+          task = await asana("POST", "/tasks", {
+            name: `${TITLE[kind]} | ${address}`,
+            projects: [OB_PROJECT],
+            notes: lines.join("\n").slice(0, 60000),
+            custom_fields: Object.keys(cf).length ? cf : undefined,
+          });
+        }
       }
       if (target) { try { await asana("POST", `/sections/${target.gid}/addTask`, { task: task.gid }); } catch { /* stays in default */ } }
 
@@ -580,6 +680,12 @@ app.post("/onboard-proxy", async (c) => {
               if (/\bNone\b/.test(String(answers.notifs ?? ""))) opts.push("1212930081639053"); // Leasing - No Owner Communication
               if (opts.length) await asana("PUT", `/tasks/${crGid}`, { custom_fields: { [COMM_FIELD]: opts } });
             } catch { /* comm settings are best-effort */ }
+            // Owner Email(s) on the (CLIENT) task: all authorized personnel emails, comma-
+            // separated - the Owner Feed email gate reads this field (Brittany 2026-08-03)
+            try {
+              const oe = String(answers.ownerEmails ?? "").trim().slice(0, 500);
+              if (oe) await asana("PUT", `/tasks/${crGid}`, { custom_fields: { [CR_OWNER_EMAILS_FIELD]: oe } });
+            } catch { /* best-effort */ }
             await asana("POST", `/tasks/${crGid}/stories`, { html_text: storyHtml(`Created by the onboarding wizard. Full onboarding data: https://app.asana.com/0/0/${task.gid}`) }).catch(() => null);
             await asana("POST", `/tasks/${task.gid}/stories`, { html_text: storyHtml(`Client Relations task created: ${crUrl}`) }).catch(() => null);
           }
@@ -1291,7 +1397,7 @@ app.post("/onboard-proxy", async (c) => {
         ]);
         const cr = (crRes ?? [])[0];
         if (!cr) return j(headers, 200, { ok: false, error: "verify" });
-        const ownerEmails = (String(cr.notes ?? "").match(/[\w.+-]+@[\w-]+\.[\w.-]+/g) ?? []).map((e: string) => e.toLowerCase());
+        const ownerEmails = feedGateEmails(cr);
         if (!ownerEmails.includes(email)) return j(headers, 200, { ok: false, error: "verify" });
 
         // property identity: prefer the Settings task name (Settings // Short // Address // City)
@@ -1455,10 +1561,10 @@ app.post("/onboard-proxy", async (c) => {
       if (!pid || !/@.+\./.test(email) || text.length < 5) return j(headers, 200, { ok: false, error: "verify" });
       const enc = encodeURIComponent;
       try {
-        const crRes = await asana("GET", `/workspaces/${FEED_WS}/tasks/search?projects.any=${FEED_CR}&custom_fields.${FEED_PID_FIELD}.value=${enc(pid)}&opt_fields=gid,name,notes&limit=2`).catch(() => []);
+        const crRes = await asana("GET", `/workspaces/${FEED_WS}/tasks/search?projects.any=${FEED_CR}&custom_fields.${FEED_PID_FIELD}.value=${enc(pid)}&opt_fields=gid,name,notes,custom_fields.name,custom_fields.display_value&limit=2`).catch(() => []);
         const cr = (crRes ?? [])[0];
         if (!cr) return j(headers, 200, { ok: false, error: "verify" });
-        const ownerEmails = (String(cr.notes ?? "").match(/[\w.+-]+@[\w-]+\.[\w.-]+/g) ?? []).map((e: string) => e.toLowerCase());
+        const ownerEmails = feedGateEmails(cr);
         if (!ownerEmails.includes(email)) return j(headers, 200, { ok: false, error: "verify" });
         const today = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
         await asana("POST", `/tasks/${cr.gid}/subtasks`, {
@@ -1482,12 +1588,12 @@ app.post("/onboard-proxy", async (c) => {
       const enc = encodeURIComponent;
       try {
         const [crRes, psRes] = await Promise.all([
-          asana("GET", `/workspaces/${FEED_WS}/tasks/search?projects.any=${FEED_CR}&custom_fields.${FEED_PID_FIELD}.value=${enc(pid)}&opt_fields=gid,name,notes&limit=2`).catch(() => []),
+          asana("GET", `/workspaces/${FEED_WS}/tasks/search?projects.any=${FEED_CR}&custom_fields.${FEED_PID_FIELD}.value=${enc(pid)}&opt_fields=gid,name,notes,custom_fields.name,custom_fields.display_value&limit=2`).catch(() => []),
           asana("GET", `/workspaces/${FEED_WS}/tasks/search?projects.any=${FEED_PS}&custom_fields.${FEED_PID_FIELD}.value=${enc(pid)}&is_subtask=false&opt_fields=gid,name&limit=2`).catch(() => []),
         ]);
         const cr = (crRes ?? [])[0];
         if (!cr) return j(headers, 200, { ok: false, error: "verify" });
-        const ownerEmails = (String(cr.notes ?? "").match(/[\w.+-]+@[\w-]+\.[\w.-]+/g) ?? []).map((e: string) => e.toLowerCase());
+        const ownerEmails = feedGateEmails(cr);
         if (!ownerEmails.includes(email)) return j(headers, 200, { ok: false, error: "verify" });
         const ps = (psRes ?? [])[0];
         let address = ps ? (String(ps.name ?? "").split("//")[2] ?? "").trim() : "";
@@ -1516,12 +1622,12 @@ app.post("/onboard-proxy", async (c) => {
       const enc = encodeURIComponent;
       try {
         const [crRes, psRes] = await Promise.all([
-          asana("GET", `/workspaces/${FEED_WS}/tasks/search?projects.any=${FEED_CR}&custom_fields.${FEED_PID_FIELD}.value=${enc(pid)}&opt_fields=gid,notes&limit=2`).catch(() => []),
+          asana("GET", `/workspaces/${FEED_WS}/tasks/search?projects.any=${FEED_CR}&custom_fields.${FEED_PID_FIELD}.value=${enc(pid)}&opt_fields=gid,notes,custom_fields.name,custom_fields.display_value&limit=2`).catch(() => []),
           asana("GET", `/workspaces/${FEED_WS}/tasks/search?projects.any=${FEED_PS}&custom_fields.${FEED_PID_FIELD}.value=${enc(pid)}&is_subtask=false&opt_fields=gid&limit=2`).catch(() => []),
         ]);
         const cr = (crRes ?? [])[0], ps = (psRes ?? [])[0];
         if (!cr || !ps) return j(headers, 200, { ok: false, error: "verify" });
-        const ownerEmails = (String(cr.notes ?? "").match(/[\w.+-]+@[\w-]+\.[\w.-]+/g) ?? []).map((e: string) => e.toLowerCase());
+        const ownerEmails = feedGateEmails(cr);
         if (!ownerEmails.includes(email)) return j(headers, 200, { ok: false, error: "verify" });
         // containment: only the property's own Settings task or one of its unit subtasks
         let allowed = taskGid === String(ps.gid);
