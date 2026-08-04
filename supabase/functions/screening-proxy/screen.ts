@@ -237,6 +237,20 @@ export async function parseDocuments(docs: Extracted[], contextText: string): Pr
   }
   if (!Array.isArray(parsed.applicants) || !parsed.applicants.length) throw new Error("parse_no_applicants");
   parsed.warnings = Array.isArray(parsed.warnings) ? parsed.warnings.map(String) : [];
+  // Model-derived fraud signals must NEVER feed the automatic-denial path
+  // (plan of record: probabilistic detections route to Manager Review; a
+  // fraud denial requires a human confirming an objective fact). Missing or
+  // incomplete documents are not fraud. Convert to manager flags.
+  for (const a of parsed.applicants) {
+    if (a.adverse?.identityUnverified || a.adverse?.docInconsistencies) {
+      a.adverse.identityUnverified = false;
+      a.adverse.docInconsistencies = false;
+      a.managerFlags = [
+        ...(a.managerFlags ?? []),
+        "Document reading flagged a possible identity or document inconsistency. Verify by hand; a fraud denial requires human confirmation per the SOP.",
+      ];
+    }
+  }
   return parsed;
 }
 
@@ -252,15 +266,74 @@ function tierLine(t: EngineResult["tiers"][keyof EngineResult["tiers"]]): { verd
   return { verdict: "DENIED at this tier", reasons: t.reasons.join(" ") };
 }
 
-/** Render the report per skills/screening/TEMPLATE.md. Deterministic. */
+// Criteria checklist: every check the engine ran and how it came out, so the
+// manager sees the full inventory without opening SCREENING_CRITERIA.md
+// (Brittany, 2026-08-04). Statuses: PASS / FAIL / REVIEW / INFO.
+function criteriaChecklist(result: EngineResult, parsed: ParsedHousehold): string {
+  const lines: string[] = [];
+  const mark = (status: string, text: string) => lines.push(`  [${status}] ${text}`);
+  const anyAdv = (k: keyof NonNullable<ParsedHousehold["applicants"][number]["adverse"]>) =>
+    parsed.applicants.some((a) => (a.adverse as Record<string, unknown> | undefined)?.[k] === true);
+
+  lines.push("INCOME");
+  for (const a of result.applicants) {
+    mark(a.unverifiedIncome ? "REVIEW" : "PASS",
+      `${a.name}: income verified per source rules (${a.unverifiedIncome ? "one or more sources excluded, see Manager Review" : "all sources met documentation standards"})`);
+  }
+  mark("INFO", `Household qualifying income: $${Math.round(result.householdMonthlyIncome).toLocaleString("en-US")}/month, gross, source-neutral (vouchers and all lawful income count fully)`);
+  mark("INFO", "Max approved rent per tier = income / multiplier (2.0x / 2.5x / 3.0x), base rent only");
+
+  lines.push("");
+  lines.push("CREDIT");
+  mark("INFO", `Equifax FICO only; AI risk scores disregarded. Household median: ${result.medianCredit ?? "not on file"} (${result.medianExplanation})`);
+  for (const t of TIERS) {
+    const r = result.tiers[t.key];
+    const med = result.medianCredit;
+    const status = med == null ? "FAIL" : med >= t.creditMin ? "PASS" : r.decision === "approved_cosigner" ? "REVIEW" : "FAIL";
+    const detail = med == null
+      ? "no score on file"
+      : med >= t.creditMin
+      ? `${med} meets the ${t.creditMin} minimum`
+      : r.decision === "approved_cosigner"
+      ? `${med} is within 50 below the ${t.creditMin} minimum; co-signer path`
+      : `${med} is more than 50 below the ${t.creditMin} minimum`;
+    mark(status, `${t.label} credit minimum (${t.creditMin}): ${detail}`);
+  }
+
+  lines.push("");
+  lines.push("AUTOMATIC DENIAL CHECKS");
+  mark(anyAdv("fundsOwedToLandlord") ? "FAIL" : "PASS", "Funds owed to a previous landlord");
+  mark(anyAdv("evictionWithin7Years") ? "FAIL" : "PASS", "Eviction within the prior 7 years");
+  const activeBk = parsed.applicants.some((a) => a.adverse?.bankruptcy === "active_ch7" || a.adverse?.bankruptcy === "active_ch13");
+  mark(activeBk ? "FAIL" : "PASS", "Open (active) bankruptcy");
+  const fraudFlag = parsed.applicants.some((a) => (a.managerFlags ?? []).some((f) => /identity or document inconsistency/.test(f)));
+  mark(fraudFlag ? "REVIEW" : "PASS", `Fraud indicators (identity verification, document consistency)${fraudFlag ? ": possible inconsistency flagged for manual verification; fraud denial requires human confirmation" : ""}`);
+  mark("INFO", "Credit more than 50 points below a tier minimum denies that tier (evaluated per tier above)");
+
+  lines.push("");
+  lines.push("PROCESS");
+  mark("INFO", "Same criteria applied to every applicant; no protected-class or source-of-income factors considered (Fair Housing baseline)");
+  mark("INFO", "Prior-underwriting reports and restricted-screening files skipped unread; all figures re-derived from source documents");
+  mark(result.managerReview.length ? "REVIEW" : "PASS", `Manager review triggers scanned: ${result.managerReview.length ? result.managerReview.length + " item(s) listed above" : "none fired"}`);
+  return lines.join("\n");
+}
+
+/** Render the report as clean plain text (Asana comments do not render
+ * markdown, so headers are caps + rule lines, not # and **). Deterministic.
+ * Section order follows skills/screening/TEMPLATE.md, plus the criteria
+ * checklist at the end. */
 export function renderReport(
   result: EngineResult,
   parsed: ParsedHousehold,
   opts: { reportId: string; date: string; assistantNotes?: string; integrityFlags?: string[] },
 ): string {
+  const RULE = "=".repeat(52);
+  const thin = "-".repeat(52);
+  const H = (title: string) => `${title.toUpperCase()}\n${thin}`;
+
   const tiers = TIERS.map((t) => ({ meta: t, r: result.tiers[t.key], ...tierLine(result.tiers[t.key]) }));
   const managerItems = [...(opts.integrityFlags ?? []), ...result.managerReview, ...parsed.warnings.map((w) => `Data integrity: ${w}`)];
-  const managerBlock = managerItems.length ? managerItems.map((m) => `- ${m}`).join("\n") : "- None on file";
+  const managerBlock = managerItems.length ? managerItems.map((m) => `  * ${m}`).join("\n") : "  * None on file";
 
   const applicantBlocks = result.applicants.map((a, i) => {
     const src = parsed.applicants[i];
@@ -272,76 +345,84 @@ export function renderReport(
     const ev = adv.evictionWithin7Years ? "Filing within the prior 7 years"
       : adv.evictionOlderThan7Years ? "History outside the 7-year window (see Manager Review)"
       : "None within 7 years";
-    return `### Applicant ${i + 1}: ${a.name}
-
-- **Monthly qualifying income:** ${money(a.qualifyingMonthly)}
-- **Income verification:** ${a.incomeLines.join("; ") || "No income documents provided"}
-- **Equifax FICO score:** ${a.equifax ?? "Not on file"}
-- **Bankruptcy:** ${bk}
-- **Eviction history:** ${ev}
-- **Funds owed to prior landlord:** ${adv.fundsOwedToLandlord ? "Yes (see Manager Review)" : "None"}
-- **Notes:** ${(src?.managerFlags ?? []).join("; ") || "None"}`;
+    return `Applicant ${i + 1}: ${a.name}
+  Monthly qualifying income .... ${money(a.qualifyingMonthly)}
+  Income verification .......... ${a.incomeLines.join("\n                                 ") || "No income documents provided"}
+  Equifax FICO score ........... ${a.equifax ?? "Not on file"}
+  Bankruptcy ................... ${bk}
+  Eviction history ............. ${ev}
+  Funds owed prior landlord .... ${adv.fundsOwedToLandlord ? "Yes (see Manager Review)" : "None"}
+  Notes ........................ ${(src?.managerFlags ?? []).join("; ") || "None"}`;
   }).join("\n\n");
 
-  const incomeSum = result.applicants.map((a, i) => `- Applicant ${i + 1} monthly qualifying income: ${i === 0 ? "" : "+ "}${money(a.qualifyingMonthly)}`).join("\n");
-  const ficoLines = result.applicants.map((a, i) => `- Applicant ${i + 1} Equifax FICO: ${a.equifax ?? "n/a"}`).join("\n");
+  const incomeSum = result.applicants.map((a, i) => `  ${i === 0 ? " " : "+"} ${money(a.qualifyingMonthly)}  (${a.name})`).join("\n");
+  const ficoLines = result.applicants.map((a) => `  ${a.equifax ?? "n/a"}  (${a.name})`).join("\n");
 
-  return `# SAGAREUS PROPERTY MANAGEMENT
+  return `${RULE}
+SAGAREUS PROPERTY MANAGEMENT
+APPLICANT SCREENING REPORT
+Completed ${opts.date} | Report ID ${opts.reportId}
+${RULE}
 
-## Applicant Screening Summary
+${H("Tier Results")}
+${tiers.map((t) => `${t.meta.label.toUpperCase()} (${t.meta.creditMin} credit, ${t.meta.multiplier.toFixed(1)}x income)
+  >>> ${t.verdict.toUpperCase()} <<<${t.reasons ? `\n  ${t.reasons}` : ""}`).join("\n\n")}
 
-Completed on **${opts.date}** · Report ID **${opts.reportId}**
+${H("Headline Numbers")}
+  Household income ...... ${money(result.householdMonthlyIncome)}/month (combined verified monthly gross)
+  Median credit score ... ${result.medianCredit ?? "n/a"} (Equifax FICO, ${result.applicants.length} applicant${result.applicants.length === 1 ? "" : "s"})
 
-## Manager Review
-
-_Items that meet criteria but warrant the manager's judgment. These do not change the tier results below; they are flagged here for quick reference._
+${H("Manager Review")}
+Items that meet criteria but warrant the manager's judgment.
+They do not change the tier results above.
 
 ${managerBlock}
 
-## Tier Results
-
-${tiers.map((t) => `**${t.meta.label}** (${t.meta.creditMin} credit · ${t.meta.multiplier.toFixed(1)}x income)
-**${t.verdict}**
-${t.reasons}`.trim()).join("\n\n")}
-
-## Headline Numbers
-
-Household income: **${money(result.householdMonthlyIncome)}/month** (combined verified monthly gross)
-Median credit score: **${result.medianCredit ?? "n/a"}** (Equifax FICO, across ${result.applicants.length} applicant${result.applicants.length === 1 ? "" : "s"})
-
-## Underwriting
-
+${H("Underwriting Detail")}
 ${applicantBlocks}
 
-## Show the Math
-
-### Household income
-
+${H("Show The Math")}
+Household income (sum of verified monthly qualifying income):
 ${incomeSum}
-- **Total household income (monthly, gross): ${money(result.householdMonthlyIncome)}**
+  = ${money(result.householdMonthlyIncome)}/month total
 
-### Max approved rent per tier (income ÷ multiplier)
+Max approved rent per tier (income / multiplier):
+${tiers.map((t) => `  ${t.meta.label.padEnd(10)} (${t.meta.multiplier.toFixed(1)}x): ${t.r.maxRent != null ? money(t.r.maxRent) + "/month" : "n/a (denied)"}`).join("\n")}
 
-${tiers.map((t) => `- ${t.meta.label} (${t.meta.multiplier.toFixed(1)}x): ${t.r.maxRent != null ? money(t.r.maxRent) + "/month" : "n/a (denied)"}`).join("\n")}
-
-### Median credit score
-
+Median credit score (Equifax FICO, median method):
 ${ficoLines}
-- **Median credit score: ${result.medianCredit ?? "n/a"}** (${result.medianExplanation})
+  = ${result.medianCredit ?? "n/a"}  (${result.medianExplanation})
 
-## Assistant Notes for Manager
-
+${H("Assistant Notes For Manager")}
 ${opts.assistantNotes?.trim() || "No additional notes from the leasing assistant."}
 
-## Notices
+${H("Screening Criteria Checklist")}
+Every criterion checked on this application and how it came out.
+Full definitions: SCREENING_CRITERIA.md (Sagareus screening SOP).
 
-**Generation:** This report was produced by the Sagareus Screening Workbench with AI-assisted document reading and deterministic underwriting math, then reviewed by the leasing assistant. All application decisions are made by the Sagareus Leasing Manager.
+${criteriaChecklist(result, parsed)}
 
-**FCRA:** If this report contributed to an adverse decision, the applicant has the right to dispute inaccuracies with the screening vendor and to request a free copy of the underlying consumer report within 60 days under the Fair Credit Reporting Act.
+${H("Notices")}
+Generation: This report was produced by the Sagareus Screening
+Workbench with AI-assisted document reading and deterministic
+underwriting math, then reviewed by the leasing assistant. All
+application decisions are made by the Sagareus Leasing Manager.
 
-**Fair Housing:** Sagareus Property Management evaluates every application on the same objective criteria. Decisions are not based on race, color, creed, national origin, sex, sexual orientation, gender identity, disability, marital status, HIV or hepatitis C status, families with children, use of a dog guide or service animal, honorably-discharged veteran or military status, immigration or citizenship status, or source of income. Sagareus accepts all lawful sources of income, including housing vouchers and other rental assistance programs.
+FCRA: If this report contributed to an adverse decision, the
+applicant has the right to dispute inaccuracies with the screening
+vendor and to request a free copy of the underlying consumer report
+within 60 days under the Fair Credit Reporting Act.
 
-**Questions:** leasing@sagareus.com
+Fair Housing: Sagareus Property Management evaluates every
+application on the same objective criteria. Decisions are not based
+on race, color, creed, national origin, sex, sexual orientation,
+gender identity, disability, marital status, HIV or hepatitis C
+status, families with children, use of a dog guide or service
+animal, honorably-discharged veteran or military status, immigration
+or citizenship status, or source of income. Sagareus accepts all
+lawful sources of income, including housing vouchers and other
+rental assistance programs.
 
-_Sagareus Property Management_`;
+Questions: leasing@sagareus.com
+Sagareus Property Management`;
 }

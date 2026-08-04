@@ -277,7 +277,9 @@ export function underwrite(input: HouseholdInput): EngineResult {
       continue;
     }
     if (med.median == null) {
-      base.reasons = ["Documentation inconsistencies prevent verification."];
+      // Not an adverse-action phrase: this is a pending state, not a denial
+      // decision. The manager issues any actual denial with bank language.
+      base.reasons = ["No Equifax score on file; credit report pending. Denied until credit is on file."];
       managerReview.push("No Equifax score could be read; every tier returns denied until credit is on file.");
       tiers[t.key] = base;
       continue;
