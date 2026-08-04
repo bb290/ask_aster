@@ -22,7 +22,7 @@
 
 import { Hono } from "hono";
 import { underwrite, type HouseholdInput } from "./engine.ts";
-import { imageAsExtracted, isPriorUnderwritingDoc, parseDocuments, pdfAsExtracted, renderReport, type Extracted } from "./screen.ts";
+import { imageAsExtracted, isPriorUnderwritingDoc, isRestrictedDoc, mdToAsanaHtml, parseDocuments, pdfAsExtracted, renderReport, type Extracted } from "./screen.ts";
 
 const B_ID = Deno.env.get("BUILDIUM_SCREENING_CLIENT_ID") ?? "";
 const B_SECRET = Deno.env.get("BUILDIUM_SCREENING_CLIENT_SECRET") ?? "";
@@ -462,7 +462,11 @@ app.post("*", async (c) => {
       const result = underwrite({ applicants: parsed.applicants, asOf });
 
       const integrityFlags: string[] = [];
-      for (const s of skipped) integrityFlags.push(`Skipped prior-underwriting report by filename pattern: ${s}. Figures re-derived from source documents.`);
+      for (const s of skipped) {
+        integrityFlags.push(isRestrictedDoc(s)
+          ? `Skipped "${s}" unread. Restricted screening content is not considered.`
+          : `Skipped "${s}" unread. Prior-underwriting reports have known calculation errors; figures re-derived from source documents.`);
+      }
       for (const f of failures) integrityFlags.push(`Attachment not read: ${f}.`);
 
       const lastNames = parsed.applicants.map((a) => a.name.split(" ").at(-1) ?? "").join("-").toUpperCase().slice(0, 24);
@@ -499,7 +503,13 @@ app.post("*", async (c) => {
       const dueOn = local.toISOString().slice(0, 10);
 
       try {
-        await asanaCall("POST", `/tasks/${gid}/stories`, { text: report });
+        // Rich comment (bold/underlined headers) with plain-text fallback if
+        // Asana rejects the HTML subset.
+        try {
+          await asanaCall("POST", `/tasks/${gid}/stories`, { html_text: mdToAsanaHtml(report) });
+        } catch {
+          await asanaCall("POST", `/tasks/${gid}/stories`, { text: report });
+        }
         const cur = await asanaCall("GET", `/tasks/${gid}?opt_fields=name`) as { name?: string };
         const PREFIX = "Pending Mgr Review | ";
         const updates: Record<string, unknown> = { assignee: assignee.gid, due_on: dueOn };
