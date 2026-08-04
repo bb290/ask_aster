@@ -22,6 +22,7 @@
 
 import { Hono } from "hono";
 import { underwrite, type HouseholdInput } from "./engine.ts";
+import { extractPdf, imageAsExtracted, isPriorUnderwritingDoc, parseDocuments, renderReport, type Extracted } from "./screen.ts";
 
 const B_ID = Deno.env.get("BUILDIUM_SCREENING_CLIENT_ID") ?? "";
 const B_SECRET = Deno.env.get("BUILDIUM_SCREENING_CLIENT_SECRET") ?? "";
@@ -390,6 +391,126 @@ app.post("*", async (c) => {
 
       const asana = await findAsanaTasks(members.map((m) => m.name).filter((n) => n !== "Unnamed"));
       return j(headers, 200, { members, asana });
+    }
+
+    // ---------- screen: documents in, report out, posted to Asana ----------
+    // The full replacement for the /screening skill's pipeline: extract
+    // (deterministic cascade) -> parse (model transcribes, never computes)
+    // -> underwrite (engine.ts) -> render (TEMPLATE.md) -> attach files +
+    // post READY FOR MANAGER REVIEW on the household's Asana task.
+    // dryRun skips the Asana writes and returns the report for inspection.
+    if (action === "screen") {
+      const ids = (Array.isArray(body.applicantIds) ? body.applicantIds : [])
+        .map((x) => parseInt(String(x), 10)).filter((n) => Number.isFinite(n) && n > 0);
+      if (!ids.length || ids.length > 10) return j(headers, 400, { error: "bad_applicant_ids" });
+      const files = (body as { files?: { name?: unknown; contentType?: unknown; dataBase64?: unknown }[] }).files;
+      if (!Array.isArray(files) || !files.length || files.length > 12) {
+        return j(headers, 400, { error: "bad_files", message: "Attach 1-12 PDF or image files." });
+      }
+      const dryRun = (body as { dryRun?: unknown }).dryRun === true;
+      const assistantNotes = String((body as { notes?: unknown }).notes ?? "").slice(0, 4000);
+
+      // Names from Buildium anchor attribution
+      const members = await Promise.all(ids.map((id) => bGet(`/applicants/${id}`) as Promise<Applicant>));
+      const names = members.map(fullName).filter((n) => n !== "Unnamed");
+
+      // The report needs a task to land on (Step 2 first), unless dryRun.
+      const openTasks = (await findAsanaTasks(names)).filter((t) => !t.completed);
+      if (!openTasks.length && !dryRun) {
+        return j(headers, 422, { error: "no_task", message: "No open application task found. Run Step 2 (Push To Asana) first." });
+      }
+      const task = openTasks[0];
+
+      // Decode + extract, skipping prior-underwriting artifacts by name.
+      const skipped: string[] = [];
+      const docs: Extracted[] = [];
+      const rawFiles: { name: string; contentType: string; bytes: Uint8Array }[] = [];
+      let totalBytes = 0;
+      for (const f of files) {
+        const name = String(f.name ?? "document");
+        if (isPriorUnderwritingDoc(name)) { skipped.push(name); continue; }
+        let bytes: Uint8Array;
+        try {
+          bytes = Uint8Array.from(atob(String(f.dataBase64 ?? "")), (c) => c.charCodeAt(0));
+        } catch {
+          docs.push({ kind: "failed", name, error: "could not decode upload" });
+          continue;
+        }
+        totalBytes += bytes.byteLength;
+        if (totalBytes > 35 * 1024 * 1024) {
+          return j(headers, 413, { error: "too_large", message: "Uploads exceed 35 MB total. Screen in two passes." });
+        }
+        const ct = String(f.contentType ?? "").toLowerCase();
+        rawFiles.push({ name, contentType: ct || "application/octet-stream", bytes });
+        if (ct.startsWith("image/")) docs.push(imageAsExtracted(bytes, name));
+        else docs.push(await extractPdf(bytes, name));
+      }
+      const failures = docs.filter((d) => d.kind === "failed").map((d) => `${d.name}: ${(d as { error: string }).error}`);
+      const readable = docs.filter((d) => d.kind !== "failed");
+      if (!readable.length) {
+        return j(headers, 422, { error: "nothing_readable", message: "None of the uploads could be read. Check the files and try again." });
+      }
+
+      // Parse (model transcribes) then compute (engine).
+      let parsed;
+      try {
+        parsed = await parseDocuments(readable, names);
+      } catch (e) {
+        console.error("screen parse failed:", e);
+        return j(headers, 502, { error: "parse_failed", message: "Document reading failed. Try again in a minute; if it repeats, key the figures by hand via the manual path." });
+      }
+      const asOf = new Date().toISOString().slice(0, 10);
+      const result = underwrite({ applicants: parsed.applicants, asOf });
+
+      const integrityFlags: string[] = [];
+      for (const s of skipped) integrityFlags.push(`Skipped prior-underwriting report by filename pattern: ${s}. Figures re-derived from source documents.`);
+      for (const f of failures) integrityFlags.push(`Attachment failed to extract: ${f}.`);
+
+      const reportId = `SW-${asOf.replace(/-/g, "")}-${names.map((n) => n.split(" ").at(-1) ?? "").join("-").toUpperCase().slice(0, 24)}`;
+      const report = renderReport(result, parsed, { reportId, date: asOf, assistantNotes, integrityFlags });
+
+      let posted = false;
+      let attached: string[] = [];
+      if (!dryRun && task) {
+        const gidMatch = task.url.match(/task\/(\d+)/) ?? task.url.match(/\/(\d{10,})/);
+        const taskGid = gidMatch?.[1];
+        if (taskGid) {
+          // Attach source files for the record (best-effort per file)
+          for (const rf of rawFiles) {
+            try {
+              const fd = new FormData();
+              fd.append("file", new Blob([rf.bytes.buffer as ArrayBuffer], { type: rf.contentType }), rf.name);
+              const ar = await fetch(`https://app.asana.com/api/1.0/tasks/${taskGid}/attachments`, {
+                method: "POST",
+                headers: { Authorization: `Bearer ${ASANA_PAT}` },
+                body: fd,
+              });
+              if (ar.ok) attached.push(rf.name);
+            } catch { /* per-file best effort */ }
+          }
+          // Post the report comment
+          try {
+            const cr = await fetch(`https://app.asana.com/api/1.0/tasks/${taskGid}/stories`, {
+              method: "POST",
+              headers: { Authorization: `Bearer ${ASANA_PAT}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ data: { text: `READY FOR MANAGER REVIEW\n\n${report}` } }),
+            });
+            posted = cr.ok;
+          } catch { posted = false; }
+        }
+      }
+
+      return j(headers, 200, {
+        result, report, reportId,
+        parsedApplicants: parsed.applicants.map((a) => ({
+          name: a.name, equifax: a.equifax,
+          incomes: a.incomes.map((s) => ({ type: s.type, monthlyGross: s.monthlyGross, month1Gross: s.month1Gross, month2Gross: s.month2Gross, verified: s.verified !== false, note: s.note })),
+        })),
+        warnings: parsed.warnings,
+        files: { attached, skipped, failed: failures },
+        asana: task ? { url: task.url, posted } : null,
+        dryRun,
+      });
     }
 
     // ---------- underwrite: deterministic tier math (engine.ts) ----------
