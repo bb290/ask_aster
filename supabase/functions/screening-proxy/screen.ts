@@ -19,9 +19,11 @@ import type { EngineResult, HouseholdInput } from "./engine.ts";
 import { TIERS } from "./engine.ts";
 
 const OR_KEY = Deno.env.get("OPENROUTER_API_KEY") ?? "";
-// Fable 5 for document transcription (Brittany, 2026-08-04); verified live on
-// OpenRouter. Override per-deploy with PARSE_MODEL if it ever needs rolling back.
-const PARSE_MODEL = Deno.env.get("PARSE_MODEL") ?? "anthropic/claude-fable-5";
+// Sonnet 5 for document transcription: the parse step only transcribes (the
+// engine computes), and Fable at 5x the price was ~$1/screening (Brittany,
+// 2026-08-04). Sonnet validated on the same pipeline. Set the PARSE_MODEL
+// secret to anthropic/claude-fable-5 (or haiku) to override without a deploy.
+const PARSE_MODEL = Deno.env.get("PARSE_MODEL") ?? "anthropic/claude-sonnet-5";
 
 // SKILL.md filename patterns for prior-underwriting artifacts, plus
 // restricted-screening documents Sagareus does not use (Fair Chance
