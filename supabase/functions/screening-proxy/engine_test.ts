@@ -186,3 +186,15 @@ Deno.test("no credit score on file: all tiers denied, manager flagged", () => {
   assertEquals(r.tiers.lenient.decision, "denied");
   if (!r.managerReview.some((m) => /No Equifax score/.test(m))) throw new Error("missing no-score flag");
 });
+
+Deno.test("single documented month is used alone, never averaged with zero, and flagged", () => {
+  const q = qualifyingMonthly({ type: "w2", month1Gross: 16153.85 });
+  assertEquals(q.amount, 16153.85);
+  if (!/ONLY ONE MONTH DOCUMENTED/.test(q.line)) throw new Error("missing single-month marker");
+  const r = underwrite({
+    asOf: "2026-08-04",
+    applicants: [{ name: "A", incomes: [{ type: "w2", month1Gross: 16153.85 }], equifax: 703 }],
+  });
+  assertEquals(r.householdMonthlyIncome, 16153.85);
+  if (!r.managerReview.some((m) => /two-month requirement is not met/.test(m))) throw new Error("missing manager flag");
+});

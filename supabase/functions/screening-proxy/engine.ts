@@ -128,20 +128,25 @@ const round2 = (n: number) => Math.round(n * 100) / 100;
 /** Qualifying monthly income for one source, per "Verification standards per income type". */
 export function qualifyingMonthly(src: IncomeSource): { amount: number; line: string } {
   const t = src.type;
+  // Two-month types: a MISSING month is not a $0 month. Averaging a lone
+  // documented month against zero halved real income (Joanna Hon task,
+  // 2026-08-04). Use whichever months exist; flag when only one does.
   if (t === "gig" || t === "self_employed_gig") {
-    // ((Month 1 + Month 2) / 2) x 0.70 (Gig and contract work; self-employed default)
-    const m1 = src.month1Gross ?? 0, m2 = src.month2Gross ?? 0;
-    const avg = (m1 + m2) / 2;
+    const months = [src.month1Gross, src.month2Gross].filter((x): x is number => x != null);
+    const label = t === "gig" ? "Gig" : "Self-employed (gig rule)";
+    if (!months.length) return { amount: 0, line: `${label}: no monthly figures transcribed` };
+    const avg = months.reduce((a, b) => a + b, 0) / months.length;
     const amt = round2(avg * 0.70);
-    return {
-      amount: amt,
-      line: `${t === "gig" ? "Gig" : "Self-employed (gig rule)"}: (($${m1.toFixed(2)} + $${m2.toFixed(2)}) / 2) x 0.70 = $${amt.toFixed(2)}/mo`,
-    };
+    const shown = months.map((m) => `$${m.toFixed(2)}`).join(" + ");
+    const single = months.length === 1 ? " [ONLY ONE MONTH DOCUMENTED; second month required]" : "";
+    return { amount: amt, line: `${label}: ((${shown}) / ${months.length}) x 0.70 = $${amt.toFixed(2)}/mo${single}` };
   }
-  if (t === "w2" && src.month1Gross != null && src.month2Gross != null) {
-    // W-2: average gross monthly income across the last two months
-    const amt = round2((src.month1Gross + src.month2Gross) / 2);
-    return { amount: amt, line: `W-2: ($${src.month1Gross.toFixed(2)} + $${src.month2Gross.toFixed(2)}) / 2 = $${amt.toFixed(2)}/mo` };
+  if (t === "w2" && (src.month1Gross != null || src.month2Gross != null)) {
+    const months = [src.month1Gross, src.month2Gross].filter((x): x is number => x != null);
+    const amt = round2(months.reduce((a, b) => a + b, 0) / months.length);
+    const shown = months.map((m) => `$${m.toFixed(2)}`).join(" + ");
+    const single = months.length === 1 ? " [ONLY ONE MONTH DOCUMENTED; second month required]" : "";
+    return { amount: amt, line: `W-2: (${shown}) / ${months.length} = $${amt.toFixed(2)}/mo${single}` };
   }
   if (t === "assets_in_lieu") {
     // Not monthly income; applied per tier against the shortfall. Zero here.
@@ -197,6 +202,9 @@ export function underwrite(input: HouseholdInput): EngineResult {
       const q = qualifyingMonthly(src);
       if (src.type !== "assets_in_lieu") total = round2(total + q.amount);
       lines.push(q.line + (src.note ? ` [${src.note}]` : ""));
+      if (q.line.includes("ONLY ONE MONTH DOCUMENTED")) {
+        managerReview.push(`${a.name}: only one month of income documentation; the two-month requirement is not met. Request the missing month before relying on this figure.`);
+      }
       // Court-ordered inconsistency trigger (Manager Review triggers)
       if (src.type === "court_ordered" && src.orderedMonthly != null && (src.monthlyGross ?? 0) < src.orderedMonthly) {
         managerReview.push(`${a.name}: court-ordered income received ($${(src.monthlyGross ?? 0).toFixed(2)}/mo) is below the ordered amount ($${src.orderedMonthly.toFixed(2)}/mo); receipts inconsistent across the verification window.`);

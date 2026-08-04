@@ -199,6 +199,7 @@ Hard rules:
 - If a document contains prior-underwriting language (decision matrices, "Approved As-Is", precomputed maximum rents), ignore those figures entirely; transcribe only source figures from paystubs, letters, and credit report fields.
 - Income documents that do not meet standards (payment-app screenshots, self-generated invoices, unsigned offer letters) get verified: false with the reason in note.
 - For paystubs: transcribe the last two full months of GROSS pay as month1Gross/month2Gross. Do not average them.
+- If only ONE month is documented, set month1Gross and OMIT month2Gross entirely. NEVER write 0 for a month you did not see; a missing month is not a zero-income month. Add a warning instead.
 - For gig or contractor platform statements: transcribe the two monthly gross totals. Do not apply any percentage.
 - Collections, charge-offs, judgments: list them factually in managerFlags with amounts and dates.
 - Never include protected-class information of any kind.
@@ -416,8 +417,10 @@ export function renderReport(
   const decisions: string[] = [];
   const dec = (head: string, ctx: string) => decisions.push(`- **${head}**\n  ${ctx}`);
   if (result.autoDenial.denied) {
+    const landlordDebt = result.autoDenial.reasons.some((r) => r.includes("prior landlord"));
     dec("Automatic denial on file. Confirm and issue adverse action.",
-      `Reasons: ${result.autoDenial.reasons.join(" ")} Every tier is denied; use the adverse action phrase bank when responding.`);
+      `Reasons: ${result.autoDenial.reasons.join(" ")} Every tier is denied; use the adverse action phrase bank when responding.` +
+      (landlordDebt ? " Resolvable: the applicant may clear this criterion with proof the balance is paid or settled, or documentation of an established payment plan in good standing with the prior landlord. Rerun after documentation is on the task." : ""));
   }
   if (result.medianCredit == null) {
     dec("Credit report missing. Order it in Buildium, attach it to this task, and rerun the screening.",
