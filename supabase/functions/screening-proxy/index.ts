@@ -421,6 +421,9 @@ app.post("*", async (c) => {
       const failures: string[] = [];
       const docs: Extracted[] = [];
       let totalBytes = 0;
+      // Shared raster budget across the whole run: scanned pages are the
+      // memory hog that took the function down on 2026-08-04.
+      let rasterBudget = 12;
       for (const a of atts) {
         const name = a.name ?? "attachment";
         if (isPriorUnderwritingDoc(name)) { skipped.push(name); continue; }
@@ -433,8 +436,11 @@ app.post("*", async (c) => {
           totalBytes += bytes.byteLength;
           if (totalBytes > 40 * 1024 * 1024) { failures.push(`${name}: total size cap reached, skipped`); continue; }
           const ct = (fr.headers.get("content-type") ?? "").toLowerCase();
-          if (ct.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(name)) docs.push(imageAsExtracted(bytes, name));
-          else docs.push(await extractPdf(bytes, name));
+          let ext: Extracted;
+          if (ct.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(name)) ext = imageAsExtracted(bytes, name);
+          else ext = await extractPdf(bytes, name, rasterBudget);
+          if (ext.kind === "images") rasterBudget -= ext.pngs.length;
+          docs.push(ext);
         } catch {
           failures.push(`${name}: download failed`);
         }

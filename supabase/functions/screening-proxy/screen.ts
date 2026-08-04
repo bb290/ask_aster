@@ -19,7 +19,9 @@ import type { EngineResult, HouseholdInput } from "./engine.ts";
 import { TIERS } from "./engine.ts";
 
 const OR_KEY = Deno.env.get("OPENROUTER_API_KEY") ?? "";
-const PARSE_MODEL = "anthropic/claude-sonnet-5"; // same model the sibling proxies use
+// Fable 5 for document transcription (Brittany, 2026-08-04); verified live on
+// OpenRouter. Override per-deploy with PARSE_MODEL if it ever needs rolling back.
+const PARSE_MODEL = Deno.env.get("PARSE_MODEL") ?? "anthropic/claude-fable-5";
 
 // SKILL.md filename patterns for prior-underwriting artifacts, plus
 // restricted-screening documents Sagareus does not use (Fair Chance
@@ -52,10 +54,14 @@ export type Extracted =
   | { kind: "failed"; name: string; error: string };
 
 const PDF_TEXT_MAX_CHARS = 60000;
-const MAX_PAGES_RENDERED = 10;
-const RENDER_DPI = 150;
+// Raster limits sized for the edge function's memory budget: the "not enough
+// compute resources" failure (2026-08-04) was scanned multi-page PDFs blowing
+// the isolate. Memory scales with dpi^2 x pages, so both are kept tight and
+// callers pass a shared budget across ALL files in a run.
+const MAX_PAGES_RENDERED = 6;
+const RENDER_DPI = 110;
 
-export function extractPdf(bytes: Uint8Array, name: string): Promise<Extracted> {
+export function extractPdf(bytes: Uint8Array, name: string, rasterBudget = MAX_PAGES_RENDERED): Promise<Extracted> {
   return (async () => {
     let totalPages = 0;
     // Tier 1: pdfjs text
@@ -99,7 +105,11 @@ export function extractPdf(bytes: Uint8Array, name: string): Promise<Extracted> 
     try {
       const doc = (mupdf as unknown as { Document: { openDocument(b: Uint8Array, m: string): MupdfDocument } }).Document.openDocument(bytes, "application/pdf");
       if (!totalPages) totalPages = doc.countPages();
-      const limit = Math.min(totalPages, MAX_PAGES_RENDERED);
+      const limit = Math.min(totalPages, Math.max(0, Math.min(MAX_PAGES_RENDERED, rasterBudget)));
+      if (!limit) {
+        doc.destroy?.();
+        return { kind: "failed" as const, name, error: "scanned document skipped: page-render budget for this run is used up; screen it in a second pass" };
+      }
       // deno-lint-ignore no-explicit-any
       const Matrix = (mupdf as any).Matrix;
       // deno-lint-ignore no-explicit-any
