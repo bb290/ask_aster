@@ -228,30 +228,44 @@ export async function parseDocuments(docs: Extracted[], contextText: string): Pr
       parts.push({ type: "file", file: { filename: d.name, file_data: `data:application/pdf;base64,${d.dataBase64}` } } as unknown as Part);
     }
   }
-  const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-    method: "POST",
-    headers: { "Authorization": `Bearer ${OR_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: PARSE_MODEL,
-      max_tokens: 6000,
-      temperature: 0,
-      messages: [
-        { role: "system", content: PARSE_SYSTEM },
-        { role: "user", content: parts },
-      ],
-    }),
-  });
-  const jr = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(`openrouter ${r.status}`);
-  const raw = String(
-    (jr as { choices?: { message?: { content?: unknown } }[] })?.choices?.[0]?.message?.content ?? "",
-  ).trim();
-  const jsonText = raw.replace(/^```(json)?/i, "").replace(/```$/, "").trim();
+  async function callModel(extraNudge?: string): Promise<string> {
+    const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+      method: "POST",
+      headers: { "Authorization": `Bearer ${OR_KEY}`, "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: PARSE_MODEL,
+        max_tokens: 12000,
+        temperature: 0,
+        messages: [
+          { role: "system", content: PARSE_SYSTEM },
+          { role: "user", content: extraNudge ? [...parts, { type: "text", text: extraNudge }] : parts },
+        ],
+      }),
+    });
+    const jr = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      // Surface the provider's own reason (page limits, size limits, etc)
+      const detail = String((jr as { error?: { message?: unknown } })?.error?.message ?? "").slice(0, 200);
+      throw new Error(`openrouter ${r.status}${detail ? `: ${detail}` : ""}`);
+    }
+    const errInBody = (jr as { error?: { message?: unknown } })?.error?.message;
+    if (errInBody) throw new Error(`openrouter: ${String(errInBody).slice(0, 200)}`);
+    return String((jr as { choices?: { message?: { content?: unknown } }[] })?.choices?.[0]?.message?.content ?? "").trim();
+  }
+  const clean = (raw: string) => raw.replace(/^```(json)?/i, "").replace(/```$/, "").trim();
   let parsed: ParsedHousehold;
   try {
-    parsed = JSON.parse(jsonText) as ParsedHousehold;
-  } catch {
-    throw new Error("parse_not_json");
+    parsed = JSON.parse(clean(await callModel())) as ParsedHousehold;
+  } catch (e) {
+    if (String(e).startsWith("Error: openrouter")) throw e;
+    // Output was not valid JSON (often truncation on huge packets): one retry
+    // asking for tighter output.
+    try {
+      parsed = JSON.parse(clean(await callModel("Your previous output was not valid JSON. Return ONLY the JSON object, no commentary, and keep managerFlags to at most 6 short items per applicant."))) as ParsedHousehold;
+    } catch (e2) {
+      if (String(e2).startsWith("Error: openrouter")) throw e2;
+      throw new Error("parse_not_json");
+    }
   }
   if (!Array.isArray(parsed.applicants) || !parsed.applicants.length) throw new Error("parse_no_applicants");
   parsed.warnings = Array.isArray(parsed.warnings) ? parsed.warnings.map(String) : [];

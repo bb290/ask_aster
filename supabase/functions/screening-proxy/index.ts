@@ -456,7 +456,11 @@ app.post("*", async (c) => {
         );
       } catch (e) {
         console.error("screenTask parse failed:", e);
-        return j(headers, 502, { error: "parse_failed", message: "Document reading failed. Try again in a minute." });
+        const detail = String((e as Error).message ?? "").slice(0, 220);
+        return j(headers, 502, {
+          error: "parse_failed",
+          message: `Document reading failed${detail ? ` (${detail})` : ""}. If this mentions pages or size, remove the largest attachment and rerun; otherwise try again in a minute.`,
+        });
       }
       const asOf = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10); // Seattle-ish
       const result = underwrite({ applicants: parsed.applicants, asOf });
