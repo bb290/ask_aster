@@ -21,11 +21,14 @@ import { TIERS } from "./engine.ts";
 const OR_KEY = Deno.env.get("OPENROUTER_API_KEY") ?? "";
 const PARSE_MODEL = "anthropic/claude-sonnet-5"; // same model the sibling proxies use
 
-// SKILL.md filename patterns for prior-underwriting artifacts.
+// SKILL.md filename patterns for prior-underwriting artifacts, plus
+// restricted-screening documents Sagareus does not use (Fair Chance
+// Housing / restricted-person policy): never read them at all.
 const UNDERWRITING_PATTERN = /(underwriting decision|underwriting report|underwriting summary|decision report|decision summary)/i;
+const RESTRICTED_PATTERN = /(sanction|ofac|criminal|background check|sex.?offender|restricted.?person)/i;
 
 export function isPriorUnderwritingDoc(name: string): boolean {
-  return UNDERWRITING_PATTERN.test(name);
+  return UNDERWRITING_PATTERN.test(name) || RESTRICTED_PATTERN.test(name);
 }
 
 function bytesToBase64(buf: Uint8Array): string {
@@ -179,14 +182,13 @@ export interface ParsedHousehold {
   warnings: string[];
 }
 
-export async function parseDocuments(docs: Extracted[], applicantNames: string[]): Promise<ParsedHousehold> {
+export async function parseDocuments(docs: Extracted[], contextText: string): Promise<ParsedHousehold> {
   if (!OR_KEY) throw new Error("openrouter_not_configured");
   type Part = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
   const parts: Part[] = [];
   parts.push({
     type: "text",
-    text: `Applicants on this household (from Buildium): ${applicantNames.join(", ")}.\n` +
-      `Documents follow. Attribute income and credit to the right applicant by the names inside each document.`,
+    text: `${contextText}\nDocuments follow. Attribute income and credit to the right applicant by the names inside each document.`,
   });
   for (const d of docs) {
     if (d.kind === "text") {

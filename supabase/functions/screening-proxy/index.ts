@@ -393,6 +393,127 @@ app.post("*", async (c) => {
       return j(headers, 200, { members, asana });
     }
 
+    // ---------- screenTask: Asana task in, editable report out ----------
+    // Revised workflow (Brittany, 2026-08-04): the Asana task is the entry
+    // point, exactly like the /screening skill. Reads the task's attachments,
+    // runs the same extract -> transcribe -> engine -> render pipeline, and
+    // returns the report TEXT for the assistant to review and edit in the
+    // widget. Writes nothing; submitReport does the writes.
+    if (action === "screenTask") {
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid) return j(headers, 400, { error: "bad_task_url", message: "Paste the full Asana task link." });
+
+      let task: { gid?: string; name?: string; notes?: string; permalink_url?: string };
+      try {
+        task = await asanaCall("GET", `/tasks/${gid}?opt_fields=name,notes,permalink_url`) as typeof task;
+      } catch {
+        return j(headers, 404, { error: "task_not_found", message: "Could not open that Asana task. Check the link." });
+      }
+
+      const atts = (await asanaCall("GET", `/tasks/${gid}/attachments?opt_fields=name,download_url,size&limit=50`)
+        .catch(() => [])) as { gid?: string; name?: string; download_url?: string; size?: number }[];
+      if (!atts?.length) {
+        return j(headers, 422, { error: "no_attachments", message: "The task has no attachments. Attach the credit report and income documents first." });
+      }
+
+      const skipped: string[] = [];
+      const failures: string[] = [];
+      const docs: Extracted[] = [];
+      let totalBytes = 0;
+      for (const a of atts) {
+        const name = a.name ?? "attachment";
+        if (isPriorUnderwritingDoc(name)) { skipped.push(name); continue; }
+        if (!a.download_url) { failures.push(`${name}: no download URL (external link?)`); continue; }
+        if ((a.size ?? 0) > 20 * 1024 * 1024) { failures.push(`${name}: over 20 MB, skipped`); continue; }
+        try {
+          const fr = await fetch(a.download_url);
+          if (!fr.ok) { failures.push(`${name}: download ${fr.status}`); continue; }
+          const bytes = new Uint8Array(await fr.arrayBuffer());
+          totalBytes += bytes.byteLength;
+          if (totalBytes > 40 * 1024 * 1024) { failures.push(`${name}: total size cap reached, skipped`); continue; }
+          const ct = (fr.headers.get("content-type") ?? "").toLowerCase();
+          if (ct.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(name)) docs.push(imageAsExtracted(bytes, name));
+          else docs.push(await extractPdf(bytes, name));
+        } catch {
+          failures.push(`${name}: download failed`);
+        }
+      }
+      for (const d of docs) if (d.kind === "failed") failures.push(`${d.name}: ${(d as { error: string }).error}`);
+      const readable = docs.filter((d) => d.kind !== "failed");
+      if (!readable.length) {
+        return j(headers, 422, { error: "nothing_readable", message: "No attachment could be read. Check the files on the task." });
+      }
+
+      let parsed;
+      try {
+        parsed = await parseDocuments(
+          readable,
+          `Asana task: "${task.name ?? ""}". Task notes (assistant prep):\n${(task.notes ?? "").slice(0, 3000)}\nApplicant names come from the task name and the documents.`,
+        );
+      } catch (e) {
+        console.error("screenTask parse failed:", e);
+        return j(headers, 502, { error: "parse_failed", message: "Document reading failed. Try again in a minute." });
+      }
+      const asOf = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10); // Seattle-ish
+      const result = underwrite({ applicants: parsed.applicants, asOf });
+
+      const integrityFlags: string[] = [];
+      for (const s of skipped) integrityFlags.push(`Skipped prior-underwriting report by filename pattern: ${s}. Figures re-derived from source documents.`);
+      for (const f of failures) integrityFlags.push(`Attachment not read: ${f}.`);
+
+      const lastNames = parsed.applicants.map((a) => a.name.split(" ").at(-1) ?? "").join("-").toUpperCase().slice(0, 24);
+      const reportId = `SW-${asOf.replace(/-/g, "")}-${lastNames || gid.slice(-6)}`;
+      const report = renderReport(result, parsed, { reportId, date: asOf, integrityFlags });
+
+      return j(headers, 200, {
+        report, reportId, result,
+        warnings: parsed.warnings,
+        files: { read: readable.map((d) => d.name), skipped, failed: failures },
+        task: { gid, name: task.name ?? "", url: task.permalink_url ?? taskUrl },
+      });
+    }
+
+    // ---------- submitReport: post the (possibly edited) report + route for review ----------
+    // Posts the report as a comment, prefixes the title "Pending Mgr Review",
+    // assigns by weekday (Courtney Mon-Thu, Brittany Fri-Sun), due today.
+    // Section move to a Pending Manager Review section: later (Brittany).
+    if (action === "submitReport") {
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid) return j(headers, 400, { error: "bad_task_url" });
+      const report = String((body as { report?: unknown }).report ?? "").trim();
+      if (report.length < 200 || report.length > 60000) {
+        return j(headers, 400, { error: "bad_report", message: "Report text looks empty or too large. Run the screening first." });
+      }
+
+      // Seattle-ish local day: Mon-Thu -> Courtney, Fri/Sat/Sun -> Brittany
+      const local = new Date(Date.now() - 7 * 3600 * 1000);
+      const dow = local.getUTCDay(); // 0 Sun .. 6 Sat
+      const COURTNEY = { gid: "1206362769384360", name: "Courtney Simmons" };
+      const BRITTANY = { gid: "1203784854198936", name: "B French" };
+      const assignee = dow >= 1 && dow <= 4 ? COURTNEY : BRITTANY;
+      const dueOn = local.toISOString().slice(0, 10);
+
+      try {
+        await asanaCall("POST", `/tasks/${gid}/stories`, { text: report });
+        const cur = await asanaCall("GET", `/tasks/${gid}?opt_fields=name`) as { name?: string };
+        const PREFIX = "Pending Mgr Review | ";
+        const updates: Record<string, unknown> = { assignee: assignee.gid, due_on: dueOn };
+        if (cur.name && !cur.name.startsWith("Pending Mgr Review")) updates.name = PREFIX + cur.name;
+        await asanaCall("PUT", `/tasks/${gid}`, updates);
+        return j(headers, 200, {
+          submitted: true,
+          assignee: assignee.name,
+          due: dueOn,
+          title: (updates.name as string) ?? cur.name ?? "",
+        });
+      } catch (e) {
+        console.error("submitReport failed:", e);
+        return j(headers, 502, { error: "submit_failed", message: "Asana did not accept the update. The report may or may not have posted; check the task before retrying." });
+      }
+    }
+
     // ---------- screen: documents in, report out, posted to Asana ----------
     // The full replacement for the /screening skill's pipeline: extract
     // (deterministic cascade) -> parse (model transcribes, never computes)
@@ -454,7 +575,7 @@ app.post("*", async (c) => {
       // Parse (model transcribes) then compute (engine).
       let parsed;
       try {
-        parsed = await parseDocuments(readable, names);
+        parsed = await parseDocuments(readable, `Applicants on this household (from Buildium): ${names.join(", ")}.`);
       } catch (e) {
         console.error("screen parse failed:", e);
         return j(headers, 502, { error: "parse_failed", message: "Document reading failed. Try again in a minute; if it repeats, key the figures by hand via the manual path." });

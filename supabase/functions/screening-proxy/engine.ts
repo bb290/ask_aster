@@ -253,7 +253,9 @@ export function underwrite(input: HouseholdInput): EngineResult {
         managerReview.push(`${a.name}: bankruptcy discharged within the prior 2 years (${adv.bankruptcyDischargedDate}).`);
       }
     }
-    if (adv.tradelineCount != null && adv.tradelineCount < 3) {
+    // Thin-file flag only makes sense when a credit report was actually read;
+    // with no score on file the no-score handling covers it.
+    if (adv.tradelineCount != null && adv.tradelineCount < 3 && a.equifax != null) {
       managerReview.push(`${a.name}: thin credit file (${adv.tradelineCount} tradeline${adv.tradelineCount === 1 ? "" : "s"}).`);
     }
     if (adv.evictionOlderThan7Years) {
