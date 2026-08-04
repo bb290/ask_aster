@@ -308,31 +308,40 @@ function tierLine(t: EngineResult["tiers"][keyof EngineResult["tiers"]]): { verd
 export function mdToAsanaHtml(md: string): string {
   const escText = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const inline = (s: string) => escText(s).replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-  const out: string[] = [];
-  let inList = false;
-  const closeList = () => { if (inList) { out.push("</ul>"); inList = false; } };
+  // Build typed blocks, then join WITHOUT newlines: Asana renders every
+  // literal \n as a line break ON TOP of block-element spacing, which is
+  // where the extra blank lines came from (Brittany, 2026-08-04). Only
+  // adjacent plain-text lines get a single \n between them.
+  type Block = { t: "h" | "ul" | "p"; html: string };
+  const blocks: Block[] = [];
+  let list: string[] = [];
+  const flushList = () => {
+    if (list.length) { blocks.push({ t: "ul", html: `<ul>${list.join("")}</ul>` }); list = []; }
+  };
   for (const raw of md.split("\n")) {
     const line = raw.replace(/\s+$/, "");
     if (/^## /.test(line)) {
-      closeList();
-      out.push(`<h2><u>${inline(line.slice(3))}</u></h2>`);
+      flushList();
+      blocks.push({ t: "h", html: `<h2><u>${inline(line.slice(3))}</u></h2>` });
     } else if (/^- /.test(line)) {
-      if (!inList) { out.push("<ul>"); inList = true; }
-      out.push(`<li>${inline(line.slice(2))}</li>`);
-    } else if (/^  \S/.test(line) && inList) {
-      // context line under the previous bullet
-      const last = out.pop() ?? "";
-      out.push(last.replace(/<\/li>$/, `\n${inline(line.trim())}</li>`));
+      list.push(`<li>${inline(line.slice(2))}</li>`);
+    } else if (/^  \S/.test(line) && list.length) {
+      list[list.length - 1] = list[list.length - 1].replace(/<\/li>$/, `\n${inline(line.trim())}</li>`);
     } else if (line === "") {
-      closeList();
-      out.push("");
+      flushList();
     } else {
-      closeList();
-      out.push(inline(line));
+      flushList();
+      blocks.push({ t: "p", html: inline(line) });
     }
   }
-  closeList();
-  return `<body>${out.join("\n").replace(/\n{3,}/g, "\n\n")}</body>`;
+  flushList();
+  let out = "";
+  for (let i = 0; i < blocks.length; i++) {
+    out += blocks[i].html;
+    // single line break only between consecutive plain-text lines
+    if (blocks[i].t === "p" && blocks[i + 1]?.t === "p") out += "\n";
+  }
+  return `<body>${out}</body>`;
 }
 
 // Criteria checklist: every check the engine ran and how it came out, so the
