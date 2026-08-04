@@ -1,28 +1,28 @@
-// Screening Workbench proxy for the applicant screening workbench
-// (saga-screening-workbench.module, internal page /workbench).
+// Screening Workbench proxy (saga-screening-workbench.module, /workbench).
 //
-// READ-ONLY against Buildium in this version. No writes to Buildium, Asana, or
-// anywhere else. The workbench is a decision-support queue; decisions still
-// happen in Buildium/Asana and the Aster /screening skill is untouched.
+// Current workflow (Brittany, 2026-08-04) - task-first, three steps:
+//   - "screenTask":   Asana task URL in -> downloads the task's attachments
+//                     (PDFs pass through to the model natively; prior-
+//                     underwriting and restricted-screening files skipped by
+//                     name), model transcribes figures, engine.ts computes,
+//                     plain-text report returned for editing. No writes.
+//   - "submitReport": posts the (edited) report as a comment, retitles the
+//                     task 'Pending Mgr Review | ...', assigns Courtney
+//                     Mon-Thu / Brittany Fri-Sun, due today.
+//   - "underwrite":   structured household in -> engine result out.
 //
-// Actions (all staff-gated with the x-sv-key header):
-//   - "queue":  pending applicant households pulled live from Buildium,
-//               grouped by ApplicantGroupId (solo applicants form their own
-//               group), joined with property name/city, sorted oldest first
-//               (First-In-Time: the wait clock is the queue order).
-//   - "detail": one household's applicants in full - contact, status,
-//               applications, and document metadata when the files API
-//               cooperates (it degrades to an empty list, never an error).
+// Dormant (kept for the future Pending Manager Review view; UI no longer
+// calls them): "queue", "detail", "createTask", "setStatus", "screen".
 //
-// Secrets: BUILDIUM_SCREENING_CLIENT_ID / BUILDIUM_SCREENING_CLIENT_SECRET
-// (separate read-only credential from site-visit's BUILDIUM_CLIENT_ID, so
-// either can be revoked without breaking the other), SCREENING_KEY (team key).
+// Secrets: BUILDIUM_SCREENING_CLIENT_ID/_SECRET (dormant actions),
+// SCREENING_KEY (team key), ASANA_PAT, OPENROUTER_API_KEY, PARSE_MODEL
+// (optional override; defaults to anthropic/claude-fable-5).
 //
 // Plan of record: clients/sagareus/projects/applicant-portal/PLAN.md
 
 import { Hono } from "hono";
 import { underwrite, type HouseholdInput } from "./engine.ts";
-import { extractPdf, imageAsExtracted, isPriorUnderwritingDoc, parseDocuments, renderReport, type Extracted } from "./screen.ts";
+import { imageAsExtracted, isPriorUnderwritingDoc, parseDocuments, pdfAsExtracted, renderReport, type Extracted } from "./screen.ts";
 
 const B_ID = Deno.env.get("BUILDIUM_SCREENING_CLIENT_ID") ?? "";
 const B_SECRET = Deno.env.get("BUILDIUM_SCREENING_CLIENT_SECRET") ?? "";
@@ -421,26 +421,23 @@ app.post("*", async (c) => {
       const failures: string[] = [];
       const docs: Extracted[] = [];
       let totalBytes = 0;
-      // Shared raster budget across the whole run: scanned pages are the
-      // memory hog that took the function down on 2026-08-04.
-      let rasterBudget = 12;
+      // PDFs pass through to the model natively; no local parsing or
+      // rasterizing. The wasm cascade blew the edge worker's memory/CPU on
+      // real-world scans twice on 2026-08-04; the model reads PDFs itself.
       for (const a of atts) {
         const name = a.name ?? "attachment";
         if (isPriorUnderwritingDoc(name)) { skipped.push(name); continue; }
         if (!a.download_url) { failures.push(`${name}: no download URL (external link?)`); continue; }
-        if ((a.size ?? 0) > 20 * 1024 * 1024) { failures.push(`${name}: over 20 MB, skipped`); continue; }
+        if ((a.size ?? 0) > 15 * 1024 * 1024) { failures.push(`${name}: over 15 MB, attach a smaller copy`); continue; }
         try {
           const fr = await fetch(a.download_url);
           if (!fr.ok) { failures.push(`${name}: download ${fr.status}`); continue; }
           const bytes = new Uint8Array(await fr.arrayBuffer());
           totalBytes += bytes.byteLength;
-          if (totalBytes > 40 * 1024 * 1024) { failures.push(`${name}: total size cap reached, skipped`); continue; }
+          if (totalBytes > 22 * 1024 * 1024) { failures.push(`${name}: total size cap reached, screen it in a second pass`); continue; }
           const ct = (fr.headers.get("content-type") ?? "").toLowerCase();
-          let ext: Extracted;
-          if (ct.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(name)) ext = imageAsExtracted(bytes, name);
-          else ext = await extractPdf(bytes, name, rasterBudget);
-          if (ext.kind === "images") rasterBudget -= ext.pngs.length;
-          docs.push(ext);
+          if (ct.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(name)) docs.push(imageAsExtracted(bytes, name));
+          else docs.push(pdfAsExtracted(bytes, name));
         } catch {
           failures.push(`${name}: download failed`);
         }
@@ -570,7 +567,7 @@ app.post("*", async (c) => {
         const ct = String(f.contentType ?? "").toLowerCase();
         rawFiles.push({ name, contentType: ct || "application/octet-stream", bytes });
         if (ct.startsWith("image/")) docs.push(imageAsExtracted(bytes, name));
-        else docs.push(await extractPdf(bytes, name));
+        else docs.push(pdfAsExtracted(bytes, name));
       }
       const failures = docs.filter((d) => d.kind === "failed").map((d) => `${d.name}: ${(d as { error: string }).error}`);
       const readable = docs.filter((d) => d.kind !== "failed");

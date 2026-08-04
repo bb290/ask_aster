@@ -51,7 +51,16 @@ type MupdfDocument = {
 export type Extracted =
   | { kind: "text"; name: string; pages: number; text: string }
   | { kind: "images"; name: string; pages: number; pngs: string[] }
+  | { kind: "pdf"; name: string; pages: number; dataBase64: string }
   | { kind: "failed"; name: string; error: string };
+
+/** PDFs pass through to the model natively (it reads text AND scanned pages
+ * itself). This replaced the local pdfjs/mupdf cascade as the primary path
+ * after real-world scans repeatedly blew the edge worker's memory/CPU
+ * (2026-08-04); the cascade below remains as a fallback tool. */
+export function pdfAsExtracted(bytes: Uint8Array, name: string): Extracted {
+  return { kind: "pdf", name, pages: 0, dataBase64: bytesToBase64(bytes) };
+}
 
 const PDF_TEXT_MAX_CHARS = 60000;
 // Raster limits sized for the edge function's memory budget: the "not enough
@@ -208,6 +217,9 @@ export async function parseDocuments(docs: Extracted[], contextText: string): Pr
       for (const png of d.pngs) {
         parts.push({ type: "image_url", image_url: { url: `data:image/png;base64,${png}` } });
       }
+    } else if (d.kind === "pdf") {
+      parts.push({ type: "text", text: `\n===== DOCUMENT: ${d.name} (PDF, attached) =====` });
+      parts.push({ type: "file", file: { filename: d.name, file_data: `data:application/pdf;base64,${d.dataBase64}` } } as unknown as Part);
     }
   }
   const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
