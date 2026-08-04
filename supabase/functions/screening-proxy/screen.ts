@@ -508,10 +508,6 @@ ${applicantBlocks}
   ${tiers.map((t) => `${t.meta.label} (${t.meta.multiplier.toFixed(1)}x): ${t.r.maxRent != null ? money(t.r.maxRent) + "/month" : "n/a, denied"}`).join(" | ")}
 - **Median credit = ${mathFico} -> ${result.medianCredit ?? "n/a"}.**
 
-## Assistant Notes For Manager
-
-${opts.assistantNotes?.trim() || "No additional notes from the leasing assistant."}
-
 ## Screening Criteria Checklist
 
 Every criterion checked on this application and how it came out. Full definitions: SCREENING_CRITERIA.md (Sagareus screening SOP).
