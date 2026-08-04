@@ -52,7 +52,7 @@ Deno.test("co-signer window: 620 median is approved at Lenient, co-signer at Sta
   assertEquals(r.tiers.stringent.decision, "denied");
   assertEquals(r.tiers.stringent.reasons[0], "Household median credit score more than 50 points below the Stringent minimum.");
   // divergence trigger fires
-  if (!r.managerReview.some((m) => /diverge/.test(m))) throw new Error("missing divergence trigger");
+  if (!r.managerReview.some((m) => /Tier results differ/.test(m))) throw new Error("missing divergence trigger");
 });
 
 Deno.test("boundary: exactly 50 below the minimum still allows a co-signer; 51 below denies", () => {
@@ -144,7 +144,7 @@ Deno.test("court-ordered received below ordered triggers the inconsistency flag;
   if (!r.managerReview.some((m) => /receipts inconsistent/.test(m))) throw new Error("missing inconsistency flag");
 });
 
-Deno.test("unverified income is excluded from totals and flagged", () => {
+Deno.test("below-standard income is COUNTED and flagged, never zeroed (policy 2026-08-04)", () => {
   const r = underwrite({
     asOf: ASOF,
     applicants: [{
@@ -155,9 +155,19 @@ Deno.test("unverified income is excluded from totals and flagged", () => {
       ],
     }],
   });
-  assertEquals(r.householdMonthlyIncome, 4000);
+  assertEquals(r.householdMonthlyIncome, 6000);
   assertEquals(r.applicants[0].unverifiedIncome, true);
-  if (!r.managerReview.some((m) => /does not meet Sagareus standards/.test(m))) throw new Error("missing unverified flag");
+  if (!r.applicants[0].incomeLines.some((l) => /BELOW DOCUMENTATION STANDARD \(counted/.test(l))) throw new Error("missing counted label");
+  if (!r.managerReview.some((m) => /below Sagareus standards/.test(m))) throw new Error("missing flag");
+});
+
+Deno.test("zero income never yields approved-up-to-\$0; tiers deny with the verification phrase", () => {
+  const r = underwrite({
+    asOf: ASOF,
+    applicants: [{ name: "A", equifax: 700, incomes: [] }],
+  });
+  assertEquals(r.tiers.lenient.decision, "denied");
+  assertEquals(r.tiers.lenient.reasons, ["Income could not be verified to Sagareus documentation standards."]);
 });
 
 Deno.test("thin file and old eviction are manager flags", () => {

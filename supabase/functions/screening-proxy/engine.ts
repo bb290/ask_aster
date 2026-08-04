@@ -195,8 +195,13 @@ export function underwrite(input: HouseholdInput): EngineResult {
     let unverified = false;
     for (const src of a.incomes) {
       if (src.verified === false) {
+        // Counted, not excluded (Brittany, 2026-08-04): the tool computes from
+        // whatever the documents show and flags the integrity problem; the
+        // manager decides whether to rely on it.
         unverified = true;
-        lines.push(`EXCLUDED (does not meet documentation standard): ${qualifyingMonthly(src).line}${src.note ? ` [${src.note}]` : ""}`);
+        const q = qualifyingMonthly(src);
+        if (src.type !== "assets_in_lieu") total = round2(total + q.amount);
+        lines.push(`BELOW DOCUMENTATION STANDARD (counted; verify before relying): ${q.line}${src.note ? ` [${src.note}]` : ""}`);
         continue;
       }
       const q = qualifyingMonthly(src);
@@ -215,7 +220,7 @@ export function underwrite(input: HouseholdInput): EngineResult {
       }
     }
     if (unverified) {
-      managerReview.push(`${a.name}: one or more income sources excluded; documentation does not meet Sagareus standards.`);
+      managerReview.push(`${a.name}: one or more income sources counted from documentation below Sagareus standards; request compliant documents before relying on the figure.`);
     }
     return {
       name: a.name,
@@ -308,6 +313,11 @@ export function underwrite(input: HouseholdInput): EngineResult {
       const extended = Math.floor((householdMonthlyIncome * 12 + bestSingleAccount) / (12 * t.multiplier));
       if (extended > maxRent) { maxRent = extended; assetsApplied = true; }
     }
+    if (maxRent <= 0) {
+      base.reasons = ["Income could not be verified to Sagareus documentation standards."];
+      tiers[t.key] = base;
+      continue;
+    }
     if (med.median >= t.creditMin) {
       base.decision = "approved";
       base.maxRent = maxRent;
@@ -327,7 +337,8 @@ export function underwrite(input: HouseholdInput): EngineResult {
   // Sharp tier divergence trigger
   const decisions = TIERS.map((t) => tiers[t.key].decision);
   if (!autoDenial.denied && new Set(decisions).size > 1 && decisions.includes("denied")) {
-    managerReview.push("Tier results diverge sharply; consider discussing the application before responding.");
+    const summary = TIERS.map((t) => `${t.label}: ${tiers[t.key].decision.replace("approved_cosigner", "co-signer").replace("_", " ")}`).join(", ");
+    managerReview.push(`Tier results differ (${summary}). Apply the tier that matches the property; if the property sits at a denied tier, discuss options (co-signer, alternate property) with the applicant before responding.`);
   }
 
   return {

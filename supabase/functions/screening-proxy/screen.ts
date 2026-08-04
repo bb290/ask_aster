@@ -190,7 +190,13 @@ Return ONLY a JSON object, no markdown fences, matching:
       "managerFlags": ["short factual observations warranting manager judgment: recent job change, multi-state addresses, declining income trend, collections items with amounts and dates"]
     }
   ],
-  "warnings": ["anything you could not read or reconcile"]
+  "warnings": ["anything you could not read or reconcile"],
+  "integrity": {
+    "documentation": { "ok": boolean, "notes": "are the income/credit documents official, complete, legible originals (paystubs, letters, reports) rather than screenshots, self-generated files, or partial captures" },
+    "aiImageSigns": { "ok": boolean, "notes": "any visual or textual signs a document was AI-generated, digitally edited, or assembled: inconsistent fonts/kerning, impossible layouts, artifacts, mismatched totals" },
+    "employerAddress": { "ok": boolean, "notes": "employer name and address consistent across paystubs, application, and any letters; note if the employer address is missing or looks implausible" },
+    "previousAddress": { "ok": boolean, "notes": "address history consistent between the application and the credit report; note gaps, conflicts, or addresses that do not appear in the credit file" }
+  }
 }
 
 Hard rules:
@@ -203,11 +209,19 @@ Hard rules:
 - For gig or contractor platform statements: transcribe the two monthly gross totals. Do not apply any percentage.
 - Collections, charge-offs, judgments: list them factually in managerFlags with amounts and dates.
 - Never include protected-class information of any kind.
+- For "integrity": these are document-level observations only. Report what the documents themselves show; set ok=false ONLY for concrete observations you can name in notes, never on vague suspicion. Missing documents are warnings, not integrity failures.
 - No em dashes anywhere.`;
 
+export interface IntegrityCheck { ok?: boolean; notes?: string }
 export interface ParsedHousehold {
   applicants: HouseholdInput["applicants"];
   warnings: string[];
+  integrity?: {
+    documentation?: IntegrityCheck;
+    aiImageSigns?: IntegrityCheck;
+    employerAddress?: IntegrityCheck;
+    previousAddress?: IntegrityCheck;
+  };
 }
 
 export async function parseDocuments(docs: Extracted[], contextText: string): Promise<ParsedHousehold> {
@@ -272,6 +286,7 @@ export async function parseDocuments(docs: Extracted[], contextText: string): Pr
   }
   if (!Array.isArray(parsed.applicants) || !parsed.applicants.length) throw new Error("parse_no_applicants");
   parsed.warnings = Array.isArray(parsed.warnings) ? parsed.warnings.map(String) : [];
+  parsed.integrity = parsed.integrity ?? {};
   // Model-derived fraud signals must NEVER feed the automatic-denial path
   // (plan of record: probabilistic detections route to Manager Review; a
   // fraud denial requires a human confirming an objective fact). Missing or
@@ -395,6 +410,20 @@ function criteriaChecklist(result: EngineResult, parsed: ParsedHousehold): strin
   mark("INFO", "Credit more than 50 points below a tier minimum denies that tier (evaluated per tier above)");
 
   lines.push("");
+  lines.push("**DATA INTEGRITY**");
+  const integ = parsed.integrity ?? {};
+  const ic = (label: string, c: IntegrityCheck | undefined, scope: string) => {
+    const ok = c?.ok !== false;
+    const notes = (c?.notes ?? "").trim();
+    mark(ok ? "PASS" : "REVIEW", `${label}: ${ok ? (notes || scope) : notes || "flagged; see warnings"}`);
+  };
+  ic("Documentation standard", integ.documentation, "income and credit documents are official, complete, and legible");
+  ic("AI image / document tampering signs", integ.aiImageSigns, "no signs of AI-generated or digitally edited documents observed");
+  ic("Employer address validation", integ.employerAddress, "employer details consistent across documents");
+  ic("Previous address validation", integ.previousAddress, "address history consistent between application and credit report");
+  mark("INFO", "Scope: document-level checks read from the papers themselves. External verification (USPS address lookup, county ownership records, employer registry) is not yet wired; treat REVIEW items as verify-by-hand.");
+
+  lines.push("");
   lines.push("**PROCESS**");
   mark("INFO", "Same criteria applied to every applicant; no protected-class or source-of-income factors considered (Fair Housing baseline)");
   mark("INFO", "Prior-underwriting reports and restricted-screening files skipped unread; all figures re-derived from source documents");
@@ -428,8 +457,8 @@ export function renderReport(
   }
   for (const a of result.applicants) {
     if (a.unverifiedIncome) {
-      dec(`${a.name}: income documentation below standard. Request compliant documents or exclude that income.`,
-        "One or more sources were excluded from qualifying income (details in Applicant Detail below).");
+      dec(`${a.name}: income counted from below-standard documentation. Request compliant documents before deciding.`,
+        "The figure uses what the provided documents show (per policy); it is not independently verified (details in Applicant Detail below).");
     }
   }
   const decisionsDiverge = new Set(tiers.map((t) => t.r.decision)).size > 1;
