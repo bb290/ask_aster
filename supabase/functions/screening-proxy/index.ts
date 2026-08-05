@@ -599,6 +599,15 @@ app.post("*", async (c) => {
             const declaredNames = declared ? parseRoster(declared) : [];
             const self = fullName(a);
             if (!declaredNames.some((n) => namesMatch(n, self))) declaredNames.unshift(self);
+            // Dedupe phantom entries: a single-token declared name ("Linda")
+            // that matches the first name of a fuller entry is the same person.
+            const deduped = declaredNames.filter((n, i) => {
+              const toks = n.trim().split(/\s+/);
+              if (toks.length > 1) return true;
+              return !declaredNames.some((m, k) => k !== i && m.trim().split(/\s+/).length > 1 &&
+                m.trim().split(/\s+/)[0].toLowerCase() === toks[0].toLowerCase());
+            });
+            declaredNames.length = 0; declaredNames.push(...deduped);
 
             // ---- try to attach to a waiting household on the same unit
             let attached = false;
