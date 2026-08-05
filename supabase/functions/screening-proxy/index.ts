@@ -639,7 +639,7 @@ app.post("*", async (c) => {
             const unitNo = unit?.UnitNumber && line && !line.includes(String(unit.UnitNumber)) ? ` #${unit.UnitNumber}` : "";
             const city = unit?.Address?.City ?? prop?.Address?.City ?? "";
             const address = line ? `${line}${unitNo}${city ? ", " + city : ""}` : (prop?.Name ?? "");
-            const streetOnly = address ? address.split(",")[0].trim() : "Property Pending";
+            const titleAddress = address || "Property Pending";
 
             const roster: RosterEntry[] = declaredNames.map((n) => ({
               name: n, norm: n.toLowerCase(),
@@ -670,7 +670,7 @@ app.post("*", async (c) => {
             }
 
             const displayNames = roster.map((r) => initialName(r.name)).join(" + ");
-            const taskName = `${waiting ? "WAITING ON ADD'L APPS " : ""}${ordinal}Application / ${displayNames} / ${streetOnly}`;
+            const taskName = `${waiting ? "WAITING ON ADD'L APPS " : ""}${ordinal}Application / ${displayNames} / ${titleAddress}`;
             const pendingLines = roster.filter((r) => !r.submitted).map((r) => {
               const x = r.name.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
               return `<strong>${x}</strong>\nApplication pending`;
