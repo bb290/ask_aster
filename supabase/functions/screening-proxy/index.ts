@@ -638,7 +638,8 @@ app.post("*", async (c) => {
             const line = unit?.Address?.AddressLine1 ?? prop?.Address?.AddressLine1 ?? "";
             const unitNo = unit?.UnitNumber && line && !line.includes(String(unit.UnitNumber)) ? ` #${unit.UnitNumber}` : "";
             const city = unit?.Address?.City ?? prop?.Address?.City ?? "";
-            const address = line ? `${line}${unitNo}${city ? ", " + city : ""}` : (prop?.Name ?? "");
+            const cityDup = city && line.toLowerCase().includes(city.toLowerCase());
+            const address = line ? `${line}${unitNo}${city && !cityDup ? ", " + city : ""}` : (prop?.Name ?? "");
             const titleAddress = address || "Property Pending";
 
             const roster: RosterEntry[] = declaredNames.map((n) => ({
