@@ -24,6 +24,11 @@ import { Hono } from "hono";
 import { underwrite, type HouseholdInput } from "./engine.ts";
 import { imageAsExtracted, isPriorUnderwritingDoc, isRestrictedDoc, mdToAsanaHtml, parseDocuments, pdfAsExtracted, renderReport, type Extracted } from "./screen.ts";
 import { buildDecision, DECISION_OPTIONS, type Decision } from "./decide.ts";
+import {
+  extractDeclaredAdults, initialName, ledgerInsertApplicant, ledgerInsertHousehold,
+  ledgerOpenHouseholds, ledgerSeenApplicants, ledgerUpdateHousehold, namesMatch,
+  parseRoster, type RosterEntry,
+} from "./intake.ts";
 
 const B_ID = Deno.env.get("BUILDIUM_SCREENING_CLIENT_ID") ?? "";
 const B_SECRET = Deno.env.get("BUILDIUM_SCREENING_CLIENT_SECRET") ?? "";
@@ -496,6 +501,205 @@ app.post("*", async (c) => {
       });
     }
 
+    // ---------- intake: automated new-application scanner ----------
+    // See intake.ts header for the rules. {propertyFilter} scopes a run to
+    // properties whose name/address contains the string (test runs);
+    // {dryRun} resolves everything and writes nothing.
+    if (action === "intake") {
+      const dryRun = (body as { dryRun?: unknown }).dryRun === true;
+      const propertyFilter = String((body as { propertyFilter?: unknown }).propertyFilter ?? "").trim().toLowerCase();
+      const summary = { created: [] as string[], attached: [] as string[], completed: [] as string[], nudged: [] as string[], flagged: [] as string[], errors: [] as string[] };
+      try {
+        const fromDate = new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10);
+        const [applicants, rentals] = await Promise.all([
+          bGetAll(`/applicants?lastupdatedfrom=${fromDate}`) as Promise<Applicant[]>,
+          bGetAll("/rentals") as Promise<Rental[]>,
+        ]);
+        const rentalById = new Map<number, Rental>();
+        for (const r of rentals) if (r.Id != null) rentalById.set(r.Id, r);
+        const propOk = (pid: number | null | undefined) => {
+          if (!propertyFilter) return true;
+          if (pid == null) return false;
+          const r = rentalById.get(pid);
+          const hay = `${r?.Name ?? ""} ${r?.Address?.AddressLine1 ?? ""} ${r?.Address?.City ?? ""}`.toLowerCase();
+          return hay.includes(propertyFilter);
+        };
+
+        const seen = await ledgerSeenApplicants();
+        const households = await ledgerOpenHouseholds();
+
+        // Candidates: submitted, New/Undecided, not yet in the ledger,
+        // processed in submission order so ordinals come out right.
+        const cands = applicants
+          .filter((a) => ["new", "undecided"].includes((a.Status ?? "").toLowerCase()))
+          .filter((a) => (a.Applications ?? []).some((ap) => (ap as { ApplicationSubmittedDateTime?: string }).ApplicationSubmittedDateTime))
+          .filter((a) => a.Id != null && !seen.has(a.Id))
+          .filter((a) => propOk(a.PropertyId))
+          .sort((x, y) => {
+            const dx = ((x.Applications ?? [])[0] as { ApplicationSubmittedDateTime?: string })?.ApplicationSubmittedDateTime ?? "";
+            const dy = ((y.Applications ?? [])[0] as { ApplicationSubmittedDateTime?: string })?.ApplicationSubmittedDateTime ?? "";
+            return dx < dy ? -1 : 1;
+          });
+
+        const flipUndecided = async (a: Applicant) => {
+          for (const ap of a.Applications ?? []) {
+            if (ap.Id == null) continue;
+            const st = ((ap as { ApplicationStatus?: string }).ApplicationStatus ?? ap.Status ?? "");
+            if (st !== "Undecided") {
+              await fetch(`${BUILDIUM}/applicants/${a.Id}/applications/${ap.Id}`, {
+                method: "PUT", headers: { ...BH, "Content-Type": "application/json" },
+                body: JSON.stringify({ ApplicationStatus: "Undecided" }),
+              }).catch(() => {});
+            }
+          }
+        };
+
+        const contactBlock = (a: Applicant) => {
+          const phones = (a.PhoneNumbers ?? []).map((p) => p.Number ?? "").filter(Boolean).join(", ");
+          const x = (v: string) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+          return `<strong>${x(fullName(a))}</strong>\nEmail: ${x(a.Email ?? "none on file")}\nPhone: ${x(phones || "none on file")}\nBuildium: <a href="${B_UI}/${a.Id}/summary">${B_UI}/${a.Id}/summary</a>`;
+        };
+
+        for (const a of cands) {
+          try {
+            const appId = (a.Applications ?? [])[0]?.Id;
+            const application = appId != null ? await bGet(`/applicants/${a.Id}/applications/${appId}`) : null;
+            const declared = application ? extractDeclaredAdults(application) : null;
+            const declaredNames = declared ? parseRoster(declared) : [];
+            const self = fullName(a);
+            if (!declaredNames.some((n) => namesMatch(n, self))) declaredNames.unshift(self);
+
+            // ---- try to attach to a waiting household on the same unit
+            let attached = false;
+            for (const h of households) {
+              if (h.complete || a.UnitId == null || h.unit_id !== a.UnitId) continue;
+              const rosterHasMe = h.roster.some((r) => !r.submitted && namesMatch(r.name, self));
+              const iDeclareThem = h.roster.some((r) => declaredNames.some((n) => namesMatch(n, r.name)));
+              if (!rosterHasMe && !iDeclareThem) continue;
+              attached = true;
+              const roster = h.roster.map((r) => namesMatch(r.name, self)
+                ? { ...r, submitted: true, applicantId: a.Id, email: a.Email, phone: (a.PhoneNumbers ?? [])[0]?.Number }
+                : r);
+              if (!roster.some((r) => r.applicantId === a.Id)) {
+                roster.push({ name: self, norm: self.toLowerCase(), submitted: true, applicantId: a.Id, email: a.Email });
+              }
+              const complete = roster.every((r) => r.submitted);
+              const done = roster.filter((r) => r.submitted).length;
+              if (!dryRun) {
+                await asanaCall("POST", `/tasks/${h.task_gid}/stories`, { html_text: `<body>${contactBlock(a)}\n\nApplication received (${done} of ${roster.length}).</body>` });
+                if (complete) {
+                  const cur = await asanaCall("GET", `/tasks/${h.task_gid}?opt_fields=name`) as { name?: string };
+                  if (cur.name?.startsWith("WAITING ON ADD'L APPS ")) {
+                    await asanaCall("PUT", `/tasks/${h.task_gid}`, { name: cur.name.replace(/^WAITING ON ADD'L APPS /, "") });
+                  }
+                  await asanaCall("POST", `/tasks/${h.task_gid}/stories`, { text: "All applications in. Ready to screen." });
+                }
+                await ledgerUpdateHousehold(h.id, { roster, complete });
+                await ledgerInsertApplicant(a.Id!, h.id);
+                await flipUndecided(a);
+              }
+              h.roster = roster; h.complete = complete;
+              summary.attached.push(`${self} -> household ${h.id}${complete ? " (complete)" : ""}`);
+              if (complete) summary.completed.push(`household ${h.id}`);
+              break;
+            }
+            if (attached) continue;
+
+            // ---- new household from this applicant's declaration
+            const unit = a.UnitId != null ? await bGet(`/rentals/units/${a.UnitId}`).catch(() => null) as { UnitNumber?: string; Address?: { AddressLine1?: string; City?: string } } | null : null;
+            const prop = a.PropertyId != null ? rentalById.get(a.PropertyId) : undefined;
+            const line = unit?.Address?.AddressLine1 ?? prop?.Address?.AddressLine1 ?? "";
+            const unitNo = unit?.UnitNumber && line && !line.includes(String(unit.UnitNumber)) ? ` #${unit.UnitNumber}` : "";
+            const city = unit?.Address?.City ?? prop?.Address?.City ?? "";
+            const address = line ? `${line}${unitNo}${city ? ", " + city : ""}` : (prop?.Name ?? "");
+            const streetOnly = address ? address.split(",")[0].trim() : "Property Pending";
+
+            const roster: RosterEntry[] = declaredNames.map((n) => ({
+              name: n, norm: n.toLowerCase(),
+              submitted: namesMatch(n, self),
+              applicantId: namesMatch(n, self) ? a.Id : undefined,
+              email: namesMatch(n, self) ? a.Email : undefined,
+              phone: namesMatch(n, self) ? (a.PhoneNumbers ?? [])[0]?.Number : undefined,
+            }));
+            const waiting = roster.some((r) => !r.submitted);
+
+            // ordinal + LU parent via the existing machinery
+            let luHit: { gid: string; name: string } | null = null;
+            let ordinal = "";
+            if (address) {
+              const lu = matchLu(await openLuTasks(), address);
+              if (lu.hit) {
+                luHit = lu.hit;
+                try {
+                  const subs = await asanaCall("GET", `/tasks/${lu.hit.gid}/subtasks?limit=100&opt_fields=name`) as { name?: string }[];
+                  const prior = (subs ?? []).filter((t) => /application/i.test(t.name ?? "") && !/roommate addendum/i.test(t.name ?? "")).length;
+                  const n = prior + 1;
+                  if (n > 1) {
+                    const suffix = n % 100 >= 11 && n % 100 <= 13 ? "th" : ["th", "st", "nd", "rd"][n % 10] ?? "th";
+                    ordinal = `${n}${suffix} `;
+                  }
+                } catch { /* unlabeled beats nothing */ }
+              }
+            }
+
+            const displayNames = roster.map((r) => initialName(r.name)).join(" + ");
+            const taskName = `${waiting ? "WAITING ON ADD'L APPS " : ""}${ordinal}Application / ${displayNames} / ${streetOnly}`;
+            const pendingLines = roster.filter((r) => !r.submitted).map((r) => {
+              const x = r.name.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+              return `<strong>${x}</strong>\nApplication pending`;
+            }).join("\n\n");
+            const notes = `<body><strong>Applicant contact details</strong>\n\n${contactBlock(a)}${pendingLines ? "\n\n" + pendingLines : ""}\n\n<strong>Next steps</strong>\n1. Buildium Applicant Summary: download the applicant's documents and the credit / criminal report, attach them to THIS task\n2. In the Screening Workbench, paste this task's link and Run Screening\n3. Report posts here for manager review\n\nCreated automatically by the intake scanner. Buildium is the system of record for documents.</body>`;
+
+            if (!dryRun) {
+              const made = (luHit
+                ? await asanaCall("POST", `/tasks/${luHit.gid}/subtasks`, { name: taskName, html_notes: notes })
+                : await asanaCall("POST", `/tasks`, { name: taskName, html_notes: notes, projects: [LEASING_HUMAN_VIEW] })
+              ) as { gid?: string };
+              if (!made.gid) throw new Error("task create returned no gid");
+              // home in both boards ("memberships" is not writable on create;
+              // addProject with a section does the placement)
+              await asanaCall("POST", `/tasks/${made.gid}/addProject`, { project: LEASING_HUMAN_VIEW, section: PENDING_APPLICATIONS_SECTION }).catch(() => {});
+              await asanaCall("POST", `/tasks/${made.gid}/addProject`, { project: PENDING_APPS_PROJECT, section: "1217174650640615" }).catch(() => {});
+              const hid = await ledgerInsertHousehold({
+                unit_id: a.UnitId ?? 0, property_id: a.PropertyId ?? null, task_gid: made.gid,
+                address, roster, complete: !waiting,
+              });
+              await ledgerInsertApplicant(a.Id!, hid);
+              await flipUndecided(a);
+              households.push({ id: hid, unit_id: a.UnitId ?? 0, property_id: a.PropertyId ?? null, task_gid: made.gid, address, roster, complete: !waiting, last_nudge_at: null, created_at: new Date().toISOString() });
+            } else {
+              // dry runs must simulate the ledger too, or a same-round
+              // co-applicant previews as a duplicate household
+              households.push({ id: -1, unit_id: a.UnitId ?? 0, property_id: a.PropertyId ?? null, task_gid: "dry", address, roster, complete: !waiting, last_nudge_at: null, created_at: new Date().toISOString() });
+            }
+            summary.created.push(taskName);
+          } catch (e) {
+            summary.errors.push(`${fullName(a)}: ${String((e as Error).message).slice(0, 80)}`);
+          }
+        }
+
+        // ---- 3-day ghost-roommate nudge, once per household
+        if (!dryRun) {
+          for (const h of households) {
+            if (h.complete || h.last_nudge_at) continue;
+            if (Date.now() - new Date(h.created_at).getTime() < 3 * 86400000) continue;
+            const waitingOn = h.roster.filter((r) => !r.submitted).map((r) => initialName(r.name)).join(", ");
+            if (!waitingOn) continue;
+            try {
+              await asanaCall("POST", `/tasks/${h.task_gid}/stories`, { text: `Still waiting on: ${waitingOn} (declared ${Math.round((Date.now() - new Date(h.created_at).getTime()) / 86400000)} days ago).` });
+              await ledgerUpdateHousehold(h.id, { last_nudge_at: new Date().toISOString() });
+              summary.nudged.push(`household ${h.id}: ${waitingOn}`);
+            } catch { /* next round */ }
+          }
+        }
+
+        return j(headers, 200, { dryRun, ...summary });
+      } catch (e) {
+        console.error("intake failed:", e);
+        return j(headers, 502, { error: "intake_failed", message: String((e as Error).message).slice(0, 200), partial: summary });
+      }
+    }
+
     // ---------- mgrQueue: open tasks awaiting manager review ----------
     // Tasks the submit step retitled "Pending Mgr Review | ...", read from
     // Human View's Pending Applications section (the convention every
@@ -966,10 +1170,13 @@ ${built.email.body}`;
         : await asanaCall("POST", `/tasks`, {
           name: taskName,
           html_notes: notes,
-          memberships: [{ project: LEASING_HUMAN_VIEW, section: PENDING_APPLICATIONS_SECTION }],
+          projects: [LEASING_HUMAN_VIEW],
           ...(mode === "roommate" ? { due_on: due } : {}),
         })
       ) as { gid?: string; permalink_url?: string; name?: string };
+      if (mode !== "lu" && made.gid) {
+        await asanaCall("POST", `/tasks/${made.gid}/addProject`, { project: LEASING_HUMAN_VIEW, section: PENDING_APPLICATIONS_SECTION }).catch(() => {});
+      }
 
       // Pushing to Asana means work has started: flip New applications to
       // Undecided in Buildium so the queue batches track reality. Best-effort.
