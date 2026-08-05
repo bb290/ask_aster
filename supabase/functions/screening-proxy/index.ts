@@ -40,6 +40,8 @@ const LEASING_HUMAN_VIEW = "1208297375044026"; // Leasing | Human View: where ap
 const PENDING_APPLICATIONS_SECTION = "1208297375044039"; // its "Pending Applications" section (per Roommate / Sublet SOP)
 const PENDING_APPS_PROJECT = "1217174650640596"; // Leasing | Pending Applications (stage lens, 2026-08-04)
 const PENDING_MGR_SECTION = "1217174694944319"; // its "Pending Mgr" section: the mgrQueue source of truth
+const APPLICATION_TEMPLATE = "1208297780570331"; // task template "Application // <names>" (Human View): subtasks populate
+const APPLICANT_ID_FIELD = "1217198624982390"; // number field on Pending Apps: Buildium group id (or applicant id for solos)
 // Decision -> destination section in Leasing | Pending Applications:
 //   approved as-is / negotiate / owner-exception / other -> Approved
 //   approved pending Section 8                            -> Pending Docs / Co-Signer / Sec 8
@@ -54,7 +56,9 @@ const BH = { "x-buildium-client-id": B_ID, "x-buildium-client-secret": B_SECRET 
 // Staff-facing Buildium UI deep link (not the API). Path shape mirrors the
 // vendor links that appear in the SOPs; Buildium redirects within the app if
 // the trailing segment drifts between versions.
-const B_UI = "https://sagareus.managebuilding.com/manager/app/rentals/applicants";
+// Verified against a real session (Brittany, 2026-08-05):
+// /manager/app/leasing/applicant/{id}/summary
+const B_UI = "https://sagareus.managebuilding.com/manager/app/leasing/applicant";
 
 const ALLOWED_ORIGINS = (Deno.env.get("ALLOWED_ORIGINS") ??
   "https://www.sagareus.com,https://sagareus.com")
@@ -648,6 +652,20 @@ app.post("*", async (c) => {
                 await ledgerUpdateHousehold(h.id, { roster, complete });
                 await ledgerInsertApplicant(a.Id!, h.id);
                 await flipUndecided(a);
+                // Grow the Buildium group to cover the whole household
+                try {
+                  const ids = roster.map((r) => r.applicantId).filter((x): x is number => x != null);
+                  if (ids.length > 1) {
+                    const g = await fetch(`${BUILDIUM}/applicants/groups`, {
+                      method: "POST", headers: { ...BH, "Content-Type": "application/json" },
+                      body: JSON.stringify({ ApplicantIds: ids }),
+                    });
+                    if (g.ok) {
+                      const gidNum = ((await g.json()) as { Id?: number }).Id;
+                      if (gidNum != null) await asanaCall("PUT", `/tasks/${h.task_gid}`, { custom_fields: { [APPLICANT_ID_FIELD]: gidNum } }).catch(() => {});
+                    }
+                  }
+                } catch { /* group growth is best-effort */ }
               }
               h.roster = roster; h.complete = complete;
               summary.attached.push(`${self} -> household ${h.id}${complete ? " (complete)" : ""}`);
@@ -703,15 +721,44 @@ app.post("*", async (c) => {
             const notes = `<body><strong>Applicant contact details</strong>\n\n${contactBlock(a)}${pendingLines ? "\n\n" + pendingLines : ""}\n\n<strong>Next steps</strong>\n1. Buildium Applicant Summary: download the applicant's documents and the credit / criminal report, attach them to THIS task\n2. In the Screening Workbench, paste this task's link and Run Screening\n3. Report posts here for manager review\n\nCreated automatically by the intake scanner. Buildium is the system of record for documents.</body>`;
 
             if (!dryRun) {
-              const made = (luHit
-                ? await asanaCall("POST", `/tasks/${luHit.gid}/subtasks`, { name: taskName, html_notes: notes })
-                : await asanaCall("POST", `/tasks`, { name: taskName, html_notes: notes, projects: [LEASING_HUMAN_VIEW] })
-              ) as { gid?: string };
-              if (!made.gid) throw new Error("task create returned no gid");
-              // home in both boards ("memberships" is not writable on create;
-              // addProject with a section does the placement)
+              // Instantiate from the Application task template so the SOP
+              // subtasks populate (Brittany, 2026-08-05). Async job: poll.
+              const job = await asanaCall("POST", `/task_templates/${APPLICATION_TEMPLATE}/instantiateTask`, { name: taskName }) as { gid?: string; new_task?: { gid?: string } };
+              let newGid = job.new_task?.gid;
+              for (let i = 0; i < 20 && !newGid && job.gid; i++) {
+                await new Promise((r) => setTimeout(r, 600));
+                const jr = await asanaCall("GET", `/jobs/${job.gid}`) as { status?: string; new_task?: { gid?: string } };
+                if (jr.status === "succeeded") newGid = jr.new_task?.gid;
+                if (jr.status === "failed") break;
+              }
+              const made = { gid: newGid } as { gid?: string };
+              if (!made.gid) throw new Error("template instantiation did not return a task");
+              // Subtask of the LU parent when one matched (keeps project membership)
+              if (luHit) await asanaCall("POST", `/tasks/${made.gid}/setParent`, { parent: luHit.gid }).catch(() => {});
+              // Prepend our contact block to whatever the template carries
+              try {
+                const cur = await asanaCall("GET", `/tasks/${made.gid}?opt_fields=html_notes`) as { html_notes?: string };
+                const existing = (cur.html_notes ?? "<body></body>").replace(/^<body>/, "").replace(/<\/body>$/, "");
+                await asanaCall("PUT", `/tasks/${made.gid}`, { html_notes: notes.replace("</body>", existing ? `\n\n${existing}</body>` : "</body>") });
+              } catch { /* template notes stay */ }
+              // home in both boards
               await asanaCall("POST", `/tasks/${made.gid}/addProject`, { project: LEASING_HUMAN_VIEW, section: PENDING_APPLICATIONS_SECTION }).catch(() => {});
               await asanaCall("POST", `/tasks/${made.gid}/addProject`, { project: PENDING_APPS_PROJECT, section: "1217174650640615" }).catch(() => {});
+              // Buildium group makes the household authoritative in Buildium;
+              // the Applicant ID field stores the group id (solo households
+              // fall back to the applicant id if a 1-member group is refused).
+              let refId: number | null = null;
+              try {
+                const g = await fetch(`${BUILDIUM}/applicants/groups`, {
+                  method: "POST", headers: { ...BH, "Content-Type": "application/json" },
+                  body: JSON.stringify({ ApplicantIds: [a.Id] }),
+                });
+                if (g.ok) refId = ((await g.json()) as { Id?: number }).Id ?? null;
+              } catch { /* fall back */ }
+              if (refId == null) refId = a.Id ?? null;
+              if (refId != null) {
+                await asanaCall("PUT", `/tasks/${made.gid}`, { custom_fields: { [APPLICANT_ID_FIELD]: refId } }).catch(() => {});
+              }
               const hid = await ledgerInsertHousehold({
                 unit_id: a.UnitId ?? 0, property_id: a.PropertyId ?? null, task_gid: made.gid,
                 address, roster, complete: !waiting,
