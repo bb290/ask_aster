@@ -629,11 +629,20 @@ app.post("*", async (c) => {
               if (!dryRun) {
                 await updateDescriptionForAttach(h.task_gid, matchedDeclared, contactBlock(a)).catch(() => {});
                 await asanaCall("POST", `/tasks/${h.task_gid}/stories`, { html_text: `<body>${contactBlock(a)}\n\nApplication received (${done} of ${roster.length}).</body>` });
-                if (complete) {
+                // Rebuild the title from the CURRENT roster: attachers who were
+                // not declared up front must appear, and the prefix reflects
+                // completeness (title segments: head / names / address).
+                try {
                   const cur = await asanaCall("GET", `/tasks/${h.task_gid}?opt_fields=name`) as { name?: string };
-                  if (cur.name?.startsWith("WAITING ON ADD'L APPS ")) {
-                    await asanaCall("PUT", `/tasks/${h.task_gid}`, { name: cur.name.replace(/^WAITING ON ADD'L APPS /, "") });
+                  const parts = (cur.name ?? "").split(" / ");
+                  if (parts.length >= 3) {
+                    const head = parts[0].replace(/^WAITING ON ADD'L APPS /, "");
+                    const names = roster.map((r) => initialName(r.name)).join(" + ");
+                    const rebuilt = `${complete ? "" : "WAITING ON ADD'L APPS "}${head} / ${names} / ${parts.slice(2).join(" / ")}`;
+                    if (rebuilt !== cur.name) await asanaCall("PUT", `/tasks/${h.task_gid}`, { name: rebuilt });
                   }
+                } catch { /* name rebuild is best-effort */ }
+                if (complete) {
                   await asanaCall("POST", `/tasks/${h.task_gid}/stories`, { text: "All applications submitted." });
                 }
                 await ledgerUpdateHousehold(h.id, { roster, complete });
