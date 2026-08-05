@@ -548,7 +548,7 @@ ${criteriaChecklist(result, parsed)}
 ## Notices
 
 - **Generation.**
-  This report was produced by the Sagareus Screening Workbench with AI-assisted document reading and deterministic underwriting math, then reviewed by the leasing assistant. All application decisions are made by the Sagareus Leasing Manager.
+  This report was produced by the Sagareus Screening Workbench with AI-assisted document reading and deterministic underwriting math. All application decisions are made by a Sagareus Leasing Manager.
 - **FCRA.**
   If this report contributed to an adverse decision, the applicant has the right to dispute inaccuracies with the screening vendor and to request a free copy of the underlying consumer report within 60 days under the Fair Credit Reporting Act.
 - **Fair Housing.**
