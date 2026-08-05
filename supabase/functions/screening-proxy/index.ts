@@ -510,7 +510,10 @@ app.post("*", async (c) => {
       const propertyFilter = String((body as { propertyFilter?: unknown }).propertyFilter ?? "").trim().toLowerCase();
       const summary = { created: [] as string[], attached: [] as string[], completed: [] as string[], nudged: [] as string[], flagged: [] as string[], errors: [] as string[] };
       try {
-        const fromDate = new Date(Date.now() - 45 * 86400000).toISOString().slice(0, 10);
+        // 30-day window on SUBMISSION date (Brittany, 2026-08-05): lastupdatedfrom
+        // alone let in old applications whose records were touched recently.
+        const fromDate = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+        const submittedCutoff = new Date(Date.now() - 30 * 86400000).toISOString();
         const [applicants, rentals] = await Promise.all([
           bGetAll(`/applicants?lastupdatedfrom=${fromDate}`) as Promise<Applicant[]>,
           bGetAll("/rentals") as Promise<Rental[]>,
@@ -532,7 +535,10 @@ app.post("*", async (c) => {
         // processed in submission order so ordinals come out right.
         const cands = applicants
           .filter((a) => ["new", "undecided"].includes((a.Status ?? "").toLowerCase()))
-          .filter((a) => (a.Applications ?? []).some((ap) => (ap as { ApplicationSubmittedDateTime?: string }).ApplicationSubmittedDateTime))
+          .filter((a) => (a.Applications ?? []).some((ap) => {
+            const sub = (ap as { ApplicationSubmittedDateTime?: string }).ApplicationSubmittedDateTime;
+            return sub != null && sub >= submittedCutoff;
+          }))
           .filter((a) => a.Id != null && !seen.has(a.Id))
           .filter((a) => propOk(a.PropertyId))
           .sort((x, y) => {
