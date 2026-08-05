@@ -19,7 +19,9 @@ export type Decision = "approved" | "insufficient" | "declined";
 export interface DecideInput {
   decision: Decision;
   option: string;
+  options?: string[]; // insufficient: check-all-that-apply
   text?: string; // counter offer / other detail
+  comment?: string; // manager comment, inserted into the email verbatim
   applicantFirst: string; // greeting name(s), best-effort from task name
   address: string; // property address, best-effort from task name
 }
@@ -36,6 +38,7 @@ export const DECISION_OPTIONS: Record<Decision, { key: string; label: string; ne
     { key: "cosigner", label: "Request co-signer" },
     { key: "docs", label: "Insufficient documentation" },
     { key: "landlord_balance", label: "Balance owed to landlord" },
+    { key: "pet_policy", label: "Pet policy" },
   ],
   declined: [
     { key: "income", label: "Income does not meet minimum" },
@@ -108,6 +111,63 @@ ${SIGNATURE}`,
     body: `${hi}
 
 ${text || "[Manager: enter the message to the applicant]"}
+
+${SIGNATURE}`,
+  };
+}
+
+// Multi-issue insufficient email, modeled on the manager's revised draft
+// (Selena + Kyle task, 2026-08-05): every checked issue is flagged with its
+// own "Resolvable:" line; the manager's comment is inserted verbatim as
+// case-specific detail.
+const INSUFFICIENT_BLOCKS: Record<string, { flag: string; body?: string; resolvable: string }> = {
+  docs: {
+    flag: "Income documentation does not meet our verification standards.",
+    body: `Acceptable documentation:
+    Your last two full months of official paystubs (screenshots of banking apps, self-generated documents, and unsigned letters do not qualify)
+    Or a signed offer letter on company letterhead with HR contact information
+    Or platform earnings statements covering the most recent 60 days for gig or contract work
+    Self-employed or 1099 applicants: previous year's full federal tax return (Form 1040 plus Schedule C, E, F, or K-1s as applicable; business returns 1120, 1120S, 1065 when personal income depends on business profitability)`,
+    resolvable: "Reply with documentation that meets the standard and we will rerun your screening.",
+  },
+  cosigner: {
+    flag: "The application does not meet the income standard for the property on its own.",
+    resolvable: "Add a co-signer who meets the income standard. Reply to this email and we will send the co-signer application link.",
+  },
+  landlord_balance: {
+    flag: "Outstanding balance owed to a prior landlord.",
+    resolvable: "Provide proof the balance is paid or settled, or documentation of an established payment plan in good standing with the previous landlord.",
+  },
+  pet_policy: {
+    flag: "Pet(s) on the application conflict with the advertised pet policy for this property.",
+    resolvable: "Owner exception to the pet policy required; we will request it and follow up. Reply to confirm your pet details (type, weight, count) are accurate.",
+  },
+};
+
+export function insufficientEmailMulti(opts: string[], comment: string, first: string, address: string): { subject: string; body: string } {
+  const blocks = opts.map((k) => INSUFFICIENT_BLOCKS[k]).filter(Boolean);
+  const items = blocks.map((b) =>
+    `    ${b.flag}${b.body ? "\n        " + b.body.split("\n").join("\n        ") : ""}\n        Resolvable: ${b.resolvable}`
+  );
+  if (comment.trim()) {
+    items.push(`    ${comment.trim().split("\n").join("\n    ")}`);
+  }
+  const n = blocks.length;
+  return {
+    subject: n === 1 && opts[0] === "docs"
+      ? "Your Sagareus application: documentation needed"
+      : "Your Sagareus application: items to resolve",
+    body: `Hi ${first},
+
+Thank you for applying for ${address}.
+
+${n === 1 ? "One item must be resolved to complete your screening:" : `${n} items must be resolved to complete your screening:`}
+
+${items.join("\n\n")}
+
+Reply to this email with the documents and we will complete your review right away.
+
+${REVIEW_ORDER_NOTE}
 
 ${SIGNATURE}`,
   };
@@ -210,10 +270,22 @@ export function buildDecision(input: DecideInput): {
   const first = input.applicantFirst || "there";
   const address = input.address || "the property";
   if (input.decision === "approved") {
-    return { headline: opt.label, email: approvedEmail(input.option, first, address, (input.text ?? "").trim()) };
+    const e = approvedEmail(input.option, first, address, (input.text ?? "").trim());
+    if (input.comment?.trim()) e.body = e.body.replace(SIGNATURE, `${input.comment.trim()}
+
+${SIGNATURE}`);
+    return { headline: opt.label, email: e };
   }
   if (input.decision === "insufficient") {
-    return { headline: opt.label, email: insufficientEmail(input.option, first, address) };
+    const keys = (input.options?.length ? input.options : [input.option]).filter((k) => opts.some((o) => o.key === k));
+    const labels = keys.map((k) => opts.find((o) => o.key === k)?.label ?? k).join(" + ");
+    return { headline: labels || opt.label, email: insufficientEmailMulti(keys, input.comment ?? "", first, address) };
   }
-  return { headline: opt.label, email: declineEmail(input.option, first, address) };
+  const e = declineEmail(input.option, first, address);
+  if (input.comment?.trim()) {
+    e.body = e.body.replace(SIGNATURE, `${input.comment.trim()}
+
+${SIGNATURE}`);
+  }
+  return { headline: opt.label, email: e };
 }

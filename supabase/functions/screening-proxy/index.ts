@@ -878,8 +878,11 @@ app.post("*", async (c) => {
       if (!gid) return j(headers, 400, { error: "bad_task_url" });
       const decision = String((body as { decision?: unknown }).decision ?? "") as Decision;
       const option = String((body as { option?: unknown }).option ?? "");
+      const optionsList = (Array.isArray((body as { options?: unknown }).options) ? (body as { options: unknown[] }).options : []).map(String);
       const text = String((body as { text?: unknown }).text ?? "").slice(0, 2000);
+      const mgrComment = String((body as { comment?: unknown }).comment ?? "").slice(0, 3000);
       if (!DECISION_OPTIONS[decision]) return j(headers, 400, { error: "bad_decision" });
+      if (decision === "insufficient" && !optionsList.length && !option) return j(headers, 400, { error: "bad_option", message: "Check at least one item." });
 
       try {
         const task = await asanaCall("GET", `/tasks/${gid}?opt_fields=name,permalink_url`) as { name?: string; permalink_url?: string };
@@ -900,7 +903,7 @@ app.post("*", async (c) => {
         const firsts = names.split(/[+,/]|\band\b/).map((n) => n.trim().split(/\s+/)[0]).filter(Boolean);
         const applicantFirst = firsts.join(" and ");
 
-        const built = buildDecision({ decision, option, text, applicantFirst, address });
+        const built = buildDecision({ decision, option, options: optionsList, text, comment: mgrComment, applicantFirst, address });
 
         const MARY = { gid: "1203402971273034", name: "Mary Galvez" };
         const dueOn = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
