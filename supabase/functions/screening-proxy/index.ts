@@ -455,11 +455,21 @@ app.post("*", async (c) => {
       const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
       if (!gid) return j(headers, 400, { error: "bad_task_url", message: "Paste the full Asana task link." });
 
-      let task: { gid?: string; name?: string; notes?: string; permalink_url?: string };
+      let task: { gid?: string; name?: string; notes?: string; permalink_url?: string; parent?: { gid?: string }; custom_fields?: { name?: string; number_value?: number | null }[] };
       try {
-        task = await asanaCall("GET", `/tasks/${gid}?opt_fields=name,notes,permalink_url`) as typeof task;
+        task = await asanaCall("GET", `/tasks/${gid}?opt_fields=name,notes,permalink_url,parent.gid,custom_fields.name,custom_fields.number_value`) as typeof task;
       } catch {
         return j(headers, 404, { error: "task_not_found", message: "Could not open that Asana task. Check the link." });
+      }
+      // Advertised rent from the LU/TP parent's Starting Price field
+      let advertisedRent = "";
+      if (task.parent?.gid) {
+        try {
+          const p = await asanaCall("GET", `/tasks/${task.parent.gid}?opt_fields=custom_fields.name,custom_fields.display_value`) as { custom_fields?: { name?: string; display_value?: string | null }[] };
+          const f = (p.custom_fields ?? []).find((c) => /starting price/i.test(c.name ?? "")) ??
+            (p.custom_fields ?? []).find((c) => /advertised|asking/i.test(c.name ?? ""));
+          if (f?.display_value) advertisedRent = `$${Number(f.display_value).toLocaleString("en-US")}/month`;
+        } catch { /* not on file */ }
       }
 
       const atts = (await asanaCall("GET", `/tasks/${gid}/attachments?opt_fields=name,download_url,size&limit=50`)
@@ -513,6 +523,37 @@ app.post("*", async (c) => {
           message: `Document reading failed${detail ? ` (${detail})` : ""}. If this mentions pages or size, remove the largest attachment and rerun; otherwise try again in a minute.`,
         });
       }
+      // Move-in date fallback: the Applicant ID field points at the Buildium
+      // group/applicant whose application record carries DesiredMoveInDate.
+      if (!parsed.applicationInfo?.desiredMoveInDate) {
+        const refId = (task.custom_fields ?? []).find((c) => /applicant id/i.test(c.name ?? ""))?.number_value;
+        if (refId != null) {
+          try {
+            let applicantId: number | null = null;
+            try {
+              const grp = await bGet(`/applicants/groups/${refId}`) as { Applicants?: { Id?: number }[] };
+              applicantId = grp.Applicants?.[0]?.Id ?? null;
+            } catch { applicantId = refId; }
+            if (applicantId != null) {
+              const rec = await bGet(`/applicants/${applicantId}`) as Applicant;
+              const appId = (rec.Applications ?? [])[0]?.Id;
+              if (appId != null) {
+                const app = await bGet(`/applicants/${applicantId}/applications/${appId}`) as { Application?: { SectionResponses?: { SectionFields?: { FieldCategoryType?: string | null; Value?: string }[] }[] }[] };
+                for (const sec of app.Application ?? []) {
+                  for (const resp of sec.SectionResponses ?? []) {
+                    for (const f of resp.SectionFields ?? []) {
+                      if (f.FieldCategoryType === "DesiredMoveInDate" && f.Value) {
+                        parsed.applicationInfo = { ...parsed.applicationInfo, desiredMoveInDate: f.Value.slice(0, 10) };
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          } catch { /* stays not-on-application */ }
+        }
+      }
+
       const asOf = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10); // Seattle-ish
       const result = underwrite({ applicants: parsed.applicants, asOf });
 
@@ -526,7 +567,7 @@ app.post("*", async (c) => {
 
       const lastNames = parsed.applicants.map((a) => a.name.split(" ").at(-1) ?? "").join("-").toUpperCase().slice(0, 24);
       const reportId = `SW-${asOf.replace(/-/g, "")}-${lastNames || gid.slice(-6)}`;
-      const report = renderReport(result, parsed, { reportId, date: asOf, integrityFlags });
+      const report = renderReport(result, parsed, { reportId, date: asOf, integrityFlags, advertisedRent });
 
       return j(headers, 200, {
         report, reportId, result,

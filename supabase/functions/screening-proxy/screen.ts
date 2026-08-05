@@ -191,6 +191,10 @@ Return ONLY a JSON object, no markdown fences, matching:
     }
   ],
   "warnings": ["anything you could not read or reconcile"],
+  "applicationInfo": {
+    "desiredMoveInDate": "YYYY-MM-DD from the rental application's move-in date field, or empty",
+    "pets": "pets declared on the rental application: count, type, weight (e.g. '1 dog, 90 lbs'); 'None declared' if the application says none"
+  },
   "integrity": {
     "documentation": { "ok": boolean, "notes": "are the income/credit documents official, complete, legible originals (paystubs, letters, reports) rather than screenshots, self-generated files, or partial captures" },
     "aiImageSigns": { "ok": boolean, "notes": "any visual or textual signs a document was AI-generated, digitally edited, or assembled: inconsistent fonts/kerning, impossible layouts, artifacts, mismatched totals" },
@@ -216,6 +220,7 @@ export interface IntegrityCheck { ok?: boolean; notes?: string }
 export interface ParsedHousehold {
   applicants: HouseholdInput["applicants"];
   warnings: string[];
+  applicationInfo?: { desiredMoveInDate?: string; pets?: string };
   integrity?: {
     documentation?: IntegrityCheck;
     aiImageSigns?: IntegrityCheck;
@@ -287,6 +292,7 @@ export async function parseDocuments(docs: Extracted[], contextText: string): Pr
   if (!Array.isArray(parsed.applicants) || !parsed.applicants.length) throw new Error("parse_no_applicants");
   parsed.warnings = Array.isArray(parsed.warnings) ? parsed.warnings.map(String) : [];
   parsed.integrity = parsed.integrity ?? {};
+  parsed.applicationInfo = parsed.applicationInfo ?? {};
   // Model-derived fraud signals must NEVER feed the automatic-denial path
   // (plan of record: probabilistic detections route to Manager Review; a
   // fraud denial requires a human confirming an objective fact). Missing or
@@ -437,7 +443,7 @@ function criteriaChecklist(result: EngineResult, parsed: ParsedHousehold): strin
 export function renderReport(
   result: EngineResult,
   parsed: ParsedHousehold,
-  opts: { reportId: string; date: string; assistantNotes?: string; integrityFlags?: string[] },
+  opts: { reportId: string; date: string; assistantNotes?: string; integrityFlags?: string[]; advertisedRent?: string },
 ): string {
   const tiers = TIERS.map((t) => ({ meta: t, r: result.tiers[t.key], ...tierLine(result.tiers[t.key]) }));
 
@@ -506,8 +512,13 @@ export function renderReport(
   const mathIncome = result.applicants.map((a) => `${money(a.qualifyingMonthly)} (${a.name})`).join(" + ");
   const mathFico = result.applicants.map((a) => `${a.equifax ?? "n/a"} (${a.name})`).join(", ");
 
+  const info = parsed.applicationInfo ?? {};
   return `**SAGAREUS PROPERTY MANAGEMENT | APPLICANT SCREENING REPORT**
 Completed ${opts.date} | Report ID ${opts.reportId}
+
+- **Desired move-in date:** ${info.desiredMoveInDate || "not on the application"}
+- **Current advertised rent:** ${opts.advertisedRent || "not on file"}
+- **Pets:** ${info.pets || "not stated"}
 
 ## Decisions Needed
 
