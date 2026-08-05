@@ -718,7 +718,7 @@ app.post("*", async (c) => {
               const x = r.name.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
               return `<strong>${x}</strong>\nApplication pending`;
             }).join("\n\n");
-            const notes = `<body><strong>Applicant contact details</strong>\n\n${contactBlock(a)}${pendingLines ? "\n\n" + pendingLines : ""}\n\n<strong>Next steps</strong>\n1. Buildium Applicant Summary: download the applicant's documents and the credit / criminal report, attach them to THIS task\n2. In the Screening Workbench, paste this task's link and Run Screening\n3. Report posts here for manager review\n\nCreated automatically by the intake scanner. Buildium is the system of record for documents.</body>`;
+            const notes = `<body><strong>Applicant contact details</strong>\n\n${contactBlock(a)}${pendingLines ? "\n\n" + pendingLines : ""}\n\nCreated automatically by the intake scanner. Buildium is the system of record for documents.</body>`;
 
             if (!dryRun) {
               // Instantiate from the Application task template so the SOP
