@@ -231,6 +231,37 @@ function matchLu(tasks: Array<{ gid: string; name: string; address: string }>, t
   return { near: cands.slice(0, 3).map((c) => c.address) };
 }
 
+// Fallback LU/TP parent finder: typeahead on street number + name, accept
+// only a SINGLE open LU/TP/PreLease match with no conflicting unit marker.
+// Catches city-label disagreements (Buildium "Tacoma" vs task "Lakewood",
+// 8408 Dalton, 2026-08-05) that the strict token matcher rightly rejects.
+async function findLuByTypeahead(address: string): Promise<{ gid: string; name: string } | null> {
+  const toks = address.split(",")[0].trim().split(/\s+/);
+  if (toks.length < 2 || !/^\d+$/.test(toks[0])) return null;
+  const q = `${toks[0]} ${toks[1]}`;
+  try {
+    const res = await fetch(
+      `${ASANA}/workspaces/${WORKSPACE}/typeahead?resource_type=task&query=${encodeURIComponent(q)}&count=20&opt_fields=name,completed`,
+      { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
+    );
+    const data = ((await res.json()) as { data?: { gid: string; name: string; completed?: boolean }[] }).data ?? [];
+    const targetUnits = new Set(addrTokens(address).filter((t) => t.startsWith("#")));
+    const cands = data.filter((t) => {
+      if (t.completed) return false;
+      if (!/^(LU|TP|PreLease)\s*\|/i.test(t.name)) return false;
+      const nameToks = addrTokens(addressFromTaskName(t.name));
+      if (nameToks[0] !== toks[0]) return false;
+      const taskUnits = new Set(nameToks.filter((x) => x.startsWith("#")));
+      // both sides claim units and they disagree -> wrong unit, reject
+      if (targetUnits.size && taskUnits.size && ![...targetUnits].some((u) => taskUnits.has(u))) return false;
+      return true;
+    });
+    return cands.length === 1 ? { gid: cands[0].gid, name: cands[0].name } : null;
+  } catch {
+    return null;
+  }
+}
+
 // Find the household's Asana application task. The SOP template names tasks
 // "Application // <names>" (older ones "<Application> // <names>") in the
 // Leasing project, so typeahead on the applicant's name and keep tasks whose
@@ -698,10 +729,11 @@ app.post("*", async (c) => {
             let ordinal = "";
             if (address) {
               const lu = matchLu(await openLuTasks(), address);
-              if (lu.hit) {
-                luHit = lu.hit;
+              if (lu.hit) luHit = lu.hit;
+              else luHit = await findLuByTypeahead(address);
+              if (luHit) {
                 try {
-                  const subs = await asanaCall("GET", `/tasks/${lu.hit.gid}/subtasks?limit=100&opt_fields=name`) as { name?: string }[];
+                  const subs = await asanaCall("GET", `/tasks/${luHit.gid}/subtasks?limit=100&opt_fields=name`) as { name?: string }[];
                   const prior = (subs ?? []).filter((t) => /application/i.test(t.name ?? "") && !/roommate addendum/i.test(t.name ?? "")).length;
                   const n = prior + 1;
                   if (n > 1) {
