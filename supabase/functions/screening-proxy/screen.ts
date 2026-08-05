@@ -421,7 +421,6 @@ function criteriaChecklist(result: EngineResult, parsed: ParsedHousehold): strin
   ic("AI image / document tampering signs", integ.aiImageSigns, "no signs of AI-generated or digitally edited documents observed");
   ic("Employer address validation", integ.employerAddress, "employer details consistent across documents");
   ic("Previous address validation", integ.previousAddress, "address history consistent between application and credit report");
-  mark("INFO", "Scope: document-level checks read from the papers themselves. External verification (USPS address lookup, county ownership records, employer registry) is not yet wired; treat REVIEW items as verify-by-hand.");
 
   lines.push("");
   lines.push("**PROCESS**");
