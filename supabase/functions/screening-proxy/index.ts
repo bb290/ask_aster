@@ -523,34 +523,46 @@ app.post("*", async (c) => {
           message: `Document reading failed${detail ? ` (${detail})` : ""}. If this mentions pages or size, remove the largest attachment and rerun; otherwise try again in a minute.`,
         });
       }
-      // Move-in date fallback: the Applicant ID field points at the Buildium
-      // group/applicant whose application record carries DesiredMoveInDate.
-      if (!parsed.applicationInfo?.desiredMoveInDate) {
+      // Buildium application record is the deterministic source for the
+      // snapshot: DesiredMoveInDate and the Animals / Mascotas section beat
+      // model reads of the PDFs (pets flip-flopped between runs otherwise).
+      // The task's Applicant ID field points at the group/applicant.
+      {
         const refId = (task.custom_fields ?? []).find((c) => /applicant id/i.test(c.name ?? ""))?.number_value;
         if (refId != null) {
           try {
-            let applicantId: number | null = null;
+            let memberIds: number[] = [];
             try {
               const grp = await bGet(`/applicants/groups/${refId}`) as { Applicants?: { Id?: number }[] };
-              applicantId = grp.Applicants?.[0]?.Id ?? null;
-            } catch { applicantId = refId; }
-            if (applicantId != null) {
+              memberIds = (grp.Applicants ?? []).map((m) => m.Id).filter((x): x is number => x != null);
+            } catch { memberIds = [refId]; }
+            const petParts: string[] = [];
+            for (const applicantId of memberIds.slice(0, 6)) {
               const rec = await bGet(`/applicants/${applicantId}`) as Applicant;
               const appId = (rec.Applications ?? [])[0]?.Id;
-              if (appId != null) {
-                const app = await bGet(`/applicants/${applicantId}/applications/${appId}`) as { Application?: { SectionResponses?: { SectionFields?: { FieldCategoryType?: string | null; Value?: string }[] }[] }[] };
-                for (const sec of app.Application ?? []) {
-                  for (const resp of sec.SectionResponses ?? []) {
-                    for (const f of resp.SectionFields ?? []) {
-                      if (f.FieldCategoryType === "DesiredMoveInDate" && f.Value) {
-                        parsed.applicationInfo = { ...parsed.applicationInfo, desiredMoveInDate: f.Value.slice(0, 10) };
-                      }
+              if (appId == null) continue;
+              const app = await bGet(`/applicants/${applicantId}/applications/${appId}`) as { Application?: { SectionLabel?: string; SectionResponses?: { SectionFields?: { FieldCategoryType?: string | null; FieldLabel?: string; Value?: string }[] }[] }[] };
+              for (const sec of app.Application ?? []) {
+                const isAnimals = /^animals/i.test(sec.SectionLabel ?? "");
+                for (const resp of sec.SectionResponses ?? []) {
+                  for (const f of resp.SectionFields ?? []) {
+                    if (f.FieldCategoryType === "DesiredMoveInDate" && f.Value && !parsed.applicationInfo?.desiredMoveInDate) {
+                      parsed.applicationInfo = { ...parsed.applicationInfo, desiredMoveInDate: f.Value.slice(0, 10) };
+                    }
+                    if (isAnimals && f.Value && f.Value.trim() && !/^(yes|no|none|true|false|0)$/i.test(f.Value.trim())) {
+                      const v = f.Value.trim();
+                      petParts.push(/^\d{1,3}$/.test(v) ? `${v} lbs` : v);
                     }
                   }
                 }
               }
             }
-          } catch { /* stays not-on-application */ }
+            if (petParts.length) {
+              parsed.applicationInfo = { ...parsed.applicationInfo, pets: petParts.join(", ") };
+            } else if (memberIds.length) {
+              parsed.applicationInfo = { ...parsed.applicationInfo, pets: parsed.applicationInfo?.pets || "None declared on the application" };
+            }
+          } catch { /* model values stand */ }
         }
       }
 
@@ -925,8 +937,9 @@ app.post("*", async (c) => {
       if (!DECISION_OPTIONS[decision]) return j(headers, 400, { error: "bad_decision" });
       if (decision === "insufficient" && !optionsList.length && !option) return j(headers, 400, { error: "bad_option", message: "Check at least one item." });
 
+      const previewOnly = (body as { previewOnly?: unknown }).previewOnly === true;
       try {
-        const task = await asanaCall("GET", `/tasks/${gid}?opt_fields=name,permalink_url`) as { name?: string; permalink_url?: string };
+        const task = await asanaCall("GET", `/tasks/${gid}?opt_fields=name,permalink_url,notes,custom_fields.name,custom_fields.number_value`) as { name?: string; permalink_url?: string; notes?: string; custom_fields?: { name?: string; number_value?: number | null }[] };
         // Names/address, best-effort from the task title conventions:
         //   "Pending Mgr Review | [Nth ]Application / Names / Address"
         //   "[prefix ]Application <Address - unit // Names>"
@@ -945,6 +958,30 @@ app.post("*", async (c) => {
         const applicantFirst = firsts.join(" and ");
 
         const built = buildDecision({ decision, option, options: optionsList, text, comment: mgrComment, applicantFirst, address });
+
+        // Recipients: Buildium group members via the Applicant ID field,
+        // falling back to emails in the task description.
+        let toEmails: string[] = [];
+        const refId = (task.custom_fields ?? []).find((c) => /applicant id/i.test(c.name ?? ""))?.number_value;
+        if (refId != null) {
+          try {
+            const grp = await bGet(`/applicants/groups/${refId}`) as { Applicants?: { Email?: string }[] };
+            toEmails = (grp.Applicants ?? []).map((m) => m.Email ?? "").filter(Boolean);
+          } catch {
+            try {
+              const rec = await bGet(`/applicants/${refId}`) as Applicant;
+              if (rec.Email) toEmails = [rec.Email];
+            } catch { /* fall through */ }
+          }
+        }
+        if (!toEmails.length) {
+          toEmails = [...new Set((task.notes ?? "").match(/[\w.+-]+@[\w-]+\.[\w.]+/g) ?? [])].slice(0, 6);
+        }
+        const emailOut = { subject: built.email.subject, body: built.email.body, to: toEmails, cc: "leasing@sagareus.com" };
+
+        if (previewOnly) {
+          return j(headers, 200, { preview: true, headline: built.headline, email: emailOut });
+        }
 
         const MARY = { gid: "1203402971273034", name: "Mary Galvez" };
         const dueOn = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
@@ -972,6 +1009,7 @@ ${built.email.body}`;
           decided: true, headline: built.headline,
           assignee: MARY.name, due: dueOn,
           moved, section: destName,
+          email: emailOut,
           task: { name: task.name ?? "", url: task.permalink_url ?? taskUrl },
         });
       } catch (e) {
