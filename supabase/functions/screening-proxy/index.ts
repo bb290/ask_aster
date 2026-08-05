@@ -619,7 +619,7 @@ app.post("*", async (c) => {
                   if (cur.name?.startsWith("WAITING ON ADD'L APPS ")) {
                     await asanaCall("PUT", `/tasks/${h.task_gid}`, { name: cur.name.replace(/^WAITING ON ADD'L APPS /, "") });
                   }
-                  await asanaCall("POST", `/tasks/${h.task_gid}/stories`, { text: "All applications in. Ready to screen." });
+                  await asanaCall("POST", `/tasks/${h.task_gid}/stories`, { text: "All applications submitted." });
                 }
                 await ledgerUpdateHousehold(h.id, { roster, complete });
                 await ledgerInsertApplicant(a.Id!, h.id);
