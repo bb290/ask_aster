@@ -23,6 +23,7 @@
 import { Hono } from "hono";
 import { underwrite, type HouseholdInput } from "./engine.ts";
 import { imageAsExtracted, isPriorUnderwritingDoc, isRestrictedDoc, mdToAsanaHtml, parseDocuments, pdfAsExtracted, renderReport, type Extracted } from "./screen.ts";
+import { buildDecision, DECISION_OPTIONS, type Decision } from "./decide.ts";
 
 const B_ID = Deno.env.get("BUILDIUM_SCREENING_CLIENT_ID") ?? "";
 const B_SECRET = Deno.env.get("BUILDIUM_SCREENING_CLIENT_SECRET") ?? "";
@@ -483,6 +484,89 @@ app.post("*", async (c) => {
         files: { read: readable.map((d) => d.name), skipped, failed: failures },
         task: { gid, name: task.name ?? "", url: task.permalink_url ?? taskUrl },
       });
+    }
+
+    // ---------- mgrQueue: open tasks awaiting manager review ----------
+    // Tasks the submit step retitled "Pending Mgr Review | ...", read from
+    // Human View's Pending Applications section (the convention every
+    // application task follows).
+    if (action === "mgrQueue") {
+      try {
+        const out: { name: string; url: string; due: string }[] = [];
+        let offset = "";
+        for (let page = 0; page < 5; page++) {
+          const res = await fetch(
+            `${ASANA}/sections/${PENDING_APPLICATIONS_SECTION}/tasks?completed=false&limit=100&opt_fields=name,permalink_url,due_on${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+            { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
+          );
+          const json = await res.json().catch(() => ({})) as { data?: { name?: string; permalink_url?: string; due_on?: string }[]; next_page?: { offset?: string } | null };
+          if (!res.ok) throw new Error(`asana section page ${page}`);
+          for (const t of json.data ?? []) {
+            if (/^Pending Mgr Review/i.test(t.name ?? "")) {
+              out.push({ name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "" });
+            }
+          }
+          offset = json.next_page?.offset ?? "";
+          if (!offset) break;
+        }
+        return j(headers, 200, { queue: out });
+      } catch (e) {
+        console.error("mgrQueue failed:", e);
+        return j(headers, 502, { error: "asana_failed", message: "Could not load the review queue. Try again in a minute." });
+      }
+    }
+
+    // ---------- decide: manager decision -> comment with email draft, assign Mary, due today ----------
+    if (action === "decide") {
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid) return j(headers, 400, { error: "bad_task_url" });
+      const decision = String((body as { decision?: unknown }).decision ?? "") as Decision;
+      const option = String((body as { option?: unknown }).option ?? "");
+      const text = String((body as { text?: unknown }).text ?? "").slice(0, 2000);
+      if (!DECISION_OPTIONS[decision]) return j(headers, 400, { error: "bad_decision" });
+
+      try {
+        const task = await asanaCall("GET", `/tasks/${gid}?opt_fields=name,permalink_url`) as { name?: string; permalink_url?: string };
+        // Names/address, best-effort from the task title conventions:
+        //   "Pending Mgr Review | [Nth ]Application / Names / Address"
+        //   "[prefix ]Application <Address - unit // Names>"
+        const raw = (task.name ?? "").replace(/^Pending Mgr Review \|\s*/i, "");
+        let names = "", address = "";
+        const slash = raw.match(/Application \/ (.+?) \/ (.+)$/i);
+        const angle = raw.match(/<([^>]+)>?/);
+        if (slash) { names = slash[1]; address = slash[2]; }
+        else if (angle) {
+          const inner = angle[1];
+          const parts = inner.split("//");
+          address = (parts[0] ?? "").split(" - ")[0].trim();
+          names = (parts[1] ?? "").trim();
+        }
+        const firsts = names.split(/[+,/]|\band\b/).map((n) => n.trim().split(/\s+/)[0]).filter(Boolean);
+        const applicantFirst = firsts.join(" and ");
+
+        const built = buildDecision({ decision, option, text, applicantFirst, address });
+
+        const MARY = { gid: "1203402971273034", name: "Mary Galvez" };
+        const dueOn = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+        const comment = `MANAGER DECISION: ${built.headline}
+Assigned to ${MARY.name}, due ${dueOn}. Send the email below from leasing@sagareus.com (draft only; review before sending).
+
+EMAIL DRAFT
+Subject: ${built.email.subject}
+
+${built.email.body}`;
+        await asanaCall("POST", `/tasks/${gid}/stories`, { text: comment });
+        await asanaCall("PUT", `/tasks/${gid}`, { assignee: MARY.gid, due_on: dueOn });
+        return j(headers, 200, {
+          decided: true, headline: built.headline,
+          assignee: MARY.name, due: dueOn,
+          task: { name: task.name ?? "", url: task.permalink_url ?? taskUrl },
+        });
+      } catch (e) {
+        console.error("decide failed:", e);
+        return j(headers, 502, { error: "decide_failed", message: "Asana did not accept the update. Check the task before retrying; the comment may or may not have posted." });
+      }
     }
 
     // ---------- submitReport: post the (possibly edited) report + route for review ----------
