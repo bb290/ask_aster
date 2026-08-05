@@ -33,6 +33,8 @@ const WORKSPACE = "706990140225747";
 const LEASING_LU_PROJECT = "1213171756304238"; // Leasing | LU (same as site-visit-proxy)
 const LEASING_HUMAN_VIEW = "1208297375044026"; // Leasing | Human View: where application tasks are homed
 const PENDING_APPLICATIONS_SECTION = "1208297375044039"; // its "Pending Applications" section (per Roommate / Sublet SOP)
+const PENDING_APPS_PROJECT = "1217174650640596"; // Leasing | Pending Applications (stage lens, 2026-08-04)
+const PENDING_MGR_SECTION = "1217174694944319"; // its "Pending Mgr" section: the mgrQueue source of truth
 const ASANA = "https://app.asana.com/api/1.0";
 const BUILDIUM = "https://api.buildium.com/v1";
 const BH = { "x-buildium-client-id": B_ID, "x-buildium-client-secret": B_SECRET };
@@ -492,23 +494,33 @@ app.post("*", async (c) => {
     // application task follows).
     if (action === "mgrQueue") {
       try {
+        // Primary: whatever sits in Leasing | Pending Applications -> Pending
+        // Mgr (staff drag tasks there; the section IS the stage). Union with
+        // title-prefix matches from Human View's section, for tasks Step 3
+        // retitled that nobody has dragged yet. Deduped by task gid.
+        const seen = new Set<string>();
         const out: { name: string; url: string; due: string }[] = [];
-        let offset = "";
-        for (let page = 0; page < 5; page++) {
-          const res = await fetch(
-            `${ASANA}/sections/${PENDING_APPLICATIONS_SECTION}/tasks?completed=false&limit=100&opt_fields=name,permalink_url,due_on${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
-            { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
-          );
-          const json = await res.json().catch(() => ({})) as { data?: { name?: string; permalink_url?: string; due_on?: string }[]; next_page?: { offset?: string } | null };
-          if (!res.ok) throw new Error(`asana section page ${page}`);
-          for (const t of json.data ?? []) {
-            if (/^Pending Mgr Review/i.test(t.name ?? "")) {
-              out.push({ name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "" });
+        const collect = async (path: string, filter: (name: string) => boolean) => {
+          let offset = "";
+          for (let page = 0; page < 5; page++) {
+            const res = await fetch(
+              `${ASANA}${path}?completed=false&limit=100&opt_fields=name,permalink_url,due_on${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+              { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
+            );
+            const json = await res.json().catch(() => ({})) as { data?: { gid?: string; name?: string; permalink_url?: string; due_on?: string }[]; next_page?: { offset?: string } | null };
+            if (!res.ok) throw new Error(`asana ${path} page ${page}`);
+            for (const t of json.data ?? []) {
+              if (t.gid && !seen.has(t.gid) && filter(t.name ?? "")) {
+                seen.add(t.gid);
+                out.push({ name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "" });
+              }
             }
+            offset = json.next_page?.offset ?? "";
+            if (!offset) break;
           }
-          offset = json.next_page?.offset ?? "";
-          if (!offset) break;
-        }
+        };
+        await collect(`/sections/${PENDING_MGR_SECTION}/tasks`, () => true);
+        await collect(`/sections/${PENDING_APPLICATIONS_SECTION}/tasks`, (n) => /^Pending Mgr Review/i.test(n));
         return j(headers, 200, { queue: out });
       } catch (e) {
         console.error("mgrQueue failed:", e);
