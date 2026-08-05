@@ -35,6 +35,14 @@ const LEASING_HUMAN_VIEW = "1208297375044026"; // Leasing | Human View: where ap
 const PENDING_APPLICATIONS_SECTION = "1208297375044039"; // its "Pending Applications" section (per Roommate / Sublet SOP)
 const PENDING_APPS_PROJECT = "1217174650640596"; // Leasing | Pending Applications (stage lens, 2026-08-04)
 const PENDING_MGR_SECTION = "1217174694944319"; // its "Pending Mgr" section: the mgrQueue source of truth
+// Decision -> destination section in Leasing | Pending Applications:
+//   approved as-is / negotiate / owner-exception / other -> Approved
+//   approved pending Section 8                            -> Pending Docs / Co-Signer / Sec 8
+//   insufficient (all options)                            -> Pending Docs / Co-Signer / Sec 8
+//   declined (all options)                                -> Complete
+const SEC_APPROVED = "1217174603997588";
+const SEC_PENDING_DOCS = "1217174650703534";
+const SEC_COMPLETE = "1217174603984367";
 const ASANA = "https://app.asana.com/api/1.0";
 const BUILDIUM = "https://api.buildium.com/v1";
 const BH = { "x-buildium-client-id": B_ID, "x-buildium-client-secret": B_SECRET };
@@ -570,9 +578,21 @@ Subject: ${built.email.subject}
 ${built.email.body}`;
         await asanaCall("POST", `/tasks/${gid}/stories`, { text: comment });
         await asanaCall("PUT", `/tasks/${gid}`, { assignee: MARY.gid, due_on: dueOn });
+        // Move to the matching stage section (addProject moves within the
+        // project when already homed, and homes the task when not).
+        const destSection = decision === "declined" ? SEC_COMPLETE
+          : decision === "insufficient" ? SEC_PENDING_DOCS
+          : option === "section8" ? SEC_PENDING_DOCS
+          : SEC_APPROVED;
+        let moved = true;
+        try {
+          await asanaCall("POST", `/tasks/${gid}/addProject`, { project: PENDING_APPS_PROJECT, section: destSection });
+        } catch { moved = false; }
+        const destName = destSection === SEC_COMPLETE ? "Complete" : destSection === SEC_PENDING_DOCS ? "Pending Docs / Co-Signer / Sec 8" : "Approved";
         return j(headers, 200, {
           decided: true, headline: built.headline,
           assignee: MARY.name, due: dueOn,
+          moved, section: destName,
           task: { name: task.name ?? "", url: task.permalink_url ?? taskUrl },
         });
       } catch (e) {
