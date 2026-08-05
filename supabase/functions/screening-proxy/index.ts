@@ -554,6 +554,31 @@ app.post("*", async (c) => {
           }
         };
 
+        // On attach, the description's "Application pending" line for this
+        // adult becomes their full contact block (Brittany, 2026-08-05);
+        // falls back to appending before Next steps if staff edited the text.
+        const updateDescriptionForAttach = async (taskGid: string, declaredName: string | null, contactHtml: string) => {
+          const cur = await asanaCall("GET", `/tasks/${taskGid}?opt_fields=html_notes`) as { html_notes?: string };
+          let bodyHtml = cur.html_notes ?? "<body></body>";
+          const x = (v: string) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+          let replaced = false;
+          if (declaredName) {
+            const pat = `<strong>${x(declaredName)}</strong>\nApplication pending`;
+            if (bodyHtml.includes(pat)) {
+              bodyHtml = bodyHtml.replace(pat, contactHtml);
+              replaced = true;
+            }
+          }
+          if (!replaced) {
+            if (bodyHtml.includes("<strong>Next steps</strong>")) {
+              bodyHtml = bodyHtml.replace("<strong>Next steps</strong>", `${contactHtml}\n\n<strong>Next steps</strong>`);
+            } else {
+              bodyHtml = bodyHtml.replace("</body>", `\n\n${contactHtml}</body>`);
+            }
+          }
+          await asanaCall("PUT", `/tasks/${taskGid}`, { html_notes: bodyHtml });
+        };
+
         const contactBlock = (a: Applicant) => {
           const phones = (a.PhoneNumbers ?? []).map((p) => p.Number ?? "").filter(Boolean).join(", ");
           const x = (v: string) => v.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -577,6 +602,7 @@ app.post("*", async (c) => {
               const iDeclareThem = h.roster.some((r) => declaredNames.some((n) => namesMatch(n, r.name)));
               if (!rosterHasMe && !iDeclareThem) continue;
               attached = true;
+              const matchedDeclared = h.roster.find((r) => !r.submitted && namesMatch(r.name, self))?.name ?? null;
               const roster = h.roster.map((r) => namesMatch(r.name, self)
                 ? { ...r, submitted: true, applicantId: a.Id, email: a.Email, phone: (a.PhoneNumbers ?? [])[0]?.Number }
                 : r);
@@ -586,6 +612,7 @@ app.post("*", async (c) => {
               const complete = roster.every((r) => r.submitted);
               const done = roster.filter((r) => r.submitted).length;
               if (!dryRun) {
+                await updateDescriptionForAttach(h.task_gid, matchedDeclared, contactBlock(a)).catch(() => {});
                 await asanaCall("POST", `/tasks/${h.task_gid}/stories`, { html_text: `<body>${contactBlock(a)}\n\nApplication received (${done} of ${roster.length}).</body>` });
                 if (complete) {
                   const cur = await asanaCall("GET", `/tasks/${h.task_gid}?opt_fields=name`) as { name?: string };
