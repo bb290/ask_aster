@@ -829,6 +829,8 @@ app.post("*", async (c) => {
               // home in both boards
               await asanaCall("POST", `/tasks/${made.gid}/addProject`, { project: LEASING_HUMAN_VIEW, section: PENDING_APPLICATIONS_SECTION }).catch(() => {});
               await asanaCall("POST", `/tasks/${made.gid}/addProject`, { project: PENDING_APPS_PROJECT, section: "1217174650640615" }).catch(() => {});
+              // Incoming application tasks belong to Mary (Brittany, 2026-08-07)
+              await asanaCall("PUT", `/tasks/${made.gid}`, { assignee: "1203402971273034" }).catch(() => {});
               // Buildium group makes the household authoritative in Buildium;
               // the Applicant ID field stores the group id (solo households
               // fall back to the applicant id if a 1-member group is refused).
@@ -881,6 +883,101 @@ app.post("*", async (c) => {
       } catch (e) {
         console.error("intake failed:", e);
         return j(headers, 502, { error: "intake_failed", message: String((e as Error).message).slice(0, 200), partial: summary });
+      }
+    }
+
+    // ---------- newQueue: intake tasks awaiting docs / screening ----------
+    if (action === "newQueue") {
+      try {
+        const out: { name: string; url: string; due: string }[] = [];
+        let offset = "";
+        for (let page = 0; page < 5; page++) {
+          const res = await fetch(
+            `${ASANA}/sections/1217174650640615/tasks?completed=false&limit=100&opt_fields=name,permalink_url,due_on${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+            { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
+          );
+          const json = await res.json().catch(() => ({})) as { data?: { name?: string; permalink_url?: string; due_on?: string }[]; next_page?: { offset?: string } | null };
+          if (!res.ok) throw new Error(`asana new-section page ${page}`);
+          for (const t of json.data ?? []) out.push({ name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "" });
+          offset = json.next_page?.offset ?? "";
+          if (!offset) break;
+        }
+        return j(headers, 200, { queue: out });
+      } catch (e) {
+        console.error("newQueue failed:", e);
+        return j(headers, 502, { error: "asana_failed", message: "Could not load new applications. Try again in a minute." });
+      }
+    }
+
+    // ---------- requestDocs: Mary's income-documentation chase ----------
+    // Same shape as decide: previewOnly builds the email; the real call posts
+    // the draft to the task and pushes the due date to tomorrow. Gmail send is
+    // the human's click, from the widget.
+    if (action === "requestDocs") {
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid) return j(headers, 400, { error: "bad_task_url" });
+      const previewOnly = (body as { previewOnly?: unknown }).previewOnly === true;
+      try {
+        const task = await asanaCall("GET", `/tasks/${gid}?opt_fields=name,permalink_url,notes,custom_fields.name,custom_fields.number_value`) as { name?: string; permalink_url?: string; notes?: string; custom_fields?: { name?: string; number_value?: number | null }[] };
+        const raw = (task.name ?? "").replace(/^(WAITING ON ADD'L APPS |Pending Mgr Review \|\s*)/i, "");
+        let names = "", address = "";
+        const slash = raw.match(/Application \/ (.+?) \/ (.+)$/i);
+        const angle = raw.match(/<([^>]+)>?/);
+        if (slash) { names = slash[1]; address = slash[2]; }
+        else if (angle) {
+          const inner = angle[1].split("//");
+          address = (inner[0] ?? "").split(" - ")[0].trim();
+          names = (inner[1] ?? "").trim();
+        }
+        const firsts = names.split(/[+,/]|\band\b/).map((n) => n.trim().split(/\s+/)[0]).filter(Boolean);
+        const first = firsts.join(" and ") || "there";
+
+        let toEmails: string[] = [];
+        const refId = (task.custom_fields ?? []).find((c) => /applicant id/i.test(c.name ?? ""))?.number_value;
+        if (refId != null) {
+          try {
+            const grp = await bGet(`/applicants/groups/${refId}`) as { Applicants?: { Email?: string }[] };
+            toEmails = (grp.Applicants ?? []).map((m) => m.Email ?? "").filter(Boolean);
+          } catch {
+            try {
+              const rec = await bGet(`/applicants/${refId}`) as Applicant;
+              if (rec.Email) toEmails = [rec.Email];
+            } catch { /* fall through */ }
+          }
+        }
+        if (!toEmails.length) toEmails = [...new Set((task.notes ?? "").match(/[\w.+-]+@[\w-]+\.[\w.]+/g) ?? [])].slice(0, 6);
+
+        const emailBody = `Hi ${first},
+
+Thank you for submitting your application for ${address || "the property"}! We have received it and we are still pending your income documentation to begin the review.
+
+Acceptable income documentation:
+    Your last two full months of official paystubs (screenshots of banking apps, self-generated documents, and unsigned letters do not qualify)
+    Or a signed offer letter on company letterhead with HR contact information
+    Or platform earnings statements covering the most recent 60 days for gig or contract work
+    Self-employed or 1099 applicants: previous year's full federal tax return (Form 1040 plus Schedule C, E, F, or K-1s as applicable; business returns 1120, 1120S, 1065 when personal income depends on business profitability)
+    Housing voucher holders: your official voucher award letter
+
+Reply to this email with the documents and we will start your review right away.
+
+Applications are reviewed in the order they are completed, so a quick reply keeps your place in line.
+
+Best regards,
+Sagareus Leasing Support Team
+leasing@sagareus.com
+Call/Text: 425-390-8122`;
+        const emailOut = { subject: "Your Sagareus application: income documentation needed", body: emailBody, to: toEmails, cc: "leasing@sagareus.com" };
+
+        if (previewOnly) return j(headers, 200, { preview: true, email: emailOut });
+
+        const tomorrow = new Date(Date.now() - 7 * 3600 * 1000 + 86400000).toISOString().slice(0, 10);
+        await asanaCall("POST", `/tasks/${gid}/stories`, { text: `INCOME DOCS REQUESTED\nSend the email below from leasing@sagareus.com (draft only; review before sending).\n\nEMAIL DRAFT\nSubject: ${emailOut.subject}\n\n${emailBody}` });
+        await asanaCall("PUT", `/tasks/${gid}`, { due_on: tomorrow });
+        return j(headers, 200, { requested: true, due: tomorrow, email: emailOut, task: { name: task.name ?? "", url: task.permalink_url ?? taskUrl } });
+      } catch (e) {
+        console.error("requestDocs failed:", e);
+        return j(headers, 502, { error: "request_failed", message: "Asana did not accept the update. Check the task before retrying." });
       }
     }
 
