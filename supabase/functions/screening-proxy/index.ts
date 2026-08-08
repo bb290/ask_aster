@@ -872,7 +872,7 @@ app.post("*", async (c) => {
               const x = r.name.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
               return `<strong>${x}</strong>\nApplication pending`;
             }).join("\n\n");
-            const notes = `<body><strong>Applicant contact details</strong>\n\n${contactBlock(a)}${pendingLines ? "\n\n" + pendingLines : ""}\n\nCreated automatically by the intake scanner. Buildium is the system of record for documents.</body>`;
+            const notes = `<body><strong>Applicant contact details</strong>\n\n${contactBlock(a)}${pendingLines ? "\n\n" + pendingLines : ""}\n\nCreated automatically by the intake scanner.</body>`;
 
             if (!dryRun) {
               // Instantiate from the Application task template so the SOP
