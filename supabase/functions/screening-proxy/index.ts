@@ -62,8 +62,53 @@ const STATUS = {
   exceptionPet: "1217294173155633",
   declined: "1217294173155636",
 } as const;
+const STATUS_NAME: Record<string, string> = {
+  [STATUS.pendingShowing]: "Pending Showing",
+  [STATUS.pendingApps]: "Pending App(s)",
+  [STATUS.pendingIncomeDocs]: "Pending Income Docs",
+  [STATUS.complete]: "Complete",
+  [STATUS.pendingEnhanced]: "Pending Enhanced Review",
+  [STATUS.pendingMgr]: "Pending Mgr Review",
+  [STATUS.condSec8]: "Conditionally Approved - Pending Sec 8",
+  [STATUS.condOwnerException]: "Conditionally Approved - Pending Owner Policy exception",
+  [STATUS.approvedLeaseSent]: "Approved - Lease Sent",
+  [STATUS.leaseSigned]: "Lease Signed",
+  [STATUS.pendingCosigner]: "Pending - Co-Signer",
+  [STATUS.pendingAddlDocs]: "Pending - Add'l Income Docs",
+  [STATUS.pendingLandlordBalance]: "Pending - Balanced Owed to Landlord",
+  [STATUS.exceptionPet]: "Exception: Pet Policy",
+  [STATUS.declined]: "Declined",
+};
+// Every status name plus every legacy prefix the automation or staff ever used
+const PREFIX_TOKENS = [
+  ...Object.values(STATUS_NAME),
+  "WAITING ON ADD'L APPS", "Pending Mgr Review", "ADDITIONAL DOCS NEEDED",
+  "APPROVED", "REJECTED", "DECLINED", "LEASE SENT", "CO-SIGNER NEEDED",
+  "PENDING SEC 8", "Additional Docs Needed",
+].sort((a, b) => b.length - a.length);
+export function stripStatusPrefix(name: string): string {
+  let out = name.trim();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const tok of PREFIX_TOKENS) {
+      const re = new RegExp(`^${tok.replace(/[.*+?^$()|[\]\\]/g, "\\$&")}\\s*(\\||\/\/)?\\s*`, "i");
+      if (re.test(out)) { out = out.replace(re, ""); changed = true; }
+    }
+  }
+  return out.trim();
+}
+// Sets the Status field AND rewrites the title prefix to match it: the
+// prefix IS the status list, uppercased, pipe-joined (Brittany, 2026-08-08).
 async function setStatus_(gid: string, optionGids: string[]) {
   await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: { [STATUS_FIELD]: optionGids } }).catch(() => {});
+  try {
+    const cur = await asanaCall("GET", `/tasks/${gid}?opt_fields=name`) as { name?: string };
+    const bare = stripStatusPrefix(cur.name ?? "");
+    const prefix = optionGids.map((g) => (STATUS_NAME[g] ?? "").toUpperCase()).filter(Boolean).join(" | ");
+    const wanted = prefix ? `${prefix} | ${bare}` : bare;
+    if (bare && wanted !== cur.name) await asanaCall("PUT", `/tasks/${gid}`, { name: wanted });
+  } catch { /* prefix sync is best-effort */ }
 }
 // Decision -> destination section in Leasing | Pending Applications:
 //   approved as-is / negotiate / owner-exception / other -> Approved
@@ -745,18 +790,18 @@ app.post("*", async (c) => {
                 // completeness (title segments: head / names / address).
                 try {
                   const cur = await asanaCall("GET", `/tasks/${h.task_gid}?opt_fields=name`) as { name?: string };
-                  const parts = (cur.name ?? "").split(" / ");
+                  const bareCur = stripStatusPrefix(cur.name ?? "");
+                  const parts = bareCur.split(" / ");
                   if (parts.length >= 3) {
-                    const head = parts[0].replace(/^WAITING ON ADD'L APPS /, "");
                     const names = roster.map((r) => initialName(r.name)).join(" + ");
-                    const rebuilt = `${complete ? "" : "WAITING ON ADD'L APPS "}${head} / ${names} / ${parts.slice(2).join(" / ")}`;
+                    const rebuilt = `${parts[0]} / ${names} / ${parts.slice(2).join(" / ")}`;
                     if (rebuilt !== cur.name) await asanaCall("PUT", `/tasks/${h.task_gid}`, { name: rebuilt });
                   }
                 } catch { /* name rebuild is best-effort */ }
                 if (complete) {
                   await asanaCall("POST", `/tasks/${h.task_gid}/stories`, { text: "All applications submitted." });
-                  await setStatus_(h.task_gid, [STATUS.pendingIncomeDocs]);
                 }
+                await setStatus_(h.task_gid, [complete ? STATUS.pendingIncomeDocs : STATUS.pendingApps]);
                 await ledgerUpdateHousehold(h.id, { roster, complete });
                 await ledgerInsertApplicant(a.Id!, h.id);
                 await flipUndecided(a);
@@ -822,7 +867,7 @@ app.post("*", async (c) => {
             }
 
             const displayNames = roster.map((r) => initialName(r.name)).join(" + ");
-            const taskName = `${waiting ? "WAITING ON ADD'L APPS " : ""}${ordinal}Application / ${displayNames} / ${titleAddress}`;
+            const taskName = `${ordinal}Application / ${displayNames} / ${titleAddress}`;
             const pendingLines = roster.filter((r) => !r.submitted).map((r) => {
               const x = r.name.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
               return `<strong>${x}</strong>\nApplication pending`;
@@ -918,13 +963,13 @@ app.post("*", async (c) => {
         let offset = "";
         for (let page = 0; page < 5; page++) {
           const res = await fetch(
-            `${ASANA}/sections/1217174650640615/tasks?completed=false&limit=100&opt_fields=name,permalink_url,due_on,custom_fields.gid,custom_fields.multi_enum_values.name${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+            `${ASANA}/sections/1217174650640615/tasks?completed=false&limit=100&opt_fields=name,permalink_url,due_on,custom_fields.gid,custom_fields.multi_enum_values.name,custom_fields.multi_enum_values.color${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
             { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
           );
           const json = await res.json().catch(() => ({})) as { data?: { name?: string; permalink_url?: string; due_on?: string; custom_fields?: { gid?: string; multi_enum_values?: { name?: string }[] }[] }[]; next_page?: { offset?: string } | null };
           if (!res.ok) throw new Error(`asana new-section page ${page}`);
           for (const t of json.data ?? []) {
-            const st = (t.custom_fields ?? []).find((c) => c.gid === STATUS_FIELD)?.multi_enum_values?.map((v) => v.name ?? "").filter(Boolean) ?? [];
+            const st = ((t.custom_fields ?? []).find((c) => c.gid === STATUS_FIELD)?.multi_enum_values ?? []).map((v: { name?: string; color?: string }) => ({ name: v.name ?? "", color: v.color ?? "" })).filter((v: { name: string }) => v.name);
             out.push({ name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "", status: st } as never);
           }
           offset = json.next_page?.offset ?? "";
@@ -1021,12 +1066,12 @@ Call/Text: 425-390-8122`;
         // title-prefix matches from Human View's section, for tasks Step 3
         // retitled that nobody has dragged yet. Deduped by task gid.
         const seen = new Set<string>();
-        const out: { name: string; url: string; due: string; status?: string[] }[] = [];
+        const out: { name: string; url: string; due: string; status?: { name: string; color: string }[] }[] = [];
         const collect = async (path: string, filter: (name: string) => boolean) => {
           let offset = "";
           for (let page = 0; page < 5; page++) {
             const res = await fetch(
-              `${ASANA}${path}?completed=false&limit=100&opt_fields=name,permalink_url,due_on,custom_fields.gid,custom_fields.multi_enum_values.name${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+              `${ASANA}${path}?completed=false&limit=100&opt_fields=name,permalink_url,due_on,custom_fields.gid,custom_fields.multi_enum_values.name,custom_fields.multi_enum_values.color${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
               { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
             );
             const json = await res.json().catch(() => ({})) as { data?: { gid?: string; name?: string; permalink_url?: string; due_on?: string; custom_fields?: { gid?: string; multi_enum_values?: { name?: string }[] }[] }[]; next_page?: { offset?: string } | null };
@@ -1034,8 +1079,8 @@ Call/Text: 425-390-8122`;
             for (const t of json.data ?? []) {
               if (t.gid && !seen.has(t.gid) && filter(t.name ?? "")) {
                 seen.add(t.gid);
-                const st = (t.custom_fields ?? []).find((c) => c.gid === STATUS_FIELD)?.multi_enum_values?.map((v) => v.name ?? "").filter(Boolean) ?? [];
-                out.push({ name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "", status: st });
+                const st = ((t.custom_fields ?? []).find((c) => c.gid === STATUS_FIELD)?.multi_enum_values ?? []).map((v: { name?: string; color?: string }) => ({ name: v.name ?? "", color: v.color ?? "" })).filter((v: { name: string }) => v.name);
+                out.push({ name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "", status: st as never });
               }
             }
             offset = json.next_page?.offset ?? "";
@@ -1174,17 +1219,14 @@ ${built.email.body}`;
         } catch {
           await asanaCall("POST", `/tasks/${gid}/stories`, { text: report });
         }
-        const cur = await asanaCall("GET", `/tasks/${gid}?opt_fields=name`) as { name?: string };
-        const PREFIX = "Pending Mgr Review | ";
-        const updates: Record<string, unknown> = { assignee: assignee.gid, due_on: dueOn };
-        if (cur.name && !cur.name.startsWith("Pending Mgr Review")) updates.name = PREFIX + cur.name;
-        await asanaCall("PUT", `/tasks/${gid}`, updates);
+        await asanaCall("PUT", `/tasks/${gid}`, { assignee: assignee.gid, due_on: dueOn });
         await setStatus_(gid, [STATUS.pendingMgr]);
+        const cur = { name: (await asanaCall("GET", `/tasks/${gid}?opt_fields=name`) as { name?: string }).name };
         return j(headers, 200, {
           submitted: true,
           assignee: assignee.name,
           due: dueOn,
-          title: (updates.name as string) ?? cur.name ?? "",
+          title: cur.name ?? "",
         });
       } catch (e) {
         console.error("submitReport failed:", e);
