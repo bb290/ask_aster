@@ -387,6 +387,36 @@ app.post("*", async (c) => {
     return j(headers, 500, { error: "buildium_not_configured", message: "Buildium screening keys are not set up yet." });
   }
 
+  // ---------- multipart = workbench doc upload -> Asana attachments ----------
+  // The widget posts FormData (taskUrl + files); everything else is JSON.
+  if ((c.req.header("content-type") ?? "").includes("multipart/form-data")) {
+    try {
+      const form = await c.req.formData();
+      const taskUrl = String(form.get("taskUrl") ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid) return j(headers, 400, { error: "bad_task_url" });
+      const files = form.getAll("files").filter((f): f is File => f instanceof File);
+      if (!files.length) return j(headers, 400, { error: "no_files" });
+      const uploaded: string[] = [];
+      for (const f of files) {
+        const fd = new FormData();
+        fd.append("parent", gid);
+        fd.append("file", f, f.name);
+        const res = await fetch("https://app.asana.com/api/1.0/attachments", {
+          method: "POST",
+          headers: { Authorization: `Bearer ${ASANA_PAT}` },
+          body: fd,
+        });
+        if (!res.ok) throw new Error(`asana attachment ${res.status} for ${f.name}`);
+        uploaded.push(f.name);
+      }
+      return j(headers, 200, { uploaded });
+    } catch (e) {
+      console.error("upload failed:", e);
+      return j(headers, 502, { error: "upload_failed", message: "Upload did not reach Asana. Try again, or attach in Asana directly." });
+    }
+  }
+
   let body: { action?: string; applicantIds?: unknown };
   try {
     body = await c.req.json();
