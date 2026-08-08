@@ -1675,7 +1675,7 @@ ${built.email.body}`;
         `2. In Claude, run /screening and paste this task's link\n` +
         `3. Aster posts READY FOR MANAGER REVIEW here; assign to the Leasing Manager\n`;
       const notes = `<body><strong>Applicant contact details</strong>\n\n${contactHtml}\n${extra}${nextSteps}\n` +
-        `Created from the Screening Workbench. Buildium is the system of record for documents.</body>`;
+        `Created from the Screening Workbench.</body>`;
 
       if (dryRun) {
         return j(headers, 200, {
