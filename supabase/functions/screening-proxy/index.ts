@@ -1055,6 +1055,146 @@ Call/Text: 425-390-8122`;
       }
     }
 
+    // ---------- contact: Mary's applicant-contact menu ----------
+    // Generalizes requestDocs into five reasons. previewOnly builds the
+    // template email + recipients; the real call accepts the (possibly
+    // edited) subject/body from the widget, files the record to the task,
+    // and applies the reason's status/due side effects. Gmail send is the
+    // human's click, from the widget.
+    if (action === "contact") {
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid) return j(headers, 400, { error: "bad_task_url" });
+      const previewOnly = (body as { previewOnly?: unknown }).previewOnly === true;
+      const reason = String((body as { reason?: unknown }).reason ?? "");
+
+      const SIG = `Best regards,
+Sagareus Leasing Support Team
+leasing@sagareus.com
+Call/Text: 425-390-8122`;
+      const ORDER_NOTE = "Applications are reviewed in the order they are completed, so a quick reply keeps your place in line.";
+      const TEMPLATES: Record<string, { label: string; status?: string[]; pushDue: boolean; subject: (address: string) => string; body: (first: string, address: string) => string }> = {
+        income_docs: {
+          label: "INCOME DOCS REQUESTED", status: [STATUS.pendingIncomeDocs], pushDue: true,
+          subject: () => "Your Sagareus application: income documentation needed",
+          body: (first, address) => `Hi ${first},
+
+Thank you for submitting your application for ${address}! We have received it and we are still pending your income documentation to begin the review.
+
+Acceptable income documentation:
+    Your last two full months of official paystubs (screenshots of banking apps, self-generated documents, and unsigned letters do not qualify)
+    Or a signed offer letter on company letterhead with HR contact information
+    Or platform earnings statements covering the most recent 60 days for gig or contract work
+    Self-employed or 1099 applicants: previous year's full federal tax return (Form 1040 plus Schedule C, E, F, or K-1s as applicable; business returns 1120, 1120S, 1065 when personal income depends on business profitability)
+    Housing voucher holders: your official voucher award letter
+
+Reply to this email with the documents and we will start your review right away.
+
+${ORDER_NOTE}
+
+${SIG}`,
+        },
+        addl_applicant: {
+          label: "ADDITIONAL APPLICANT REQUESTED", status: [STATUS.pendingApps], pushDue: true,
+          subject: () => "Your Sagareus application: additional application needed",
+          body: (first, address) => `Hi ${first},
+
+Thank you for submitting your application for ${address}! Every adult (18 or older) who will live at the property must submit their own application, and we are still waiting on at least one adult listed on your application.
+
+Please have them apply through the property listing as soon as they can, then reply to this email to let us know it is in. We cannot begin the review until every adult's application is received.
+
+${ORDER_NOTE}
+
+${SIG}`,
+        },
+        esa_docs: {
+          label: "ESA DOCUMENTATION REQUESTED", status: [STATUS.pendingAddlDocs], pushDue: true,
+          subject: () => "Your Sagareus application: assistance animal documentation",
+          body: (first, address) => `Hi ${first},
+
+Thank you for submitting your application for ${address}! Your application indicates an emotional support or assistance animal. To process the reasonable accommodation request, please reply to this email with your supporting documentation, such as a letter from your licensed health care provider.
+
+There is no pet deposit, pet rent, or pet fee for an approved assistance animal.
+
+${ORDER_NOTE}
+
+${SIG}`,
+        },
+        unit_leased: {
+          label: "UNIT LEASED NOTICE", pushDue: false,
+          subject: (address) => `Your Sagareus application: update on ${address}`,
+          body: (first, address) => `Hi ${first},
+
+Thank you for your application for ${address}. The home has been leased to another applicant, so it is no longer available.
+
+We would love to help you find another Sagareus home. You can browse everything currently available at sagareus.com, and if you see one you like, reply to this email and we can apply your application to it.
+
+${SIG}`,
+        },
+        other: {
+          label: "APPLICANT CONTACTED", pushDue: false,
+          subject: () => "Your Sagareus application",
+          body: (first) => `Hi ${first},
+
+[Write your message here]
+
+${SIG}`,
+        },
+      };
+      const tpl = TEMPLATES[reason];
+      if (!tpl) return j(headers, 400, { error: "bad_reason" });
+
+      try {
+        const task = await asanaCall("GET", `/tasks/${gid}?opt_fields=name,permalink_url,notes,custom_fields.name,custom_fields.number_value`) as { name?: string; permalink_url?: string; notes?: string; custom_fields?: { name?: string; number_value?: number | null }[] };
+        const raw = (task.name ?? "").replace(/^(WAITING ON ADD'L APPS |Pending Mgr Review \|\s*)/i, "").replace(/^[A-Z0-9()' |/+&-]+\|\s*/, "");
+        let names = "", address = "";
+        const slash = raw.match(/Application \/ (.+?) \/ (.+)$/i);
+        const angle = raw.match(/<([^>]+)>?/);
+        if (slash) { names = slash[1]; address = slash[2]; }
+        else if (angle) {
+          const inner = angle[1].split("//");
+          address = (inner[0] ?? "").split(" - ")[0].trim();
+          names = (inner[1] ?? "").trim();
+        }
+        const firsts = names.split(/[+,/]|\band\b/).map((n) => n.trim().split(/\s+/)[0]).filter(Boolean);
+        const first = firsts.join(" and ") || "there";
+
+        let toEmails: string[] = [];
+        const refId = (task.custom_fields ?? []).find((c) => /applicant id/i.test(c.name ?? ""))?.number_value;
+        if (refId != null) {
+          try {
+            const grp = await bGet(`/applicants/groups/${refId}`) as { Applicants?: { Email?: string }[] };
+            toEmails = (grp.Applicants ?? []).map((m) => m.Email ?? "").filter(Boolean);
+          } catch {
+            try {
+              const rec = await bGet(`/applicants/${refId}`) as Applicant;
+              if (rec.Email) toEmails = [rec.Email];
+            } catch { /* fall through */ }
+          }
+        }
+        if (!toEmails.length) toEmails = [...new Set((task.notes ?? "").match(/[\w.+-]+@[\w-]+\.[\w.]+/g) ?? [])].slice(0, 6);
+
+        const addr = address || "the property";
+        const subject = String((body as { subject?: unknown }).subject ?? "").trim() || tpl.subject(addr);
+        const emailBody = String((body as { body?: unknown }).body ?? "").trim() || tpl.body(first, addr);
+        const emailOut = { subject, body: emailBody, to: toEmails, cc: "leasing@sagareus.com" };
+
+        if (previewOnly) return j(headers, 200, { preview: true, email: emailOut });
+
+        let due = "";
+        if (tpl.pushDue) {
+          due = new Date(Date.now() - 7 * 3600 * 1000 + 86400000).toISOString().slice(0, 10);
+          await asanaCall("PUT", `/tasks/${gid}`, { due_on: due });
+        }
+        if (tpl.status) await setStatus_(gid, tpl.status);
+        await asanaCall("POST", `/tasks/${gid}/stories`, { text: `${tpl.label}\nSent from the workbench Contact flow via leasing@sagareus.com.\n\nEMAIL\nTo: ${toEmails.join(", ") || "(no address on file)"}\nSubject: ${subject}\n\n${emailBody}` });
+        return j(headers, 200, { contacted: true, due, email: emailOut });
+      } catch (e) {
+        console.error("contact failed:", e);
+        return j(headers, 502, { error: "contact_failed", message: "Asana did not accept the update. Check the task before retrying." });
+      }
+    }
+
     // ---------- mgrQueue: open tasks awaiting manager review ----------
     // Tasks the submit step retitled "Pending Mgr Review | ...", read from
     // Human View's Pending Applications section (the convention every
