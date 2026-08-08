@@ -42,6 +42,29 @@ const PENDING_APPS_PROJECT = "1217174650640596"; // Leasing | Pending Applicatio
 const PENDING_MGR_SECTION = "1217174694944319"; // its "Pending Mgr" section: the mgrQueue source of truth
 const APPLICATION_TEMPLATE = "1208297780570331"; // task template "Application // <names>" (Human View): subtasks populate
 const APPLICANT_ID_FIELD = "1217198624982390"; // number field on Pending Apps: Buildium group id (or applicant id for solos)
+// Status multi-select on Pending Apps (Brittany, 2026-08-08): mirrors the
+// title prefix / workflow stage. Values REPLACE on each transition.
+const STATUS_FIELD = "1217294173155621";
+const STATUS = {
+  pendingShowing: "1217294173155638",
+  pendingApps: "1217294173155622",
+  pendingIncomeDocs: "1217294173155623",
+  complete: "1217294173155624",
+  pendingEnhanced: "1217294173155625",
+  pendingMgr: "1217294173155626",
+  condSec8: "1217294173155627",
+  condOwnerException: "1217294173155628",
+  approvedLeaseSent: "1217294173155629",
+  leaseSigned: "1217294173155640",
+  pendingCosigner: "1217294173155630",
+  pendingAddlDocs: "1217294173155631",
+  pendingLandlordBalance: "1217294173155632",
+  exceptionPet: "1217294173155633",
+  declined: "1217294173155636",
+} as const;
+async function setStatus_(gid: string, optionGids: string[]) {
+  await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: { [STATUS_FIELD]: optionGids } }).catch(() => {});
+}
 // Decision -> destination section in Leasing | Pending Applications:
 //   approved as-is / negotiate / owner-exception / other -> Approved
 //   approved pending Section 8                            -> Pending Docs / Co-Signer / Sec 8
@@ -732,6 +755,7 @@ app.post("*", async (c) => {
                 } catch { /* name rebuild is best-effort */ }
                 if (complete) {
                   await asanaCall("POST", `/tasks/${h.task_gid}/stories`, { text: "All applications submitted." });
+                  await setStatus_(h.task_gid, [STATUS.pendingIncomeDocs]);
                 }
                 await ledgerUpdateHousehold(h.id, { roster, complete });
                 await ledgerInsertApplicant(a.Id!, h.id);
@@ -831,6 +855,7 @@ app.post("*", async (c) => {
               await asanaCall("POST", `/tasks/${made.gid}/addProject`, { project: PENDING_APPS_PROJECT, section: "1217174650640615" }).catch(() => {});
               // Incoming application tasks belong to Mary (Brittany, 2026-08-07)
               await asanaCall("PUT", `/tasks/${made.gid}`, { assignee: "1203402971273034" }).catch(() => {});
+              await setStatus_(made.gid, [waiting ? STATUS.pendingApps : STATUS.pendingIncomeDocs]);
               // Buildium group makes the household authoritative in Buildium;
               // the Applicant ID field stores the group id (solo households
               // fall back to the applicant id if a 1-member group is refused).
@@ -893,12 +918,15 @@ app.post("*", async (c) => {
         let offset = "";
         for (let page = 0; page < 5; page++) {
           const res = await fetch(
-            `${ASANA}/sections/1217174650640615/tasks?completed=false&limit=100&opt_fields=name,permalink_url,due_on${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+            `${ASANA}/sections/1217174650640615/tasks?completed=false&limit=100&opt_fields=name,permalink_url,due_on,custom_fields.gid,custom_fields.multi_enum_values.name${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
             { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
           );
-          const json = await res.json().catch(() => ({})) as { data?: { name?: string; permalink_url?: string; due_on?: string }[]; next_page?: { offset?: string } | null };
+          const json = await res.json().catch(() => ({})) as { data?: { name?: string; permalink_url?: string; due_on?: string; custom_fields?: { gid?: string; multi_enum_values?: { name?: string }[] }[] }[]; next_page?: { offset?: string } | null };
           if (!res.ok) throw new Error(`asana new-section page ${page}`);
-          for (const t of json.data ?? []) out.push({ name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "" });
+          for (const t of json.data ?? []) {
+            const st = (t.custom_fields ?? []).find((c) => c.gid === STATUS_FIELD)?.multi_enum_values?.map((v) => v.name ?? "").filter(Boolean) ?? [];
+            out.push({ name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "", status: st } as never);
+          }
           offset = json.next_page?.offset ?? "";
           if (!offset) break;
         }
@@ -972,6 +1000,7 @@ Call/Text: 425-390-8122`;
         if (previewOnly) return j(headers, 200, { preview: true, email: emailOut });
 
         const tomorrow = new Date(Date.now() - 7 * 3600 * 1000 + 86400000).toISOString().slice(0, 10);
+        await setStatus_(gid, [STATUS.pendingIncomeDocs]);
         await asanaCall("POST", `/tasks/${gid}/stories`, { text: `INCOME DOCS REQUESTED\nSend the email below from leasing@sagareus.com (draft only; review before sending).\n\nEMAIL DRAFT\nSubject: ${emailOut.subject}\n\n${emailBody}` });
         await asanaCall("PUT", `/tasks/${gid}`, { due_on: tomorrow });
         return j(headers, 200, { requested: true, due: tomorrow, email: emailOut, task: { name: task.name ?? "", url: task.permalink_url ?? taskUrl } });
@@ -992,20 +1021,21 @@ Call/Text: 425-390-8122`;
         // title-prefix matches from Human View's section, for tasks Step 3
         // retitled that nobody has dragged yet. Deduped by task gid.
         const seen = new Set<string>();
-        const out: { name: string; url: string; due: string }[] = [];
+        const out: { name: string; url: string; due: string; status?: string[] }[] = [];
         const collect = async (path: string, filter: (name: string) => boolean) => {
           let offset = "";
           for (let page = 0; page < 5; page++) {
             const res = await fetch(
-              `${ASANA}${path}?completed=false&limit=100&opt_fields=name,permalink_url,due_on${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+              `${ASANA}${path}?completed=false&limit=100&opt_fields=name,permalink_url,due_on,custom_fields.gid,custom_fields.multi_enum_values.name${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
               { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
             );
-            const json = await res.json().catch(() => ({})) as { data?: { gid?: string; name?: string; permalink_url?: string; due_on?: string }[]; next_page?: { offset?: string } | null };
+            const json = await res.json().catch(() => ({})) as { data?: { gid?: string; name?: string; permalink_url?: string; due_on?: string; custom_fields?: { gid?: string; multi_enum_values?: { name?: string }[] }[] }[]; next_page?: { offset?: string } | null };
             if (!res.ok) throw new Error(`asana ${path} page ${page}`);
             for (const t of json.data ?? []) {
               if (t.gid && !seen.has(t.gid) && filter(t.name ?? "")) {
                 seen.add(t.gid);
-                out.push({ name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "" });
+                const st = (t.custom_fields ?? []).find((c) => c.gid === STATUS_FIELD)?.multi_enum_values?.map((v) => v.name ?? "").filter(Boolean) ?? [];
+                out.push({ name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "", status: st });
               }
             }
             offset = json.next_page?.offset ?? "";
@@ -1149,6 +1179,7 @@ ${built.email.body}`;
         const updates: Record<string, unknown> = { assignee: assignee.gid, due_on: dueOn };
         if (cur.name && !cur.name.startsWith("Pending Mgr Review")) updates.name = PREFIX + cur.name;
         await asanaCall("PUT", `/tasks/${gid}`, updates);
+        await setStatus_(gid, [STATUS.pendingMgr]);
         return j(headers, 200, {
           submitted: true,
           assignee: assignee.name,
