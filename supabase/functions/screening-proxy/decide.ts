@@ -61,7 +61,12 @@ function approvedEmail(opt: string, first: string, address: string, text: string
       subject: "Your Sagareus application is approved",
       body: `${hi}
 
-Great news! Your application for ${address} has been approved. We will send the lease for electronic signature shortly. Please review and sign promptly; the unit is held once the lease is fully signed and the move-in funds are received.
+Great news! Your application for ${address} has been approved.
+
+- We will send the lease for electronic signature shortly.
+- The unit is held once the lease is fully signed and the move-in funds are received.
+
+NEXT STEP: Watch your inbox for the lease and sign promptly.
 
 We are excited to welcome you home.
 
@@ -75,9 +80,9 @@ ${SIGNATURE}`,
 
 Good news! Your application for ${address} has been approved with the following adjusted terms:
 
-${text || "[Manager: enter the counter offer terms]"}
+- ${text || "[Manager: enter the counter offer terms]"}
 
-Reply to this email to accept these terms or to discuss. Once we hear back, we will prepare the lease.
+NEXT STEP: Reply to this email to accept these terms or to discuss. Once we hear back, we will prepare the lease.
 
 ${SIGNATURE}`,
     };
@@ -87,9 +92,9 @@ ${SIGNATURE}`,
       subject: "Your Sagareus application: approved, one confirmation pending",
       body: `${hi}
 
-Good news! Sagareus has approved your application for ${address}. One property-specific policy exception still needs confirmation before we can send the lease. We expect to have an answer shortly and will follow up the moment we do.
+Good news! Sagareus has approved your application for ${address}. One property-specific policy exception still needs confirmation before we can send the lease. We expect to have an answer shortly.
 
-No action is needed from you right now.
+NEXT STEP: Nothing is needed from you right now. We will follow up the moment we have the answer.
 
 ${SIGNATURE}`,
     };
@@ -99,9 +104,14 @@ ${SIGNATURE}`,
       subject: "Your Sagareus application: approved, Housing Authority steps next",
       body: `${hi}
 
-Good news! Sagareus has approved your application for ${address}. The next steps run through your Housing Authority: the Request for Tenancy Approval (RFTA) paperwork and the Housing Authority inspection. We will start the paperwork on our side and coordinate with your case worker.
+Good news! Sagareus has approved your application for ${address}. The next steps run through your Housing Authority:
 
-These steps can take a little time, so the sooner your portion of the RFTA is submitted, the better. Reply here with your case worker's name and contact if you have not sent it already.
+- Request for Tenancy Approval (RFTA) paperwork
+- Housing Authority inspection
+
+We will start the paperwork on our side and coordinate with your case worker. These steps can take a little time, so the sooner your portion of the RFTA is submitted, the better.
+
+NEXT STEP: Reply to this email with your case worker's name and contact information if you have not sent it already.
 
 ${SIGNATURE}`,
     };
@@ -124,10 +134,10 @@ const INSUFFICIENT_BLOCKS: Record<string, { flag: string; body?: string; resolva
   docs: {
     flag: "Income documentation does not meet our verification standards.",
     body: `Acceptable documentation:
-    Your last two full months of official paystubs (screenshots of banking apps, self-generated documents, and unsigned letters do not qualify)
-    Or a signed offer letter on company letterhead with HR contact information
-    Or platform earnings statements covering the most recent 60 days for gig or contract work
-    Self-employed or 1099 applicants: previous year's full federal tax return (Form 1040 plus Schedule C, E, F, or K-1s as applicable; business returns 1120, 1120S, 1065 when personal income depends on business profitability)`,
+    - Your last two full months of official paystubs (screenshots of banking apps, self-generated documents, and unsigned letters do not qualify)
+    - Or a signed offer letter on company letterhead with HR contact information
+    - Or platform earnings statements covering the most recent 60 days for gig or contract work
+    - Self-employed or 1099 applicants: previous year's full federal tax return (Form 1040 plus Schedule C, E, F, or K-1s as applicable; business returns 1120, 1120S, 1065 when personal income depends on business profitability)`,
     resolvable: "Reply with documentation that meets the standard and we will rerun your screening.",
   },
   cosigner: {
@@ -147,10 +157,10 @@ const INSUFFICIENT_BLOCKS: Record<string, { flag: string; body?: string; resolva
 export function insufficientEmailMulti(opts: string[], comment: string, first: string, address: string): { subject: string; body: string } {
   const blocks = opts.map((k) => INSUFFICIENT_BLOCKS[k]).filter(Boolean);
   const items = blocks.map((b) =>
-    `    ${b.flag}${b.body ? "\n        " + b.body.split("\n").join("\n        ") : ""}\n        Resolvable: ${b.resolvable}`
+    `- ${b.flag}${b.body ? "\n    " + b.body.split("\n").join("\n    ") : ""}\n    RESOLVABLE: ${b.resolvable}`
   );
   if (comment.trim()) {
-    items.push(`    ${comment.trim().split("\n").join("\n    ")}`);
+    items.push(`- ${comment.trim().split("\n").join("\n    ")}`);
   }
   const n = blocks.length;
   return {
@@ -165,7 +175,7 @@ ${n === 1 ? "One item must be resolved to complete your screening:" : `${n} item
 
 ${items.join("\n\n")}
 
-Reply to this email with the documents and we will complete your review right away.
+NEXT STEP: Reply to this email with the items above and we will complete your review right away.
 
 ${REVIEW_ORDER_NOTE}
 

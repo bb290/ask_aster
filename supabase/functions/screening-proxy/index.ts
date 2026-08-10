@@ -1056,13 +1056,14 @@ app.post("*", async (c) => {
 Thank you for submitting your application for ${address || "the property"}! We have received it and we are still pending your income documentation to begin the review.
 
 Acceptable income documentation:
-    Your last two full months of official paystubs (screenshots of banking apps, self-generated documents, and unsigned letters do not qualify)
-    Or a signed offer letter on company letterhead with HR contact information
-    Or platform earnings statements covering the most recent 60 days for gig or contract work
-    Self-employed or 1099 applicants: previous year's full federal tax return (Form 1040 plus Schedule C, E, F, or K-1s as applicable; business returns 1120, 1120S, 1065 when personal income depends on business profitability)
-    Housing voucher holders: your official voucher award letter
 
-Reply to this email with the documents and we will start your review right away.
+- Your last two full months of official paystubs (screenshots of banking apps, self-generated documents, and unsigned letters do not qualify)
+- Or a signed offer letter on company letterhead with HR contact information
+- Or platform earnings statements covering the most recent 60 days for gig or contract work
+- Self-employed or 1099 applicants: previous year's full federal tax return (Form 1040 plus Schedule C, E, F, or K-1s as applicable; business returns 1120, 1120S, 1065 when personal income depends on business profitability)
+- Housing voucher holders: your official voucher award letter
+
+NEXT STEP: Reply to this email with your income documents and we will start your review right away.
 
 Applications are reviewed in the order they are completed, so a quick reply keeps your place in line.
 
@@ -1112,13 +1113,14 @@ Call/Text: 425-390-8122`;
 Thank you for submitting your application for ${address}! We have received it and we are still pending your income documentation to begin the review.
 
 Acceptable income documentation:
-    Your last two full months of official paystubs (screenshots of banking apps, self-generated documents, and unsigned letters do not qualify)
-    Or a signed offer letter on company letterhead with HR contact information
-    Or platform earnings statements covering the most recent 60 days for gig or contract work
-    Self-employed or 1099 applicants: previous year's full federal tax return (Form 1040 plus Schedule C, E, F, or K-1s as applicable; business returns 1120, 1120S, 1065 when personal income depends on business profitability)
-    Housing voucher holders: your official voucher award letter
 
-Reply to this email with the documents and we will start your review right away.
+- Your last two full months of official paystubs (screenshots of banking apps, self-generated documents, and unsigned letters do not qualify)
+- Or a signed offer letter on company letterhead with HR contact information
+- Or platform earnings statements covering the most recent 60 days for gig or contract work
+- Self-employed or 1099 applicants: previous year's full federal tax return (Form 1040 plus Schedule C, E, F, or K-1s as applicable; business returns 1120, 1120S, 1065 when personal income depends on business profitability)
+- Housing voucher holders: your official voucher award letter
+
+NEXT STEP: Reply to this email with your income documents and we will start your review right away.
 
 ${ORDER_NOTE}
 
@@ -1129,9 +1131,9 @@ ${SIG}`,
           subject: () => "Your Sagareus application: additional application needed",
           body: (first, address) => `Hi ${first},
 
-Thank you for submitting your application for ${address}! Every adult (18 or older) who will live at the property must submit their own application, and we are still waiting on at least one adult listed on your application.
+Thank you for submitting your application for ${address}! Every adult (18 or older) who will live at the property must submit their own application, and we are still waiting on at least one adult listed on your application. We cannot begin the review until every adult's application is received.
 
-Please have them apply through the property listing as soon as they can, then reply to this email to let us know it is in. We cannot begin the review until every adult's application is received.
+NEXT STEP: Have each remaining adult apply through the property listing, then reply to this email to let us know their application is in.
 
 ${ORDER_NOTE}
 
@@ -1142,9 +1144,9 @@ ${SIG}`,
           subject: () => "Your Sagareus application: assistance animal documentation",
           body: (first, address) => `Hi ${first},
 
-Thank you for submitting your application for ${address}! Your application indicates an emotional support or assistance animal. To process the reasonable accommodation request, please reply to this email with your supporting documentation, such as a letter from your licensed health care provider.
+Thank you for submitting your application for ${address}! Your application indicates an emotional support or assistance animal. There is no pet deposit, pet rent, or pet fee for an approved assistance animal.
 
-There is no pet deposit, pet rent, or pet fee for an approved assistance animal.
+NEXT STEP: Reply to this email with your supporting documentation, such as a letter from your licensed health care provider, and we will process the reasonable accommodation request.
 
 ${ORDER_NOTE}
 
@@ -1157,7 +1159,9 @@ ${SIG}`,
 
 Thank you for your application for ${address}. The home has been leased to another applicant, so it is no longer available.
 
-We would love to help you find another Sagareus home. You can browse everything currently available at sagareus.com, and if you see one you like, reply to this email and we can apply your application to it.
+We would love to help you find another Sagareus home.
+
+NEXT STEP: Browse everything currently available at sagareus.com, and if you see a home you like, reply to this email and we will apply your application to it.
 
 ${SIG}`,
         },
