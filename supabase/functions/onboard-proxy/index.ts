@@ -1438,7 +1438,7 @@ app.post("/onboard-proxy", async (c) => {
       const sub = await asana("POST", `/tasks/${hit.gid}/subtasks`, {
         name: `Owner Modifications | ${obDuePT(0)} | ${hit.address}`.slice(0, 250),
         notes: bodyLines.join("\n"),
-        due_on: obDuePT(1),
+        due_on: obDuePT(0),
         ...(agentGid ? { assignee: agentGid } : {}),
       });
       return j(headers, 200, { ok: true, subtaskGid: sub.gid, applied: diffs.length, reviewOnly: amenDiffs.length });
