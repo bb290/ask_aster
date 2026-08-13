@@ -1345,7 +1345,26 @@ app.post("/onboard-proxy", async (c) => {
             metrics.daysVacant = String(dv);
           }
         } catch { /* best-effort */ }
-        return j(headers, 200, { ok: true, address: hit.address, fields, team, approval, dates, metrics, lastUpdated: String(t.modified_at ?? "").slice(0, 10) });
+        // property facts render LIVE from the Unit/Property Settings task; they are
+        // deliberately NOT duplicated into Listing Settings (Brittany 2026-08-13)
+        const unitSettings: Record<string, string> = {};
+        try {
+          const th2 = await asana("GET", `/workspaces/${FEED_WS}/typeahead?resource_type=task&query=${encodeURIComponent("Settings // " + hit.address.slice(0, 40))}&count=10&opt_fields=name`);
+          const streetNo2 = (hit.address.match(/^\d+/) ?? [""])[0];
+          const st = (th2 ?? []).find((x: { name: string }) => /^settings\s*\/\//i.test(x.name) && (!streetNo2 || x.name.includes(streetNo2)));
+          if (st) {
+            const stt = await asana("GET", `/tasks/${st.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+            for (const cf of (stt.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>) {
+              const nm = String(cf.name);
+              const val = String(cf.display_value ?? "").trim();
+              if (!val) continue;
+              if (/^(laundry|parking|ev charger|cooling|heating type|storage|mailbox|landscaping maintenance|utilities|internet provider|utilities - .+)$/i.test(nm)) {
+                unitSettings[nm] = val.replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "").slice(0, 1000);
+              }
+            }
+          }
+        } catch { /* best-effort */ }
+        return j(headers, 200, { ok: true, address: hit.address, fields, team, approval, dates, metrics, unitSettings, lastUpdated: String(t.modified_at ?? "").slice(0, 10) });
       }
 
       const who = String(body.name ?? "").trim().slice(0, 120);

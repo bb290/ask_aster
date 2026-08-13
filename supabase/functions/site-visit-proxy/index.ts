@@ -1051,7 +1051,6 @@ app.post("*", async (c) => {
         lastMonthRent: "1217446710797252", specialTerms: "1217446589881673", draftListing: "1217446710674762",
         availableUpgrades: "1217446589924476",
         priceAdjustmentPlan: "1217448328664674", photoReview: "1217448327991331",
-        amenities: "1217448541918634", landscaping: "1217448387492677",
         petRent: "1217450345262256", petDeposit: "1217450833264180",
       };
       const DATE_F: Record<string, string> = { targetLeaseStart: "1217450005495014", targetLeaseEnd: "1217450212127139" };
