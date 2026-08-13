@@ -1370,7 +1370,14 @@ app.post("/onboard-proxy", async (c) => {
       const LS_TEAMLEAD = "1217446711292696";
       const text = String(body.text ?? "").trim().slice(0, 4000);
       const changesIn = Array.isArray(body.changes) ? (body.changes as Array<{ name?: unknown; value?: unknown }>).slice(0, 30) : [];
-      if (text.length < 5 && !changesIn.length) return j(headers, 400, { error: "missing_text", message: "Edit a field or describe the change you want first." });
+      // amenity changes are review-only: they NEVER write to Unit Settings or Listing
+      // Settings; a human verifies at the property and updates the systems by hand
+      const amenIn = Array.isArray(body.amenityChanges) ? (body.amenityChanges as Array<{ name?: unknown; from?: unknown; to?: unknown }>).slice(0, 10) : [];
+      const amenDiffs = amenIn
+        .map((a) => ({ name: String(a.name ?? "").slice(0, 40), from: String(a.from ?? "").slice(0, 120), to: String(a.to ?? "").slice(0, 120) }))
+        .filter((a) => a.name && a.to && a.from !== a.to)
+        .map((a) => `${a.name}: ${a.from || "(blank)"} -> ${a.to}`);
+      if (text.length < 5 && !changesIn.length && !amenDiffs.length) return j(headers, 400, { error: "missing_text", message: "Edit a field or describe the change you want first." });
       const t2 = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.gid,custom_fields.name,custom_fields.display_value,custom_fields.resource_subtype,custom_fields.people_value.gid`);
       const cf2 = (t2.custom_fields ?? []) as Array<{ gid: string; name: string; display_value: string | null; resource_subtype?: string; people_value?: Array<{ gid: string }> }>;
       let agentGid = String(cf2.find((f) => String(f.gid) === LS_TEAMLEAD)?.people_value?.[0]?.gid ?? "");
@@ -1401,11 +1408,13 @@ app.post("/onboard-proxy", async (c) => {
         "Review owner requested modifications & update Buildium.",
         "",
         ...(diffs.length ? ["Field changes (already pushed to Listing Settings; the Leasing URL shows them now):", ...diffs.map((d) => "• " + d), ""] : []),
+        ...(amenDiffs.length ? ["Amenity change requests (NOT auto-applied anywhere; verify at the property, then update Unit Settings and Buildium by hand):", ...amenDiffs.map((d) => "• " + d), ""] : []),
         ...(text ? [`Comment from ${who}:`, text, ""] : []),
         "Reply through listings@sagareus.com. Done by Claude on behalf of the owner.",
       ];
+      const allDiffLines = diffs.map((d) => "• " + d).concat(amenDiffs.map((d) => "• " + d + " (amenity: review only)"));
       await asana("POST", `/tasks/${hit.gid}/stories`, {
-        html_text: storyHtml(`Listing modification request from ${who} (via the Leasing URL):\n\n${diffs.map((d) => "• " + d).join("\n")}${diffs.length && text ? "\n\n" : ""}${text}`),
+        html_text: storyHtml(`Listing modification request from ${who} (via the Leasing URL):\n\n${allDiffLines.join("\n")}${allDiffLines.length && text ? "\n\n" : ""}${text}`),
       }).catch(() => null);
       const sub = await asana("POST", `/tasks/${hit.gid}/subtasks`, {
         name: `Owner Modifications | ${obDuePT(0)} | ${hit.address}`.slice(0, 250),
@@ -1413,7 +1422,7 @@ app.post("/onboard-proxy", async (c) => {
         due_on: obDuePT(1),
         ...(agentGid ? { assignee: agentGid } : {}),
       });
-      return j(headers, 200, { ok: true, subtaskGid: sub.gid, applied: diffs.length });
+      return j(headers, 200, { ok: true, subtaskGid: sub.gid, applied: diffs.length, reviewOnly: amenDiffs.length });
     }
 
     // ---------- propAcceptConfirm (open): client accepts + confirms owners on tax record ----------
