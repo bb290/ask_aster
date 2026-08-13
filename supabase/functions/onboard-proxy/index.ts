@@ -1311,28 +1311,41 @@ app.post("/onboard-proxy", async (c) => {
           if (cf.resource_subtype === "people") { team.push({ role: nm, name: scrub(val).slice(0, 120) }); continue; }
           fields.push({ name: nm, value: scrub(val).slice(0, 6000) });
         }
-        // key dates pull LIVE from the leasing projects, never from Listing Settings
+        // key dates + leasing metrics pull LIVE from the leasing projects, never from Listing Settings
         const dates: Record<string, string> = {};
+        const metrics: Record<string, string> = {};
         try {
           const streetNo = (hit.address.match(/^\d+/) ?? [""])[0];
           const th = await asana("GET", `/workspaces/${FEED_WS}/typeahead?resource_type=task&query=${encodeURIComponent(hit.address.slice(0, 40))}&count=20&opt_fields=name`);
           const lu = (th ?? []).find((x: { name: string }) => /^(LU|TP|PreLease)\s*\|/i.test(x.name) && (!streetNo || x.name.includes(streetNo)));
           if (lu) {
             const lt = await asana("GET", `/tasks/${lu.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
-            const g = (re: RegExp) => String(((lt.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>)
-              .find((f) => re.test(f.name) && f.display_value)?.display_value ?? "").slice(0, 10);
+            const cfs = (lt.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
+            const g = (re: RegExp) => String(cfs.find((f) => re.test(f.name) && f.display_value)?.display_value ?? "").slice(0, 10);
+            const gn = (re: RegExp) => String(cfs.find((f) => re.test(f.name) && f.display_value)?.display_value ?? "").trim().slice(0, 12);
             dates.moveOut = g(/move\s*out/i);
             dates.listDate = g(/list date/i);
             dates.moveIn = g(/move\s*in date/i);
+            dates.leaseSigned = g(/lease signed/i);
+            metrics.inquiries = gn(/#\s*of\s*inquiries/i);
+            metrics.showings = gn(/#\s*of\s*showings/i);
+            metrics.applications = gn(/#\s*of\s*applications/i);
           }
           const to = (th ?? []).find((x: { name: string }) => /^turn\s*over\s*\|/i.test(x.name) && (!streetNo || x.name.includes(streetNo)));
           if (to) {
-            const tt = await asana("GET", `/tasks/${to.gid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
-            dates.turnOverDispatched = String(((tt.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>)
-              .find((f) => String(f.gid) === "1214522138482281")?.display_value ?? "").slice(0, 10);
+            const tt = await asana("GET", `/tasks/${to.gid}?opt_fields=custom_fields.gid,custom_fields.name,custom_fields.display_value`);
+            const tcf = (tt.custom_fields ?? []) as Array<{ gid: string; name: string; display_value: string | null }>;
+            dates.turnOverDispatched = String(tcf.find((f) => String(f.gid) === "1214522138482281")?.display_value ?? "").slice(0, 10);
+            if (!dates.moveOut) dates.moveOut = String(tcf.find((f) => /move\s*out/i.test(String(f.name)) && f.display_value)?.display_value ?? "").slice(0, 10);
           }
-        } catch { /* dates are best-effort */ }
-        return j(headers, 200, { ok: true, address: hit.address, fields, team, approval, dates, lastUpdated: String(t.modified_at ?? "").slice(0, 10) });
+          // days vacant: move out -> move in (or today while still vacant)
+          if (/^\d{4}-\d{2}-\d{2}/.test(dates.moveOut ?? "")) {
+            const end = /^\d{4}-\d{2}-\d{2}/.test(dates.moveIn ?? "") ? Date.parse(dates.moveIn) : Date.now();
+            const dv = Math.max(0, Math.round((end - Date.parse(dates.moveOut)) / 86400000));
+            metrics.daysVacant = String(dv);
+          }
+        } catch { /* best-effort */ }
+        return j(headers, 200, { ok: true, address: hit.address, fields, team, approval, dates, metrics, lastUpdated: String(t.modified_at ?? "").slice(0, 10) });
       }
 
       const who = String(body.name ?? "").trim().slice(0, 120);
