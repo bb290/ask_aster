@@ -216,10 +216,13 @@ function feedNameRegex(shortName: string): RegExp | null {
   if (!base) return null;
   return new RegExp("\\b" + base + "\\s+" + SUF + "\\b", "gi");
 }
-// Owner Feed access emails: the Owner Email(s) field on the (CLIENT) task is the
-// canonical source (Brittany 2026-08-03); the description scrape is the legacy fallback
+// Owner Feed access emails: the 🙆 Owner e-mail(s) field on the (CLIENT) task is the
+// canonical source (Brittany 2026-08-12: the emoji field, shared with Initial Onboard,
+// replaced the duplicate plain "Owner Email(s)"); the description scrape is the legacy fallback
 function feedGateEmails(cr: { notes?: unknown; custom_fields?: { gid?: unknown; name?: unknown; display_value?: unknown }[] }): string[] {
-  const cf = (cr.custom_fields ?? []).find((c) => String(c.gid) === "1217116783105713" || String(c.name) === "Owner Email(s)");
+  const cfs = cr.custom_fields ?? [];
+  const cf = cfs.find((c) => String(c.gid) === CR_OWNER_EMAILS_FIELD || String(c.name) === "\u{1F646} Owner e-mail(s)") ??
+    cfs.find((c) => String(c.gid) === "1217116783105713" || String(c.name) === "Owner Email(s)");
   const src = String(cf?.display_value ?? "").trim() || String(cr.notes ?? "");
   return (src.match(/[\w.+-]+@[\w-]+\.[\w.-]+/g) ?? []).map((e) => e.toLowerCase());
 }
@@ -324,7 +327,7 @@ function feedItem(prKey: string, t: FeedTask, open: boolean): FeedItem {
 // ---------- onboarding wizard shared builders (obStart / obProgress / obSubmit) ----------
 const OB_PROJECT_GID = "1216860326210544";
 const OB_WIP_SECTION = "1217116571349206";               // Wizard In Progress
-const CR_OWNER_EMAILS_FIELD = "1217116783105713";        // Owner Email(s) on Client Relations 2.0 (the Owner Feed gate reads it)
+const CR_OWNER_EMAILS_FIELD = "1215178211298892";        // 🙆 Owner e-mail(s) - the ONE owner email field (Brittany 2026-08-12); the Owner Feed gate reads it
 type ObUnit = { label: string; beds: string; baths: string; sqft: string; laundry: string; mail: string; mailnum: string; storage: string; parking: string; parknum: string; cooling: string };
 function obParseAnswers(body: Record<string, unknown>): Record<string, string> {
   return (body.answers && typeof body.answers === "object") ? body.answers as Record<string, string> : {};
@@ -716,8 +719,9 @@ app.post("/onboard-proxy", async (c) => {
               if (/\bNone\b/.test(String(answers.notifs ?? ""))) opts.push("1212930081639053"); // Leasing - No Owner Communication
               if (opts.length) await asana("PUT", `/tasks/${crGid}`, { custom_fields: { [COMM_FIELD]: opts } });
             } catch { /* comm settings are best-effort */ }
-            // Owner Email(s) on the (CLIENT) task: all authorized personnel emails, comma-
-            // separated - the Owner Feed email gate reads this field (Brittany 2026-08-03)
+            // 🙆 Owner e-mail(s) on the (CLIENT) task: all authorized personnel emails, comma-
+            // separated - the Owner Feed email gate reads this field (Brittany 2026-08-12:
+            // write ONLY the emoji field; the plain duplicate was removed from the project)
             try {
               const oe = String(answers.ownerEmails ?? "").trim().slice(0, 500);
               if (oe) await asana("PUT", `/tasks/${crGid}`, { custom_fields: { [CR_OWNER_EMAILS_FIELD]: oe } });
@@ -895,6 +899,23 @@ app.post("/onboard-proxy", async (c) => {
       })) });
     }
 
+    // ---------- obFeedback (internal, x-sv-key): staff feedback on the wizard -> subtask on its dev task ----------
+    if (action === "obFeedback") {
+      if (!TEAM_KEY || c.req.header("x-sv-key") !== TEAM_KEY) return j(headers, 401, { error: "bad_key" });
+      const text = String(body.text ?? "").trim().slice(0, 4000);
+      if (text.length < 5) return j(headers, 400, { error: "missing_fields" });
+      const OB_DEV_TASK = "1216867998034878";            // "Onboarding Wizard" under Field Tools | Bugs & Feature Requests
+      const BB = "1203784854198936";                     // Brittany
+      const todayPT = obDuePT(0);
+      const sub = await asana("POST", `/tasks/${OB_DEV_TASK}/subtasks`, {
+        name: `Onboarding Wizard Feedback // ${todayPT}`,
+        assignee: BB,
+        due_on: todayPT,
+        notes: text + "\n\nSubmitted via the Onboarding Wizard Team Feedback button (staff view). Done by Claude on behalf of the submitting agent.",
+      });
+      return j(headers, 200, { ok: true, url: `https://app.asana.com/0/0/${sub.gid}` });
+    }
+
     // ---------- propSave (internal, x-sv-key): verify + save proposal numbers to the deal ----------
     if (action === "propSave") {
       if (!TEAM_KEY || c.req.header("x-sv-key") !== TEAM_KEY) return j(headers, 401, { error: "bad_key" });
@@ -992,7 +1013,7 @@ app.post("/onboard-proxy", async (c) => {
         const hs = (path: string, init?: RequestInit) => fetch("https://api.hubapi.com" + path, {
           ...init, headers: { "Authorization": `Bearer ${HS}`, "Content-Type": "application/json" },
         });
-        const DEAL_PROPS = ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate", "estimated_rent", "onboarding_fee", "lease_up_fee", "mgmt_fee", "renewal_fee", "annual_inspection_fee", "ob_proposal_data", "ob_proposal_url", "ob_agreement_url", "bed__bath__sqft", "units", "link", "rentometer_link", "ob_maintenance_dispatch", "ob_renewal_notice", "ob_leasing_notifications", "ob_applicant_criteria"];
+        const DEAL_PROPS = ["dealname", "pipeline", "dealstage", "subject_city", "hs_lastmodifieddate", "estimated_rent", "onboarding_fee", "lease_up_fee", "mgmt_fee", "renewal_fee", "annual_inspection_fee", "ob_proposal_data", "ob_proposal_url", "ob_agreement_url", "bed__bath__sqft", "units", "link", "rentometer_link", "ob_maintenance_dispatch", "ob_renewal_notice", "ob_leasing_notifications", "ob_applicant_criteria", "ob_tax_parcel_number", "ob_tax_record_url"];
         let c0: Record<string, string> = {};
         let dd: { id: string; p: Record<string, string> } | undefined;
         if (email) {
@@ -1049,6 +1070,24 @@ app.post("/onboard-proxy", async (c) => {
         }
         const d0 = dd?.p;
         if (!d0) return j(headers, 200, { ok: true, proposal: { ownerName: [c0.firstname, c0.lastname].filter(Boolean).join(" ") } });
+        // all associated contacts = the owners on the tax record (staff maintains them in Step 5)
+        let allContacts: { name: string; email: string }[] = [];
+        try {
+          const car2 = await hs(`/crm/v4/objects/deals/${dd!.id}/associations/contacts?limit=10`);
+          const caj2 = await car2.json().catch(() => ({}));
+          const cids2 = (caj2?.results ?? []).map((x: { toObjectId?: unknown }) => String(x?.toObjectId ?? "")).filter(Boolean).slice(0, 6);
+          if (cids2.length) {
+            const cbr = await hs("/crm/v3/objects/contacts/batch/read", {
+              method: "POST",
+              body: JSON.stringify({ inputs: cids2.map((id: string) => ({ id })), properties: ["firstname", "lastname", "email"] }),
+            });
+            const cbj = await cbr.json().catch(() => ({}));
+            allContacts = (cbj?.results ?? []).map((cx: { properties?: Record<string, string> }) => ({
+              name: [cx.properties?.firstname, cx.properties?.lastname].filter(Boolean).join(" ").trim(),
+              email: String(cx.properties?.email ?? ""),
+            })).filter((cx: { name: string }) => cx.name);
+          }
+        } catch { /* non-fatal */ }
         const name = String(d0.dealname ?? "").replace(/^\s*\[[^\]]*\]\s*/, "").trim();
         const city = String(d0.subject_city ?? "").trim();
         const address = city && name && !name.toLowerCase().includes(city.toLowerCase()) ? `${name}, ${city}` : name;
@@ -1081,9 +1120,14 @@ app.post("/onboard-proxy", async (c) => {
             criteria: String(d0.ob_applicant_criteria ?? ""),
           },
           data,
+          // tax record download for the accept popup; names only (never emails) on the open payload
+          taxRecordUrl: String(d0.ob_tax_record_url ?? ""),
+          owners: allContacts.map((cx) => cx.name),
         };
         if (staff) {
           out.stage = String(d0.dealstage ?? "");
+          out.taxParcel = String(d0.ob_tax_parcel_number ?? "");
+          out.ownersFull = allContacts;
           out.email = String(c0.email ?? "");
           out.agreementUrl = String(d0.ob_agreement_url ?? "");   // workbench Step 6 prefill
           out.zillow = String(d0.link ?? "");
@@ -1135,6 +1179,255 @@ app.post("/onboard-proxy", async (c) => {
         if (!ur.ok) return j(headers, 502, { ok: false, error: "save failed" });
         return j(headers, 200, { ok: true, saved: Object.keys(props) });
       } catch { return j(headers, 502, { ok: false, error: "save failed" }); }
+    }
+
+    // ---------- propTaxSave (staff): parcel number + tax-record URL + owners on record ----------
+    if (action === "propTaxSave") {
+      if (!TEAM_KEY || c.req.header("x-sv-key") !== TEAM_KEY) return j(headers, 401, { error: "bad_key" });
+      const HS = Deno.env.get("HUBSPOT_CRM_TOKEN") ?? "";
+      const dealId = String(body.dealId ?? "").replace(/\D/g, "");
+      const parcel = String(body.parcel ?? "").trim().slice(0, 60);
+      const taxUrl = String(body.taxUrl ?? "").trim().slice(0, 500);
+      const owners = (Array.isArray(body.owners) ? body.owners : []).slice(0, 6).map((o: Record<string, unknown>) => ({
+        name: String(o.name ?? "").trim().slice(0, 120),
+        email: String(o.email ?? "").trim().toLowerCase().slice(0, 200),
+      })).filter((o: { name: string }) => o.name);
+      if (!HS || !dealId) return j(headers, 400, { error: "missing_fields" });
+      const hs = (path: string, init?: RequestInit) => fetch("https://api.hubapi.com" + path, {
+        ...init, headers: { "Authorization": `Bearer ${HS}`, "Content-Type": "application/json" },
+      });
+      const dr = await hs(`/crm/v3/objects/deals/${dealId}?properties=pipeline`);
+      const dj = await dr.json().catch(() => ({}));
+      if (dj?.properties?.pipeline !== "2185322227") return j(headers, 404, { error: "no_mgmt_deal" });
+      const props: Record<string, string> = {};
+      if (parcel) props.ob_tax_parcel_number = parcel;
+      if (/^https:\/\//.test(taxUrl)) props.ob_tax_record_url = taxUrl;
+      if (Object.keys(props).length) {
+        await hs(`/crm/v3/objects/deals/${dealId}`, { method: "PATCH", body: JSON.stringify({ properties: props }) });
+      }
+      // owners -> contacts associated to the deal (create when missing, skip already-associated names)
+      const car = await hs(`/crm/v4/objects/deals/${dealId}/associations/contacts?limit=10`);
+      const caj = await car.json().catch(() => ({}));
+      const cids = (caj?.results ?? []).map((x: { toObjectId?: unknown }) => String(x?.toObjectId ?? "")).filter(Boolean);
+      const existing: { id: string; name: string; email: string }[] = [];
+      if (cids.length) {
+        const cbr = await hs("/crm/v3/objects/contacts/batch/read", {
+          method: "POST", body: JSON.stringify({ inputs: cids.map((id: string) => ({ id })), properties: ["firstname", "lastname", "email"] }),
+        });
+        const cbj = await cbr.json().catch(() => ({}));
+        for (const cx of (cbj?.results ?? [])) {
+          existing.push({ id: String(cx.id), name: [cx.properties?.firstname, cx.properties?.lastname].filter(Boolean).join(" ").trim().toLowerCase(), email: String(cx.properties?.email ?? "").toLowerCase() });
+        }
+      }
+      const added: string[] = [];
+      for (const o of owners) {
+        const nm = o.name.toLowerCase();
+        if (existing.some((e) => e.name === nm || (o.email && e.email === o.email))) continue;
+        let cid = "";
+        if (o.email) {
+          const sr = await hs("/crm/v3/objects/contacts/search", {
+            method: "POST", body: JSON.stringify({ filterGroups: [{ filters: [{ propertyName: "email", operator: "EQ", value: o.email }] }], properties: ["email"], limit: 1 }),
+          });
+          const sj = await sr.json().catch(() => ({}));
+          cid = String(sj?.results?.[0]?.id ?? "");
+        }
+        if (!cid) {
+          const parts = o.name.split(/\s+/);
+          const cr = await hs("/crm/v3/objects/contacts", {
+            method: "POST",
+            body: JSON.stringify({ properties: { firstname: parts.slice(0, -1).join(" ") || parts[0], lastname: parts.length > 1 ? parts[parts.length - 1] : "", ...(o.email ? { email: o.email } : {}) } }),
+          });
+          const cj = await cr.json().catch(() => ({}));
+          cid = String(cj?.id ?? "");
+        }
+        if (cid) {
+          await hs(`/crm/v4/objects/deals/${dealId}/associations/default/contacts/${cid}`, { method: "PUT" }).catch(() => null);
+          added.push(o.name);
+        }
+      }
+      return j(headers, 200, { ok: true, added });
+    }
+
+    // ---------- propTaxUploadUrl (staff): signed storage upload for the tax record ----------
+    if (action === "propTaxUploadUrl") {
+      if (!TEAM_KEY || c.req.header("x-sv-key") !== TEAM_KEY) return j(headers, 401, { error: "bad_key" });
+      const dealId = String(body.dealId ?? "").replace(/\D/g, "") || "misc";
+      const supaUrl = Deno.env.get("SUPABASE_URL") ?? "";
+      const supaKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+      if (!supaUrl || !supaKey) return j(headers, 500, { error: "storage_not_configured" });
+      const filename = String(body.filename ?? "tax-record").replace(/[^\w.\-]/g, "_").slice(0, 80);
+      const key = `tax-records/${dealId}/${crypto.randomUUID().slice(0, 8)}-${filename}`;
+      const sh = { "Authorization": `Bearer ${supaKey}`, "apikey": supaKey };
+      await fetch(`${supaUrl}/storage/v1/bucket`, {
+        method: "POST", headers: { ...sh, "Content-Type": "application/json" },
+        body: JSON.stringify({ id: "inspections", name: "inspections", public: true }),
+      }).catch(() => null);
+      const r = await fetch(`${supaUrl}/storage/v1/object/upload/sign/inspections/${key}`, {
+        method: "POST", headers: { ...sh, "Content-Type": "application/json" }, body: "{}",
+      });
+      const jr = await r.json().catch(() => ({}));
+      if (!r.ok || !jr.url) return j(headers, 502, { error: "sign_failed" });
+      return j(headers, 200, { ok: true, uploadUrl: `${supaUrl}/storage/v1${jr.url}`, publicUrl: `${supaUrl}/storage/v1/object/public/inspections/${key}` });
+    }
+
+    // ================= LEASING URL (open, per-property listing review at /en/listing?p={slug}) =================
+    // Listing Settings task = source of truth; the page reads it live on every load.
+    // Names only ride the open payload (team roles); emails are scrubbed from values.
+    if (action === "lsView" || action === "lsApprove" || action === "lsModify") {
+      const LS_PROJECT = "1217446710785429";
+      const LS_APPROVAL = "1217446658980732"; // Owner Approval Date
+      const LS_PRIMARY = "1217446729380828";  // Primary Leasing Agent (people)
+      const lsSlug = (addr: string) => addr.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+      const slugIn = String(body.slug ?? "").trim().toLowerCase().slice(0, 120).replace(/[^a-z0-9-]/g, "");
+      if (!slugIn) return j(headers, 400, { error: "missing_slug" });
+      let hit: { gid: string; address: string } | null = null;
+      let off = "";
+      for (let page = 0; page < 5 && !hit; page++) {
+        const res0 = await fetch(`${ASANA}/projects/${LS_PROJECT}/tasks?limit=100&opt_fields=name${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
+          { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+        const json0 = await res0.json().catch(() => ({}));
+        for (const t of (json0.data ?? []) as Array<{ gid: string; name: string }>) {
+          const addr = String(t.name).replace(/^listing\s*\|/i, "").trim();
+          if (addr && lsSlug(addr) === slugIn) { hit = { gid: t.gid, address: addr }; break; }
+        }
+        off = json0.next_page?.offset ?? "";
+        if (!off) break;
+      }
+      if (!hit) return j(headers, 404, { error: "not_found", message: "No listing matches this link. Check the URL or contact listings@sagareus.com." });
+
+      if (action === "lsView") {
+        const t = await asana("GET", `/tasks/${hit.gid}?opt_fields=name,custom_fields.gid,custom_fields.name,custom_fields.display_value,custom_fields.resource_subtype`);
+        const scrub = (s: string) => s.replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "").trim();
+        const fields: Array<{ name: string; value: string }> = [];
+        const team: Array<{ role: string; name: string }> = [];
+        let approval = "";
+        for (const cf of (t.custom_fields ?? []) as Array<{ gid: string; name: string; display_value: string | null; resource_subtype?: string }>) {
+          const nm = String(cf.name);
+          const val = String(cf.display_value ?? "").trim();
+          if (!val) continue;
+          if (/^(\u{1F512}|internal)/iu.test(nm)) continue;             // agent-hidden fields
+          if (String(cf.gid) === LS_APPROVAL) { approval = val.slice(0, 10); continue; }
+          if (/^unit id$/i.test(nm)) continue;                          // internal reference
+          if (cf.resource_subtype === "people") { team.push({ role: nm, name: scrub(val).slice(0, 120) }); continue; }
+          fields.push({ name: nm, value: scrub(val).slice(0, 6000) });
+        }
+        // key dates pull LIVE from the leasing projects, never from Listing Settings
+        const dates: Record<string, string> = {};
+        try {
+          const streetNo = (hit.address.match(/^\d+/) ?? [""])[0];
+          const th = await asana("GET", `/workspaces/${FEED_WS}/typeahead?resource_type=task&query=${encodeURIComponent(hit.address.slice(0, 40))}&count=20&opt_fields=name`);
+          const lu = (th ?? []).find((x: { name: string }) => /^(LU|TP|PreLease)\s*\|/i.test(x.name) && (!streetNo || x.name.includes(streetNo)));
+          if (lu) {
+            const lt = await asana("GET", `/tasks/${lu.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+            const g = (re: RegExp) => String(((lt.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>)
+              .find((f) => re.test(f.name) && f.display_value)?.display_value ?? "").slice(0, 10);
+            dates.moveOut = g(/move\s*out/i);
+            dates.listDate = g(/list date/i);
+            dates.moveIn = g(/move\s*in date/i);
+          }
+          const to = (th ?? []).find((x: { name: string }) => /^turn\s*over\s*\|/i.test(x.name) && (!streetNo || x.name.includes(streetNo)));
+          if (to) {
+            const tt = await asana("GET", `/tasks/${to.gid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
+            dates.turnOverDispatched = String(((tt.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>)
+              .find((f) => String(f.gid) === "1214522138482281")?.display_value ?? "").slice(0, 10);
+          }
+        } catch { /* dates are best-effort */ }
+        return j(headers, 200, { ok: true, address: hit.address, fields, team, approval, dates });
+      }
+
+      const who = String(body.name ?? "").trim().slice(0, 120);
+      if (!who) return j(headers, 400, { error: "missing_name", message: "Add your name first." });
+
+      if (action === "lsApprove") {
+        const today = obDuePT(0);
+        try { await asana("PUT", `/tasks/${hit.gid}`, { custom_fields: { [LS_APPROVAL]: { date: today } } }); } catch { /* field may be blocked; the comment still lands */ }
+        await asana("POST", `/tasks/${hit.gid}/stories`, {
+          html_text: storyHtml(`Owner Approves listing! Approved by ${who} on ${today} via the Leasing URL (/en/listing). Done by Claude on behalf of the owner.`),
+        });
+        try {
+          const subs = await asana("GET", `/tasks/${hit.gid}/subtasks?limit=50&opt_fields=name,completed`);
+          const oa = ((subs ?? []) as Array<{ gid: string; name: string; completed: boolean }>).find((s) => /owner approval/i.test(s.name) && !s.completed);
+          if (oa) await asana("PUT", `/tasks/${oa.gid}`, { completed: true });
+        } catch { /* best-effort */ }
+        return j(headers, 200, { ok: true, approval: today });
+      }
+
+      // lsModify: modification request -> comment + subtask assigned to the Primary Leasing Agent
+      const text = String(body.text ?? "").trim().slice(0, 4000);
+      if (text.length < 5) return j(headers, 400, { error: "missing_text", message: "Describe the change you want first." });
+      let agentGid = "";
+      try {
+        const t2 = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.gid,custom_fields.people_value.gid`);
+        const pf = ((t2.custom_fields ?? []) as Array<{ gid: string; people_value?: Array<{ gid: string }> }>).find((f) => String(f.gid) === LS_PRIMARY);
+        agentGid = String(pf?.people_value?.[0]?.gid ?? "");
+      } catch { /* unassigned is fine */ }
+      await asana("POST", `/tasks/${hit.gid}/stories`, {
+        html_text: storyHtml(`Listing modification request from ${who} (via the Leasing URL):\n\n${text}\n\nRouted to listings@sagareus.com. Done by Claude on behalf of the owner.`),
+      });
+      const sub = await asana("POST", `/tasks/${hit.gid}/subtasks`, {
+        name: `Modifications Requested | ${obDuePT(0)} | ${hit.address}`.slice(0, 250),
+        notes: `From ${who} via the Leasing URL:\n\n${text}\n\nReply through listings@sagareus.com.`,
+        due_on: obDuePT(1),
+        ...(agentGid ? { assignee: agentGid } : {}),
+      });
+      return j(headers, 200, { ok: true, subtaskGid: sub.gid });
+    }
+
+    // ---------- propAcceptConfirm (open): client accepts + confirms owners on tax record ----------
+    // Replaces the PandaDoc email gate (Brittany 2026-08-07): moves the deal to Proposal
+    // Accepted, records the confirmed owner names/emails as a deal note, and fills missing
+    // emails on matching associated contacts. Never moves a deal backward.
+    if (action === "propAcceptConfirm") {
+      const HS = Deno.env.get("HUBSPOT_CRM_TOKEN") ?? "";
+      const email = String(body.email ?? "").trim().slice(0, 200);
+      const slugIn = String(body.slug ?? "").trim().toLowerCase().slice(0, 120).replace(/[^a-z0-9-]/g, "");
+      const owners = (Array.isArray(body.owners) ? body.owners : []).slice(0, 6).map((o: Record<string, unknown>) => ({
+        name: String(o.name ?? "").trim().slice(0, 120),
+        email: String(o.email ?? "").trim().toLowerCase().slice(0, 200),
+      })).filter((o: { name: string; email: string }) => o.name && /@.+\./.test(o.email));
+      if (!HS || (!email && !slugIn) || !owners.length) return j(headers, 200, { ok: false });
+      const hs = (path: string, init?: RequestInit) => fetch("https://api.hubapi.com" + path, {
+        ...init, headers: { "Authorization": `Bearer ${HS}`, "Content-Type": "application/json" },
+      });
+      const deal = await locateMgmtDeal(HS, email, slugIn, ["dealstage", "dealname"]);
+      if (!deal) return j(headers, 200, { ok: false });
+      // forward-only stage move: pre-accept stages -> Proposal Accepted
+      const PRE = new Set(["3505530579", "3505530580", "3505530581", "3505530582", "3505530583"]);
+      if (PRE.has(String(deal.p.dealstage ?? ""))) {
+        await hs(`/crm/v3/objects/deals/${deal.id}`, { method: "PATCH", body: JSON.stringify({ properties: { dealstage: "4112393962" } }) }).catch(() => null);
+      }
+      // note the confirmation on the deal
+      const lines = owners.map((o) => `- ${o.name} <${o.email}>`).join("\n");
+      await hs("/crm/v3/objects/notes", {
+        method: "POST",
+        body: JSON.stringify({
+          properties: {
+            hs_timestamp: new Date().toISOString(),
+            hs_note_body: `Proposal ACCEPTED on the web proposal. Client confirmed the owners on the tax record:\n${lines}\n\nAll owners must sign the PM Agreement. Logged by the proposal page.`,
+          },
+          associations: [{ to: { id: deal.id }, types: [{ associationCategory: "HUBSPOT_DEFINED", associationTypeId: 214 }] }],
+        }),
+      }).catch(() => null);
+      // fill missing emails on matching associated contacts (best effort)
+      try {
+        const car = await hs(`/crm/v4/objects/deals/${deal.id}/associations/contacts?limit=10`);
+        const caj = await car.json().catch(() => ({}));
+        const cids = (caj?.results ?? []).map((x: { toObjectId?: unknown }) => String(x?.toObjectId ?? "")).filter(Boolean);
+        if (cids.length) {
+          const cbr = await hs("/crm/v3/objects/contacts/batch/read", {
+            method: "POST", body: JSON.stringify({ inputs: cids.map((id: string) => ({ id })), properties: ["firstname", "lastname", "email"] }),
+          });
+          const cbj = await cbr.json().catch(() => ({}));
+          for (const cx of (cbj?.results ?? [])) {
+            const nm = [cx.properties?.firstname, cx.properties?.lastname].filter(Boolean).join(" ").trim().toLowerCase();
+            const cur = String(cx.properties?.email ?? "");
+            if (cur) continue;
+            const hit = owners.find((o) => o.name.toLowerCase() === nm);
+            if (hit) await hs(`/crm/v3/objects/contacts/${cx.id}`, { method: "PATCH", body: JSON.stringify({ properties: { email: hit.email } }) }).catch(() => null);
+          }
+        }
+      } catch { /* non-fatal */ }
+      return j(headers, 200, { ok: true });
     }
 
     // ---------- propAccept: email-match gate in front of the PandaDoc agreement ----------
@@ -1474,6 +1767,21 @@ app.post("/onboard-proxy", async (c) => {
           totOpen += open.length; totDone += done.length;
           return { key: pr.key, title: pr.title, open, done };
         });
+
+        // Maintenance and Resident Relations render as one combined section (Brittany 2026-08-03)
+        {
+          const mi = sections.findIndex((s) => s.key === "maintenance");
+          const ri = sections.findIndex((s) => s.key === "residentrelations");
+          if (mi > -1 && ri > -1) {
+            const m = sections[mi], r = sections[ri];
+            m.title = "Maintenance + Resident Relations";
+            m.open = [...m.open, ...r.open];
+            m.done = [...m.done, ...r.done];
+            m.open.sort((a: FeedItem, b: FeedItem) => String(a?.due || "9999").localeCompare(String(b?.due || "9999")));
+            m.done.sort((a: FeedItem, b: FeedItem) => String(b?.done ?? "").localeCompare(String(a?.done ?? "")));
+            sections.splice(ri, 1);
+          }
+        }
 
         // mask the street address and the building nickname wherever staff typed them into titles
         const addrRe = feedAddrRegex(address);

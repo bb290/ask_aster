@@ -1004,6 +1004,7 @@ app.post("*", async (c) => {
       } catch { /* best-effort */ }
       return j(headers, 200, {
         ok: true,
+        unitId: String(uid),
         matchedAddress: fullAddress,
         address: fullAddress,
         beds: bedBathNum(u.UnitBedrooms),
@@ -1017,6 +1018,67 @@ app.post("*", async (c) => {
         marketRent: typeof u.MarketRent === "number" && u.MarketRent > 0 ? u.MarketRent : null,
         description: String(u.Description ?? ""),
         propertyId: u.PropertyId ?? null,
+      });
+    }
+
+    // ---------- lsPush: PreListing Workbench -> Listing Settings task + Leasing URL ----------
+    // Find-or-create "Listing | {address}" in Listing Settings, write the bench's fields,
+    // and return the owner-facing /en/listing URL (Brittany 2026-08-13).
+    if (action === "lsPush") {
+      const LS_PROJECT = "1217446710785429";
+      const address = String(body.address ?? "").trim().slice(0, 200);
+      if (address.length < 8) return j(headers, 400, { error: "missing_address" });
+      const lsSlug = (a: string) => a.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+      const slug = lsSlug(address);
+      // find existing by slug
+      let taskGid = "";
+      let off = "";
+      for (let page = 0; page < 5 && !taskGid; page++) {
+        const res0 = await fetch(`${ASANA}/projects/${LS_PROJECT}/tasks?limit=100&opt_fields=name${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
+          { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+        const json0 = await res0.json().catch(() => ({}));
+        for (const t of (json0.data ?? []) as Array<{ gid: string; name: string }>) {
+          if (lsSlug(String(t.name).replace(/^listing\s*\|/i, "").trim()) === slug) { taskGid = t.gid; break; }
+        }
+        off = json0.next_page?.offset ?? "";
+        if (!off) break;
+      }
+      const F: Record<string, string> = {
+        unitId: "1213183515622826", petPolicy: "1217446589255794", startingRent: "1217446589856415",
+        currentRent: "1217446658742575", estimatedRent: "1217446658749360", minRent: "1217446710834881",
+        moveInSpecial: "1217446589879104", minCredit: "1217446728640049", minIncome: "1217446770195125",
+        lastMonthRent: "1217446710797252", specialTerms: "1217446589881673", draftListing: "1217446710674762",
+        availableUpgrades: "1217446589924476",
+      };
+      const cf: Record<string, unknown> = {};
+      for (const [k, gid] of Object.entries(F)) {
+        const v = body[k];
+        if (v == null || v === "") continue;
+        const n = Number(v);
+        cf[gid] = ["startingRent", "currentRent", "estimatedRent", "minRent"].includes(k)
+          ? (Number.isFinite(n) ? n : undefined)
+          : String(v).slice(0, 6000);
+        if (cf[gid] === undefined) delete cf[gid];
+      }
+      if (!taskGid) {
+        const t = await asana("POST", "/tasks", {
+          name: `Listing | ${address}`.slice(0, 250),
+          projects: [LS_PROJECT],
+          notes: "Source of truth for this property's Leasing URL. Edit fields here; the page updates live.\n\nCreated from the PreListing Workbench. Done by Claude on behalf of the listing agent.",
+          ...(Object.keys(cf).length ? { custom_fields: cf } : {}),
+        });
+        taskGid = t.gid;
+      } else if (Object.keys(cf).length) {
+        await asana("PUT", `/tasks/${taskGid}`, { custom_fields: cf });
+        await asana("POST", `/tasks/${taskGid}/stories`, {
+          text: "Listing Settings updated from the PreListing Workbench. Done by Claude on behalf of the listing agent.",
+        }).catch(() => null);
+      }
+      return j(headers, 200, {
+        ok: true,
+        taskGid,
+        taskUrl: `https://app.asana.com/0/0/${taskGid}`,
+        leasingUrl: `https://www.sagareus.com/en/listing?p=${slug}`,
       });
     }
 
