@@ -449,31 +449,37 @@ app.post("*", async (c) => {
       const todayStr = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10); // Seattle-ish today
       const dueOn = new Date(Date.now() - 7 * 3600 * 1000 + 86400000).toISOString().slice(0, 10); // Seattle-ish tomorrow
 
-      // 5) create a maintenance subtask per flagged item, on the anchor task.
-      //    Assignee: TO Coordinator when a turnover exists; otherwise Joylyn (default
-      //    maintenance coordinator) for occupied/manual, unassigned + note for leasing.
+      // 5) ONE dated visit task per submission, assigned to the coordinator; flagged
+      //    items are bullet points in its description, not subtasks (Bart + Brittany
+      //    2026-08-05: individual tickets/subtasks overwhelm the coordinator's view).
       const assignee = toCoordinator ?? (source === "lu" ? null : DEFAULT_MAINT);
-      const created: Array<{ gid: string; name: string; url: string }> = [];
-      for (const it of items) {
-        if (!it.ticket) continue;
-        const label = String(it.item ?? "Issue");
-        const note = String(it.note ?? "").trim();
-        const issues = Array.isArray(it.issues) ? it.issues.map((x: unknown) => String(x).trim()).filter(Boolean) : [];
-        const name = `${label} | ${address}`.slice(0, 250);
-        const bodyLines = [`Found on site visit (${todayStr}).`];
-        if (issues.length) bodyLines.push("", "Issues:", ...issues.map((x) => `- ${x}`));
-        if (note) bodyLines.push("", `Agent comment: ${note}`);
-        bodyLines.push("", "Photos for this item are attached here; the full set lives on the site visit subtask.");
-        if (assignee) { if (assignee === DEFAULT_MAINT) bodyLines.push("", "Assigned to the default maintenance coordinator; reroute if this property has someone else."); }
-        else bodyLines.push("", "No Turn Over task found for this property. Assign to your Turn Over Coordinator.");
-        const sub = await asana("POST", `/tasks/${anchorGid}/subtasks`, {
-          name,
+      let visitTask: { gid: string; name?: string } | null = null;
+      const flagged = items.filter((it) => it.ticket);
+      if (flagged.length) {
+        const bullets = flagged.map((it) => {
+          const label = String(it.item ?? "Issue");
+          const issues = Array.isArray(it.issues) ? it.issues.map((x: unknown) => String(x).trim()).filter(Boolean) : [];
+          const note = String(it.note ?? "").trim();
+          const bits = [issues.join(", "), note].filter(Boolean).join(" — ");
+          return `• ${label}${bits ? ": " + bits : ""}`;
+        });
+        const vLines = [
+          `Issues found on the ${todayStr} site visit at ${address}:`,
+          "",
+          ...bullets,
+        ];
+        if (generalNote) vLines.push("", `Notes: ${generalNote}`);
+        vLines.push("", "Photos for flagged items are attached here; the full set lives on the site visit subtask.");
+        if (assignee === DEFAULT_MAINT) vLines.push("", "Assigned to the default maintenance coordinator; reroute if this property has someone else.");
+        if (!assignee) vLines.push("", "No Turn Over task found for this property. Assign to your Turn Over Coordinator.");
+        visitTask = await asana("POST", `/tasks/${anchorGid}/subtasks`, {
+          name: `Site Visit ${todayStr} | ${address}`.slice(0, 250),
           ...(assignee ? { assignee: assignee.gid } : {}),
           due_on: dueOn,
-          notes: bodyLines.join("\n"),
+          notes: vLines.join("\n"),
         });
-        created.push({ gid: sub.gid, name: sub.name, url: `https://app.asana.com/0/0/${sub.gid}`, idx: it.idx ?? null });
       }
+      const created: Array<{ gid: string; name: string; url: string }> = [];
 
       // 6) post the checklist comment on the inspection subtask
       const bySection: Record<string, string[]> = {};
@@ -494,7 +500,7 @@ app.post("*", async (c) => {
       if (inspector) lines.splice(1, 0, `Inspected by: ${inspector}`);
       for (const sec of Object.keys(bySection)) { lines.push(sec); lines.push(...bySection[sec]); lines.push(""); }
       if (generalNote) { lines.push("Notes:"); lines.push(generalNote); lines.push(""); }
-      lines.push(`RESULT: ${created.length ? `${created.length} issue ticket(s) created` : "All good, no issues found"}`);
+      lines.push(`RESULT: ${flagged.length ? `${flagged.length} issue(s) filed on one Site Visit task` : "All good, no issues found"}`);
       const story = await asana("POST", `/tasks/${inspection.gid}/stories`, { text: lines.join("\n") });
 
       // While a Turn Over task is open for this address, the coordinator gets a
@@ -533,10 +539,101 @@ app.post("*", async (c) => {
         inspectionUrl: `https://app.asana.com/0/0/${inspection.gid}`,
         storyGid: story?.gid ?? null,
         subtasks: created,
+        itemCount: flagged.length,
+        visitTaskGid: visitTask?.gid ?? null,
+        visitTaskUrl: visitTask ? `https://app.asana.com/0/0/${visitTask.gid}` : null,
         assignee: assignee ? assignee.name : null,
         dueOn,
         inspectionDueOn,
       });
+    }
+
+    // ---------- Team Development board: AI skills tracker ----------
+    // Skills live as "AI Skill | {name}" subtasks on each person's dev task in
+    // Team Development 2.0 (Brittany 2026-08-05). Demo uploads prove completion.
+    const TD_PROJECT = "1210186078076883";
+    async function tdDevTask(member: string): Promise<{ gid: string; name: string } | null> {
+      const tasks = await asana("GET", `/projects/${TD_PROJECT}/tasks?opt_fields=name&limit=100`);
+      const toks = member.toLowerCase().split(/\s+/).filter(Boolean);
+      return (tasks ?? []).find((t: { name: string }) => {
+        const n = String(t.name).toLowerCase();
+        return toks.length > 0 && toks.every((x) => n.includes(x));
+      }) ?? null;
+    }
+    async function tdVerifySkill(taskGid: string): Promise<{ gid: string; name: string } | null> {
+      const t = await asana("GET", `/tasks/${taskGid}?opt_fields=name,parent.name`).catch(() => null);
+      if (!t || !/^ai skill/i.test(String(t.name ?? ""))) return null;
+      return t;
+    }
+    if (action === "tdSkills") {
+      const member = String(body.member ?? "").trim().slice(0, 80);
+      if (!member) return j(headers, 400, { error: "missing_fields" });
+      const dev = await tdDevTask(member);
+      if (!dev) return j(headers, 200, { ok: false, error: "no_dev_task" });
+      const subs = await asana("GET", `/tasks/${dev.gid}/subtasks?opt_fields=name,completed,notes&limit=100`);
+      const rows = (subs ?? []).filter((s: { name: string }) => /^ai skill/i.test(String(s.name ?? ""))).slice(0, 10);
+      const skills = [];
+      for (const s of rows) {
+        const atts = await asana("GET", `/tasks/${s.gid}/attachments?opt_fields=name`).catch(() => []);
+        const links = String(s.notes ?? "").split("\n").map((l: string) => l.trim()).filter((l: string) => /^https?:\/\//i.test(l));
+        skills.push({
+          gid: String(s.gid),
+          name: String(s.name).replace(/^ai skill\s*\|\s*/i, ""),
+          done: s.completed === true,
+          links, files: (atts ?? []).length,
+        });
+      }
+      return j(headers, 200, { ok: true, devGid: dev.gid, skills });
+    }
+    if (action === "tdSkillAdd") {
+      const member = String(body.member ?? "").trim().slice(0, 80);
+      const name = String(body.name ?? "").trim().slice(0, 120);
+      const link = String(body.link ?? "").trim().slice(0, 500);
+      if (!member || name.length < 3) return j(headers, 400, { error: "missing_fields" });
+      if (link && !/^https?:\/\//i.test(link)) return j(headers, 400, { error: "bad_link" });
+      const dev = await tdDevTask(member);
+      if (!dev) return j(headers, 200, { ok: false, error: "no_dev_task" });
+      const subs = await asana("GET", `/tasks/${dev.gid}/subtasks?opt_fields=name&limit=100`);
+      const count = (subs ?? []).filter((s: { name: string }) => /^ai skill/i.test(String(s.name ?? ""))).length;
+      if (count >= 5) return j(headers, 200, { ok: false, error: "limit" });
+      const sub = await asana("POST", `/tasks/${dev.gid}/subtasks`, {
+        name: `AI Skill | ${name}`,
+        notes: (link ? link + "\n\n" : "")
+          + "Personal AI skill tracked on the Team Development board. Attach a demo video or screenshots here to prove completion; a lead completes the task once presented.\n\n"
+          + `Added from the board by ${member}. Done by Claude on behalf of ${member}.`,
+      });
+      return j(headers, 200, { ok: true, gid: sub.gid });
+    }
+    if (action === "tdSkillLink") {
+      const taskGid = String(body.taskGid ?? "").replace(/\D/g, "");
+      const link = String(body.link ?? "").trim().slice(0, 500);
+      if (!taskGid || !/^https?:\/\//i.test(link)) return j(headers, 400, { error: "missing_fields" });
+      const t = await tdVerifySkill(taskGid);
+      if (!t) return j(headers, 200, { ok: false, error: "not_a_skill" });
+      const cur = await asana("GET", `/tasks/${taskGid}?opt_fields=notes`);
+      await asana("PUT", `/tasks/${taskGid}`, { notes: link + "\n" + String(cur?.notes ?? "") });
+      return j(headers, 200, { ok: true });
+    }
+    if (action === "tdSkillFile") {
+      const taskGid = String(body.taskGid ?? "").replace(/\D/g, "");
+      const filename = String(body.filename ?? "demo").replace(/[^\w.\-]/g, "_").slice(0, 120);
+      const dataB64 = String(body.dataB64 ?? "");
+      if (!taskGid || !dataB64 || dataB64.length > 10_700_000) return j(headers, 400, { error: "bad_file" });
+      const t = await tdVerifySkill(taskGid);
+      if (!t) return j(headers, 200, { ok: false, error: "not_a_skill" });
+      const ext = (filename.match(/\.(\w+)$/) ?? [])[1]?.toLowerCase() ?? "";
+      const mime = ({ jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", webp: "image/webp", gif: "image/gif", heic: "image/heic", mp4: "video/mp4", mov: "video/quicktime", webm: "video/webm" } as Record<string, string>)[ext] ?? "application/octet-stream";
+      const bytes = Uint8Array.from(atob(dataB64), (ch) => ch.charCodeAt(0));
+      const form = new FormData();
+      form.append("parent", taskGid);
+      form.append("file", new Blob([bytes], { type: mime }), filename);
+      const res = await fetch(`${ASANA}/attachments`, {
+        method: "POST",
+        headers: { "Authorization": `Bearer ${ASANA_PAT}` },
+        body: form,
+      });
+      if (!res.ok) return j(headers, 200, { ok: false, error: "upload_failed" });
+      return j(headers, 200, { ok: true });
     }
 
     // ---------- photo: attach one jpeg to the inspection subtask ----------
@@ -688,6 +785,65 @@ app.post("*", async (c) => {
       });
     }
 
+    // ---------- warFeedback: staff feedback on the WAR tool -> subtask on the WAR dev task ----------
+    if (action === "warFeedback") {
+      const text = String(body.text ?? "").trim().slice(0, 4000);
+      const address = String(body.address ?? "").trim().slice(0, 120);
+      if (text.length < 5) return j(headers, 400, { error: "missing_fields" });
+      const WAR_DEV_TASK = "1216867978533183";           // "WAR (Weekly Activity Report)" dev/feedback task
+      const BB = "1203784854198936";                     // Brittany
+      const todayStr = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+      const sub = await asana("POST", `/tasks/${WAR_DEV_TASK}/subtasks`, {
+        name: `WAR Feedback // ${todayStr}`,
+        assignee: BB,
+        due_on: todayStr,
+        notes: text
+          + (address ? `\n\nProperty loaded at the time: ${address}` : "")
+          + "\n\nSubmitted via the WAR widget Team Feedback button. Done by Claude on behalf of the submitting agent.",
+      });
+      return j(headers, 200, { ok: true, url: `https://app.asana.com/0/0/${sub.gid}` });
+    }
+
+    // ---------- svFeedback: staff feedback on the Site Visit tool -> subtask on its dev task ----------
+    if (action === "svFeedback") {
+      const text = String(body.text ?? "").trim().slice(0, 4000);
+      const address = String(body.address ?? "").trim().slice(0, 120);
+      if (text.length < 5) return j(headers, 400, { error: "missing_fields" });
+      const SV_DEV_TASK = "1216867978492127";            // "Site Visit" under Field Tools | Bugs & Feature Requests
+      const BB = "1203784854198936";                     // Brittany
+      const todayStr = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+      const sub = await asana("POST", `/tasks/${SV_DEV_TASK}/subtasks`, {
+        name: `Site Visit Feedback // ${todayStr}`,
+        assignee: BB,
+        due_on: todayStr,
+        notes: text
+          + (address ? `\n\nProperty loaded at the time: ${address}` : "")
+          + "\n\nSubmitted via the Site Visit widget Team Feedback button. Done by Claude on behalf of the submitting agent.",
+      });
+      return j(headers, 200, { ok: true, url: `https://app.asana.com/0/0/${sub.gid}` });
+    }
+
+    // ---------- plFeedback / toFeedback: staff feedback -> subtask on each tool's dev task ----------
+    if (action === "plFeedback" || action === "toFeedback") {
+      const text = String(body.text ?? "").trim().slice(0, 4000);
+      const address = String(body.address ?? "").trim().slice(0, 120);
+      if (text.length < 5) return j(headers, 400, { error: "missing_fields" });
+      const BB = "1203784854198936";                     // Brittany
+      const cfg = action === "plFeedback"
+        ? { task: "1216868072927956", label: "PreListing" }      // "PreListing (Draft Listing & Report)" dev task
+        : { task: "1216868072929681", label: "Turn Over" };      // "Turn Over Complete (Inspection)" dev task
+      const todayStr = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+      const sub = await asana("POST", `/tasks/${cfg.task}/subtasks`, {
+        name: `${cfg.label} Feedback // ${todayStr}`,
+        assignee: BB,
+        due_on: todayStr,
+        notes: text
+          + (address ? `\n\nProperty loaded at the time: ${address}` : "")
+          + `\n\nSubmitted via the ${cfg.label} widget Team Feedback button. Done by Claude on behalf of the submitting agent.`,
+      });
+      return j(headers, 200, { ok: true, url: `https://app.asana.com/0/0/${sub.gid}` });
+    }
+
     // ---------- prelistSubmit: post the PreListing text report to the LU task's PreListing subtask ----------
     if (action === "prelistSubmit") {
       const address = String(body.address ?? "").trim();
@@ -807,6 +963,45 @@ app.post("*", async (c) => {
       }
       const fullAddress = [line1, a.City, [a.State === "Washington" || a.State === "WA" ? "WA" : a.State, a.PostalCode].filter(Boolean).join(" ")]
         .filter(Boolean).join(", ");
+      // PreListing Workbench populate: amenities/utilities/landscaping from the Unit
+      // Settings task, pet policy/criteria/construction from Initial Onboard (best-effort)
+      let settings: Record<string, unknown> | null = null;
+      let settingsGid = "";
+      let onboard: Record<string, unknown> | null = null;
+      try {
+        const m2 = await matchSettings(fullAddress);
+        if (m2.hit) {
+          settingsGid = m2.hit.gid;
+          const st = await asana("GET", `/tasks/${settingsGid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+          const cf3 = (st.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
+          const g = (re: RegExp) => String(cf3.find((f) => re.test(f.name))?.display_value ?? "").trim();
+          settings = {
+            laundry: g(/^laundry$/i), parking: g(/^parking$/i), ev: g(/^ev charger$/i),
+            cooling: g(/^cooling$/i), heating: g(/^heating type$/i),
+            utilities: g(/^utilities$/i), internet: g(/^internet provider$/i),
+            landscaping: g(/^landscaping maintenance$/i),
+            utilityProviders: {
+              electricity: g(/^utilities - electricity$/i), gas: g(/^utilities - gas$/i),
+              water: g(/^utilities - water$/i), sewer: g(/^utilities - sewer/i),
+              garbage: g(/^utilities - garbage$/i), oil: g(/^utilities - oil$/i),
+              internet: g(/^utilities - internet$/i),
+            },
+          };
+        }
+      } catch { /* populate is best-effort */ }
+      try {
+        const streetNo = (fullAddress.match(/^\d+/) ?? [""])[0];
+        if (streetNo) {
+          const hits = await asana("GET", `/workspaces/${WORKSPACE}/typeahead?resource_type=task&query=${encodeURIComponent("Initial Onboarding | " + fullAddress.slice(0, 40))}&count=10&opt_fields=name`);
+          const ob = (hits ?? []).find((x: { name: string }) => /^initial onboarding\s*\|/i.test(x.name) && x.name.includes(streetNo));
+          if (ob) {
+            const t2 = await asana("GET", `/tasks/${ob.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+            const cf4 = (t2.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
+            const g2 = (re: RegExp) => String(cf4.find((f) => re.test(f.name))?.display_value ?? "").trim();
+            onboard = { petPolicy: g2(/^pet policy$/i), criteria: g2(/^applicant criteria$/i), construction: g2(/^construction plans$/i) };
+          }
+        }
+      } catch { /* best-effort */ }
       return j(headers, 200, {
         ok: true,
         matchedAddress: fullAddress,
@@ -816,10 +1011,60 @@ app.post("*", async (c) => {
         sqft: u.UnitSize ?? null,
         previousRent,
         leaseHistory,
+        settings,
+        settingsGid,
+        onboard,
         marketRent: typeof u.MarketRent === "number" && u.MarketRent > 0 ? u.MarketRent : null,
         description: String(u.Description ?? ""),
         propertyId: u.PropertyId ?? null,
       });
+    }
+
+    // ---------- plPhotoFail: photo review failed -> flag the LU photo subtask ----------
+    // Prefixes NEED PHOTO onto the photo subtask under the property's Lease Up task,
+    // dues it the same day as move out, and assigns Courtney (Brittany 2026-08-13).
+    if (action === "plPhotoFail") {
+      const address = String(body.address ?? "").trim();
+      if (!address) return j(headers, 400, { error: "missing_address" });
+      const m = matchUnit(await allVacancies(true), address);
+      if (!m.hit) return j(headers, 404, { error: "lu_not_found", message: "No Lease Up task matches this address, so the photo subtask could not be flagged." });
+      const luGid = m.hit.gid;
+      const lu = await asana("GET", `/tasks/${luGid}?opt_fields=name,custom_fields.name,custom_fields.display_value`);
+      const luCf = (lu.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
+      const moRaw = String(luCf.find((f) => /move\s*out/i.test(f.name) && !/completion/i.test(f.name) && f.display_value)?.display_value ??
+        luCf.find((f) => /move\s*out/i.test(f.name) && f.display_value)?.display_value ?? "").slice(0, 10);
+      const dueOn = /^\d{4}-\d{2}-\d{2}$/.test(moRaw) ? moRaw : new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+      const subs = await asana("GET", `/tasks/${luGid}/subtasks?limit=100&opt_fields=name,completed`);
+      const ph = ((subs ?? []) as Array<{ gid: string; name: string; completed?: boolean }>).find((s) => /photo/i.test(s.name) && !s.completed) ??
+        ((subs ?? []) as Array<{ gid: string; name: string }>).find((s) => /photo/i.test(s.name));
+      if (!ph) return j(headers, 404, { error: "no_photo_subtask", message: "No photo subtask found under the Lease Up task; flag it manually." });
+      const newName = /^NEED PHOTO/i.test(ph.name) ? ph.name : ("NEED PHOTO | " + ph.name).slice(0, 250);
+      await asana("PUT", `/tasks/${ph.gid}`, { name: newName, due_on: dueOn, assignee: "courtney@sagareus.com", completed: false });
+      await asana("POST", `/tasks/${ph.gid}/stories`, {
+        text: `Photo review FAILED on the PreListing Workbench: current photos do not meet the listing standard. Re-shoot needed, due same day as move out (${dueOn}). Done by Claude on behalf of the listing agent (via /wt PreListing Workbench).`,
+      }).catch(() => null);
+      return j(headers, 200, { ok: true, subtaskGid: ph.gid, name: newName, dueOn, url: `https://app.asana.com/0/0/${ph.gid}` });
+    }
+
+    // ---------- plHeatConfirm: Heating Type blank in settings -> confirm-at-move-out subtask ----------
+    if (action === "plHeatConfirm") {
+      const address = String(body.address ?? "").trim();
+      if (!address) return j(headers, 400, { error: "missing_address" });
+      const m = matchUnit(await allVacancies(true), address);
+      if (!m.hit) return j(headers, 404, { error: "lu_not_found", message: "No Lease Up task matches this address; create the confirm task manually." });
+      const luGid = m.hit.gid;
+      const name = `Confirm Heating Type At Move Out | ${address}`.slice(0, 250);
+      const subs = await asana("GET", `/tasks/${luGid}/subtasks?limit=100&opt_fields=name,completed`);
+      const existing = ((subs ?? []) as Array<{ gid: string; name: string }>).find((s) => /^confirm heating type/i.test(s.name));
+      if (existing) return j(headers, 200, { ok: true, gid: existing.gid, existed: true, url: `https://app.asana.com/0/0/${existing.gid}` });
+      const settingsGid = String(body.settingsGid ?? "").replace(/\D/g, "");
+      const sub = await asana("POST", `/tasks/${luGid}/subtasks`, {
+        name,
+        notes: "Heating Type is blank in Unit Settings. Confirm the heating type during the move out inspection, then update the Heating Type field on the Settings task so future listings auto-fill." +
+          (settingsGid ? `\n\nSettings task: https://app.asana.com/0/0/${settingsGid}` : "") +
+          "\n\nCreated from the PreListing Workbench. Done by Claude on behalf of the listing agent.",
+      });
+      return j(headers, 200, { ok: true, gid: sub.gid, existed: false, url: `https://app.asana.com/0/0/${sub.gid}` });
     }
 
     // ---------- unitPhotos: Buildium unit/property images for the PreListing photo review ----------
