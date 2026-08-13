@@ -1049,6 +1049,8 @@ app.post("*", async (c) => {
         moveInSpecial: "1217446589879104", minCredit: "1217446728640049", minIncome: "1217446770195125",
         lastMonthRent: "1217446710797252", specialTerms: "1217446589881673", draftListing: "1217446710674762",
         availableUpgrades: "1217446589924476",
+        priceAdjustmentPlan: "1217448328664674", photoReview: "1217448327991331",
+        amenities: "1217448541918634", landscaping: "1217448387492677",
       };
       const cf: Record<string, unknown> = {};
       for (const [k, gid] of Object.entries(F)) {

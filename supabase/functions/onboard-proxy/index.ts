@@ -1296,7 +1296,7 @@ app.post("/onboard-proxy", async (c) => {
       if (!hit) return j(headers, 404, { error: "not_found", message: "No listing matches this link. Check the URL or contact listings@sagareus.com." });
 
       if (action === "lsView") {
-        const t = await asana("GET", `/tasks/${hit.gid}?opt_fields=name,custom_fields.gid,custom_fields.name,custom_fields.display_value,custom_fields.resource_subtype`);
+        const t = await asana("GET", `/tasks/${hit.gid}?opt_fields=name,modified_at,custom_fields.gid,custom_fields.name,custom_fields.display_value,custom_fields.resource_subtype`);
         const scrub = (s: string) => s.replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "").trim();
         const fields: Array<{ name: string; value: string }> = [];
         const team: Array<{ role: string; name: string }> = [];
@@ -1332,7 +1332,7 @@ app.post("/onboard-proxy", async (c) => {
               .find((f) => String(f.gid) === "1214522138482281")?.display_value ?? "").slice(0, 10);
           }
         } catch { /* dates are best-effort */ }
-        return j(headers, 200, { ok: true, address: hit.address, fields, team, approval, dates });
+        return j(headers, 200, { ok: true, address: hit.address, fields, team, approval, dates, lastUpdated: String(t.modified_at ?? "").slice(0, 10) });
       }
 
       const who = String(body.name ?? "").trim().slice(0, 120);
