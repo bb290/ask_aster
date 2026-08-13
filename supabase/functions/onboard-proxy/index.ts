@@ -1365,25 +1365,55 @@ app.post("/onboard-proxy", async (c) => {
         return j(headers, 200, { ok: true, approval: today });
       }
 
-      // lsModify: modification request -> comment + subtask assigned to the Primary Leasing Agent
+      // lsModify: owner-edited field values push straight into Listing Settings, and one
+      // subtask (assigned to the Team Lead) collects everything for review + Buildium update.
+      const LS_TEAMLEAD = "1217446711292696";
       const text = String(body.text ?? "").trim().slice(0, 4000);
-      if (text.length < 5) return j(headers, 400, { error: "missing_text", message: "Describe the change you want first." });
-      let agentGid = "";
-      try {
-        const t2 = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.gid,custom_fields.people_value.gid`);
-        const pf = ((t2.custom_fields ?? []) as Array<{ gid: string; people_value?: Array<{ gid: string }> }>).find((f) => String(f.gid) === LS_PRIMARY);
-        agentGid = String(pf?.people_value?.[0]?.gid ?? "");
-      } catch { /* unassigned is fine */ }
+      const changesIn = Array.isArray(body.changes) ? (body.changes as Array<{ name?: unknown; value?: unknown }>).slice(0, 30) : [];
+      if (text.length < 5 && !changesIn.length) return j(headers, 400, { error: "missing_text", message: "Edit a field or describe the change you want first." });
+      const t2 = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.gid,custom_fields.name,custom_fields.display_value,custom_fields.resource_subtype,custom_fields.people_value.gid`);
+      const cf2 = (t2.custom_fields ?? []) as Array<{ gid: string; name: string; display_value: string | null; resource_subtype?: string; people_value?: Array<{ gid: string }> }>;
+      let agentGid = String(cf2.find((f) => String(f.gid) === LS_TEAMLEAD)?.people_value?.[0]?.gid ?? "");
+      if (!agentGid) agentGid = String(cf2.find((f) => String(f.gid) === LS_PRIMARY)?.people_value?.[0]?.gid ?? "");
+      const updates: Record<string, unknown> = {};
+      const diffs: string[] = [];
+      for (const ch of changesIn) {
+        const nm = String(ch.name ?? "").trim().slice(0, 80);
+        const val = String(ch.value ?? "").trim().slice(0, 6000);
+        const f = cf2.find((x) => x.name === nm && x.resource_subtype !== "people" && x.resource_subtype !== "date" && String(x.gid) !== LS_APPROVAL);
+        if (!f) continue;
+        const old = String(f.display_value ?? "").trim();
+        if (old === val) continue;
+        if (f.resource_subtype === "number") {
+          const n = parseFloat(val.replace(/[^0-9.]/g, ""));
+          if (!Number.isFinite(n)) continue;
+          updates[f.gid] = n;
+          diffs.push(`${f.name}: ${old || "(blank)"} -> ${n}`);
+        } else {
+          updates[f.gid] = val;
+          diffs.push(`${f.name}: ${old || "(blank)"} -> ${val}`);
+        }
+      }
+      if (Object.keys(updates).length) {
+        try { await asana("PUT", `/tasks/${hit.gid}`, { custom_fields: updates }); } catch { /* diffs still land in the subtask */ }
+      }
+      const bodyLines = [
+        "Review owner requested modifications & update Buildium.",
+        "",
+        ...(diffs.length ? ["Field changes (already pushed to Listing Settings; the Leasing URL shows them now):", ...diffs.map((d) => "• " + d), ""] : []),
+        ...(text ? [`Comment from ${who}:`, text, ""] : []),
+        "Reply through listings@sagareus.com. Done by Claude on behalf of the owner.",
+      ];
       await asana("POST", `/tasks/${hit.gid}/stories`, {
-        html_text: storyHtml(`Listing modification request from ${who} (via the Leasing URL):\n\n${text}\n\nRouted to listings@sagareus.com. Done by Claude on behalf of the owner.`),
-      });
+        html_text: storyHtml(`Listing modification request from ${who} (via the Leasing URL):\n\n${diffs.map((d) => "• " + d).join("\n")}${diffs.length && text ? "\n\n" : ""}${text}`),
+      }).catch(() => null);
       const sub = await asana("POST", `/tasks/${hit.gid}/subtasks`, {
-        name: `Modifications Requested | ${obDuePT(0)} | ${hit.address}`.slice(0, 250),
-        notes: `From ${who} via the Leasing URL:\n\n${text}\n\nReply through listings@sagareus.com.`,
+        name: `Owner Modifications | ${obDuePT(0)} | ${hit.address}`.slice(0, 250),
+        notes: bodyLines.join("\n"),
         due_on: obDuePT(1),
         ...(agentGid ? { assignee: agentGid } : {}),
       });
-      return j(headers, 200, { ok: true, subtaskGid: sub.gid });
+      return j(headers, 200, { ok: true, subtaskGid: sub.gid, applied: diffs.length });
     }
 
     // ---------- propAcceptConfirm (open): client accepts + confirms owners on tax record ----------
