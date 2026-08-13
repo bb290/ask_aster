@@ -1052,6 +1052,7 @@ app.post("*", async (c) => {
         priceAdjustmentPlan: "1217448328664674", photoReview: "1217448327991331",
         amenities: "1217448541918634", landscaping: "1217448387492677",
       };
+      const DATE_F: Record<string, string> = { targetLeaseStart: "1217450005495014", targetLeaseEnd: "1217450212127139" };
       const cf: Record<string, unknown> = {};
       for (const [k, gid] of Object.entries(F)) {
         const v = body[k];
@@ -1061,6 +1062,10 @@ app.post("*", async (c) => {
           ? (Number.isFinite(n) ? n : undefined)
           : String(v).slice(0, 6000);
         if (cf[gid] === undefined) delete cf[gid];
+      }
+      for (const [k, gid] of Object.entries(DATE_F)) {
+        const v = String(body[k] ?? "").slice(0, 10);
+        if (/^\d{4}-\d{2}-\d{2}$/.test(v)) cf[gid] = { date: v };
       }
       if (!taskGid) {
         const t = await asana("POST", "/tasks", {
