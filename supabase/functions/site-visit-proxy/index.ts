@@ -963,6 +963,19 @@ app.post("*", async (c) => {
       }
       const fullAddress = [line1, a.City, [a.State === "Washington" || a.State === "WA" ? "WA" : a.State, a.PostalCode].filter(Boolean).join(" ")]
         .filter(Boolean).join(", ");
+      // Buildium property subtype (drives the workbench Type dropdown)
+      let rentalSubType = "";
+      try {
+        if (u.PropertyId) {
+          const pr = await fetch(`https://api.buildium.com/v1/rentals/${encodeURIComponent(String(u.PropertyId))}`, {
+            headers: { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET },
+          });
+          if (pr.ok) {
+            const pj = await pr.json().catch(() => ({}));
+            rentalSubType = String(pj.RentalSubType ?? "");
+          }
+        }
+      } catch { /* best-effort */ }
       // PreListing Workbench populate: amenities/utilities/landscaping from the Unit
       // Settings task, pet policy/criteria/construction from Initial Onboard (best-effort)
       let settings: Record<string, unknown> | null = null;
@@ -1013,6 +1026,7 @@ app.post("*", async (c) => {
         sqft: u.UnitSize ?? null,
         previousRent,
         leaseHistory,
+        rentalSubType,
         settings,
         settingsGid,
         onboard,
