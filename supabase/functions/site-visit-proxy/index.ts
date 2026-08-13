@@ -1051,6 +1051,7 @@ app.post("*", async (c) => {
         availableUpgrades: "1217446589924476",
         priceAdjustmentPlan: "1217448328664674", photoReview: "1217448327991331",
         amenities: "1217448541918634", landscaping: "1217448387492677",
+        petRent: "1217450345262256",
       };
       const DATE_F: Record<string, string> = { targetLeaseStart: "1217450005495014", targetLeaseEnd: "1217450212127139" };
       const cf: Record<string, unknown> = {};
@@ -1058,7 +1059,7 @@ app.post("*", async (c) => {
         const v = body[k];
         if (v == null || v === "") continue;
         const n = Number(v);
-        cf[gid] = ["startingRent", "currentRent", "estimatedRent", "minRent"].includes(k)
+        cf[gid] = ["startingRent", "currentRent", "estimatedRent", "minRent", "petRent"].includes(k)
           ? (Number.isFinite(n) ? n : undefined)
           : String(v).slice(0, 6000);
         if (cf[gid] === undefined) delete cf[gid];
