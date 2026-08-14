@@ -1226,20 +1226,21 @@ app.post("*", async (c) => {
       const taskGid = String(body.taskGid ?? "");
       const address = String(body.address ?? "").trim();
       if (!taskGid || !address) return j(headers, 400, { error: "missing_fields" });
-      type MoFinding = { room: string; type: string; note: string; photos: number };
-      const findings: MoFinding[] = (Array.isArray(body.findings) ? body.findings : []).slice(0, 100).map((f: Record<string, unknown>) => ({
-        room: String(f.room ?? "").slice(0, 60),
-        type: String(f.type ?? "").slice(0, 60) || "Other",
+      // Work-order capture (Brittany 2026-08-14: "Don't go room by room. Just do
+      // enough for the work order.") — findings are work-order items, not room issues.
+      type MoFinding = { type: string; note: string; photos: number };
+      const findings: MoFinding[] = (Array.isArray(body.findings) ? body.findings : []).slice(0, 40).map((f: Record<string, unknown>) => ({
+        type: String(f.type ?? "").slice(0, 60),
         note: String(f.note ?? "").slice(0, 1000),
         photos: Number(f.photos ?? 0) || 0,
-      })).filter((f: MoFinding) => f.room || f.note);
-      const locks = body.locks ?? {};
-      const locksDone = ["code", "mail", "ext", "smoke"].filter((k) => (locks as Record<string, unknown>)[k]);
+      })).filter((f: MoFinding) => f.type);
+      const kbInstalled = body.kbInstalled === true;
+      const ratings = (body.ratings ?? {}) as Record<string, unknown>;
+      const cleanRating = String(ratings.cleanliness ?? "").slice(0, 2);
+      const yardRating = String(ratings.yard ?? "").slice(0, 2);
       const odor = String(body.odor ?? "").slice(0, 200);
-      const stains = String(body.stains ?? "").slice(0, 200);
-      const clean = body.cleaning ?? {};
-      const cleaningGrade = String((clean as Record<string, unknown>).grade ?? "").slice(0, 4);
-      const cleaningNote = String((clean as Record<string, unknown>).note ?? "").slice(0, 600);
+      const mold = String(body.mold ?? "").slice(0, 200);
+      const pests = String(body.pests ?? "").slice(0, 200);
       const kb = body.keybox ?? {};
       const keyboxLoc = String((kb as Record<string, unknown>).location ?? "").slice(0, 200);
       const keyboxCode = String((kb as Record<string, unknown>).code ?? "").slice(0, 40);
@@ -1278,6 +1279,7 @@ app.post("*", async (c) => {
       if (!conduct) {
         conduct = await asana("POST", `/tasks/${moGid || parentGid || taskGid}/subtasks`, { name: "Conduct | Move-out inspection & share report" });
       }
+      if (!conduct?.gid) return j(headers, 502, { error: "conduct_subtask_failed" });
 
       // Neutral report comment
       const lines: string[] = [`MOVE OUT CONDITION REPORT | ${address}`];
@@ -1285,26 +1287,23 @@ app.post("*", async (c) => {
       lines.push(`Move-out inspection date: ${todayStr}`);
       if (videoLink) lines.push(`Walkthrough video: ${videoLink}`);
       lines.push("");
-      const lockLabels: Record<string, string> = { code: "Lockbox code changed + recorded to 1Password", mail: "Mailbox keys tested", ext: "All exterior locks tested", smoke: "Smoke + CO detectors documented" };
-      lines.push("LOCKS + SAFETY");
-      ["code", "mail", "ext", "smoke"].forEach((k) => lines.push(`${locksDone.includes(k) ? "[x]" : "[ ]"} ${lockLabels[k]}`));
-      lines.push("");
-      lines.push(`FINDINGS BY TYPE (${findings.length})`);
-      const byType = new Map<string, MoFinding[]>();
-      findings.forEach((f) => { const arr = byType.get(f.type) ?? []; arr.push(f); byType.set(f.type, arr); });
-      for (const [ty, arr] of byType) {
-        lines.push(`${ty.toUpperCase()}: ${arr.map((f) => f.room).join(", ")}`);
-        arr.forEach((f) => { if (f.note) lines.push(`  - ${f.room}: ${f.note}${f.photos ? ` (${f.photos} photo${f.photos > 1 ? "s" : ""})` : ""}`); });
-      }
-      if (!findings.length) lines.push("No condition items documented. Everything not noted is assumed OK.");
-      lines.push("");
-      lines.push(`CLEANING: ${cleaningGrade || "not graded"}${cleaningNote ? " - " + cleaningNote : ""}`);
-      if (odor) lines.push(`Odor: ${odor}`);
-      if (stains) lines.push(`Stains: ${stains}`);
+      lines.push("KEY BOX");
+      lines.push(`${kbInstalled ? "[x]" : "[ ]"} Key box installed`);
       // keybox CODE never prints in the report/PDF: it lives ONLY in the Unit Settings
       // Keybox Code field and the owner notification email (Brittany 2026-08-14)
-      if (keyboxLoc) { lines.push(""); lines.push(`Keybox location: ${keyboxLoc}${keyboxCode ? " (code updated in Unit Settings)" : ""}`); }
-      else if (keyboxCode) { lines.push(""); lines.push("Keybox code updated in Unit Settings."); }
+      if (keyboxLoc) lines.push(`Keybox location: ${keyboxLoc}${keyboxCode ? " (code updated in Unit Settings)" : ""}`);
+      else if (keyboxCode) lines.push("Keybox code updated in Unit Settings.");
+      lines.push("");
+      lines.push("RATINGS & CONDITIONS");
+      lines.push(`Cleanliness rating: ${cleanRating || "not graded"}`);
+      lines.push(`Yard rating: ${yardRating || "not graded"}`);
+      if (odor) lines.push(`Odor: ${odor}`);
+      if (mold) lines.push(`Mold: ${mold}`);
+      if (pests) lines.push(`Pests: ${pests}`);
+      lines.push("");
+      lines.push(`WORK ORDER (${findings.length} item${findings.length === 1 ? "" : "s"})`);
+      findings.forEach((f) => lines.push(`- ${f.type}${f.note ? ": " + f.note : ""}${f.photos ? ` (${f.photos} photo${f.photos > 1 ? "s" : ""})` : ""}`));
+      if (!findings.length) lines.push("No work order items documented. Everything not listed is assumed OK.");
       if (generalNote) { lines.push(""); lines.push(`NOTES: ${generalNote}`); }
       lines.push("");
       lines.push("This report records observations only; it is reviewed together with the Move In Condition Report.");
@@ -1341,12 +1340,11 @@ app.post("*", async (c) => {
           const tuTask = await asana("GET", `/tasks/${tuGid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
           const scopeField = (tuTask.custom_fields ?? []).find((f: { gid: string }) => f.gid === "1216811465429492");
           const existing = String(scopeField?.display_value ?? "").trim();
-          const sorted = findings.slice().sort((a, b) => a.type.localeCompare(b.type));
-            const block = sorted.map((f) => `${f.type} - ${f.room}${f.note ? ": " + f.note : ""}`).join("\n");
+          const block = findings.map((f) => `${f.type}${f.note ? ": " + f.note : ""}`).join("\n");
           const merged = (existing ? existing + "\n" : "") + block;
           await asana("PUT", `/tasks/${tuGid}`, { custom_fields: { "1216811465429492": merged.slice(0, 4900) } });
           scopeAppended = findings.length;
-          await postStory(tuGid, `Move out inspection complete: ${findings.length} finding${findings.length > 1 ? "s" : ""} added to the Approved Scope (initial work order). Full report: https://app.asana.com/0/0/${conduct.gid}`);
+          await postStory(tuGid, `Move out inspection complete: ${findings.length} work order item${findings.length > 1 ? "s" : ""} added to the Approved Scope. Full report: https://app.asana.com/0/0/${conduct.gid}`);
         } catch { /* fail-soft; scope can be filled by hand */ }
       }
 
