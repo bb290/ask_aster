@@ -1301,7 +1301,10 @@ app.post("*", async (c) => {
       lines.push(`CLEANING: ${cleaningGrade || "not graded"}${cleaningNote ? " - " + cleaningNote : ""}`);
       if (odor) lines.push(`Odor: ${odor}`);
       if (stains) lines.push(`Stains: ${stains}`);
-      if (keyboxLoc || keyboxCode) { lines.push(""); lines.push(`Keybox: ${[keyboxLoc, keyboxCode ? "code " + keyboxCode : ""].filter(Boolean).join(" / ")}`); }
+      // keybox CODE never prints in the report/PDF: it lives ONLY in the Unit Settings
+      // Keybox Code field and the owner notification email (Brittany 2026-08-14)
+      if (keyboxLoc) { lines.push(""); lines.push(`Keybox location: ${keyboxLoc}${keyboxCode ? " (code updated in Unit Settings)" : ""}`); }
+      else if (keyboxCode) { lines.push(""); lines.push("Keybox code updated in Unit Settings."); }
       if (generalNote) { lines.push(""); lines.push(`NOTES: ${generalNote}`); }
       lines.push("");
       lines.push("This report records observations only; it is reviewed together with the Move In Condition Report.");
@@ -1313,6 +1316,22 @@ app.post("*", async (c) => {
       // Move Out Completion Date on the LU task (date fields need object form)
       if (luGid) {
         try { await asana("PUT", `/tasks/${luGid}`, { custom_fields: { "1214521745467158": { date: todayStr } } }); } catch { /* fail-soft */ }
+      }
+
+      // New keybox code -> the Unit Settings Keybox Code field (its only home besides
+      // the owner notification email)
+      let keyboxSaved = false;
+      if (keyboxCode) {
+        try {
+          const ms = await matchSettings(address);
+          if (ms.hit) {
+            await asana("PUT", `/tasks/${ms.hit.gid}`, { custom_fields: { "1217495572560475": keyboxCode.slice(0, 40) } });
+            await asana("POST", `/tasks/${ms.hit.gid}/stories`, {
+              text: `Keybox code updated from the ${todayStr} move out inspection. Done by Claude on behalf of the inspector.`,
+            }).catch(() => null);
+            keyboxSaved = true;
+          }
+        } catch { /* fail-soft: the code still rides the owner email */ }
       }
 
       // Append findings to this Turn Over task's Approved Scope = initial work order
@@ -1339,6 +1358,7 @@ app.post("*", async (c) => {
         ownerEmail,
         tuGid,
         scopeAppended,
+        keyboxSaved,
         reportDate: todayStr,
       });
     }
