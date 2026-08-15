@@ -1309,7 +1309,7 @@ app.post("*", async (c) => {
       }
 
       // Flat report comment in the Site Visit style (simplified 2026-08-14)
-      const lines: string[] = [`TURN OVER PLAN -- ${todayStr} -- ${address}`, ""];
+      const lines: string[] = [`TURN OVER PROPOSAL -- ${todayStr} -- ${address}`, ""];
       if (inspector) lines.splice(1, 0, `Inspected by: ${inspector}`);
       if (videoLink) { lines.push(`Walkthrough video: ${videoLink}`); lines.push(""); }
       // keybox CODE never prints in the report/PDF: it lives ONLY in the Unit Settings
