@@ -1216,6 +1216,146 @@ app.post("*", async (c) => {
       });
     }
 
+    // ---------- prSettings: Unit Settings values for the Prepare verify rows ----------
+    if (action === "prSettings") {
+      const address = String(body.address ?? "").trim();
+      if (!address) return j(headers, 400, { error: "missing_fields" });
+      const ms = await matchSettings(address);
+      if (!ms.hit) return j(headers, 200, { ok: true, found: false, us: {} });
+      const st = await asana("GET", `/tasks/${ms.hit.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+      const cf = (st.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
+      const g = (re: RegExp) => String(cf.find((f) => re.test(f.name))?.display_value ?? "").trim();
+      const us = {
+        mailbox: g(/^mailbox\s*(number|#)/i) || g(/^mailbox/i),
+        parking: [g(/^parking$/i), g(/^parking detail/i)].filter(Boolean).join(" - "),
+        cooling: g(/^cooling$/i),
+        storage: g(/^storage$/i),
+        ev: g(/^ev charger$/i),
+        heat: g(/^heating type$/i),
+        internet: g(/^internet provider$/i),
+      };
+      return j(headers, 200, { ok: true, found: true, us });
+    }
+
+    // ---------- prSubmit: Turn Over Prep (Prepare) submission ----------
+    // Pre-move-out visit while the tenant is present. Report posts on the picked
+    // Turn Over task; keybox code writes to Unit Settings; details answered No or
+    // Unsure spawn ONE "Detail Verification Needed" subtask (unassigned during the
+    // build/test stage -- later: portia@sagareus.com), due same day.
+    if (action === "prSubmit") {
+      const taskGid = String(body.taskGid ?? "");
+      const address = String(body.address ?? "").trim();
+      if (!taskGid || !address) return j(headers, 400, { error: "missing_fields" });
+      const kb = body.keybox ?? {};
+      const keyboxCode = String((kb as Record<string, unknown>).code ?? "").slice(0, 40);
+      const yard = (body.yard ?? {}) as Record<string, unknown>;
+      const yardGrade = String(yard.grade ?? "").slice(0, 2);
+      const yardNote = String(yard.note ?? "").trim().slice(0, 400);
+      const walkThru = body.walkThru === true;
+      type PrVerify = { answer: string; value: string };
+      const verify: Record<string, PrVerify> = {};
+      const rawVerify = (body.verify ?? {}) as Record<string, Record<string, unknown>>;
+      for (const k of ["mailbox", "parking", "cooling", "storage", "ev", "heat", "internet"]) {
+        const v = rawVerify[k];
+        if (!v) continue;
+        const answer = String(v.answer ?? "").toLowerCase().slice(0, 8);
+        if (!/^(yes|no|unsure)$/.test(answer)) continue;
+        verify[k] = { answer, value: String(v.value ?? "").slice(0, 200) };
+      }
+      const items = (Array.isArray(body.items) ? body.items : []).slice(0, 40).map((x: unknown) => String(x).slice(0, 60)).filter(Boolean);
+      const note = String(body.note ?? "").slice(0, 2000);
+      const inspector = String(body.inspector ?? "").trim().slice(0, 80);
+      const todayStr = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+      const VLABEL: Record<string, string> = { mailbox: "Mailbox #", parking: "Parking", cooling: "Cooling", storage: "Storage", ev: "EV Charger", heat: "Heat", internet: "Internet Provider" };
+
+      const tuGid = taskGid;
+      // owner email off the LU sibling (same lookup as Propose)
+      let ownerEmail = "";
+      try {
+        const picked = await asana("GET", `/tasks/${taskGid}?opt_fields=parent.gid`);
+        const parentGid = picked?.parent?.gid;
+        if (parentGid) {
+          const subs = await asana("GET", `/tasks/${parentGid}/subtasks?limit=100&opt_fields=name`);
+          const luTask = (subs ?? []).find((t: { name: string }) => /^(lu|tp|pre.?lease)\s*\|/i.test(t.name));
+          if (luTask) {
+            const lu = await asana("GET", `/tasks/${luTask.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+            ownerEmail = String(((lu.custom_fields ?? []).find((f: { name: string }) => /owner e-?mail/i.test(f.name)) ?? {}).display_value ?? "").replace(/;/g, ",").trim();
+          }
+        }
+      } catch { /* fail-soft */ }
+
+      // Flat report in the Site Visit style
+      const cap = (s2: string) => s2.charAt(0).toUpperCase() + s2.slice(1);
+      const lines: string[] = [`TURN OVER PREP -- ${todayStr} -- ${address}`, ""];
+      if (inspector) lines.splice(1, 0, `Inspected by: ${inspector}`);
+      // keybox CODE never prints in the report: Unit Settings + access emails only
+      if (keyboxCode) { lines.push("Keybox code updated in Unit Settings."); lines.push(""); }
+      lines.push(`EXTERIOR: ${yardGrade || "not graded"}${yardNote ? " -- " + yardNote : ""}`);
+      lines.push("");
+      lines.push("DETAILS VERIFIED");
+      for (const k of ["mailbox", "parking", "cooling"]) {
+        if (verify[k]) lines.push(`${VLABEL[k]}: ${cap(verify[k].answer)}${verify[k].value ? ` -- on file: ${verify[k].value}` : ""}`);
+      }
+      if (walkThru) {
+        for (const k of ["storage", "ev", "heat", "internet"]) {
+          if (verify[k]) lines.push(`${VLABEL[k]}: ${cap(verify[k].answer)}${verify[k].value ? ` -- on file: ${verify[k].value}` : ""}`);
+        }
+      } else {
+        lines.push("PreMove walk thru: not conducted.");
+      }
+      lines.push("");
+      lines.push(`TURN OVER ESTIMATE ITEMS (${items.length})`);
+      items.forEach((it: string) => lines.push(`- ${it}`));
+      if (!items.length) lines.push("None flagged.");
+      if (note) { lines.push(""); lines.push("Notes:"); lines.push(note); }
+      const story = await postStory(tuGid, lines.join("\n").slice(0, 60000));
+
+      // keybox code -> Unit Settings (same rule as Propose)
+      let keyboxSaved = false;
+      if (keyboxCode) {
+        try {
+          const ms = await matchSettings(address);
+          if (ms.hit) {
+            await asana("PUT", `/tasks/${ms.hit.gid}`, { custom_fields: { "1217495572560475": keyboxCode } });
+            await asana("POST", `/tasks/${ms.hit.gid}/stories`, {
+              text: `Keybox code updated from the ${todayStr} Turn Over Prep inspection. Done by Claude on behalf of the inspector.`,
+            }).catch(() => null);
+            keyboxSaved = true;
+          }
+        } catch { /* fail-soft */ }
+      }
+
+      // Detail Verification Needed subtask for every No / Unsure answer
+      let verifyTaskGid: string | null = null;
+      const flagged = Object.keys(verify).filter((k) => verify[k].answer !== "yes");
+      if (flagged.length) {
+        try {
+          const vt = await asana("POST", `/tasks/${tuGid}/subtasks`, {
+            name: `Detail Verification Needed | ${address}`,
+            due_on: todayStr,
+            // assignee: "portia@sagareus.com" -- intentionally unassigned during the build/test stage (Brittany 2026-08-14)
+            notes: "From the Turn Over Prep inspection: verify these details at the property, then update Unit Settings and Buildium.\n\n" +
+              flagged.map((k) => `${VLABEL[k]}: agent answered ${cap(verify[k].answer)}${verify[k].value ? ` (Unit Settings: "${verify[k].value}")` : " (Unit Settings: blank)"}`).join("\n") +
+              `\n\nDone by Claude on behalf of ${inspector || "the inspector"}.`,
+          });
+          verifyTaskGid = vt?.gid ?? null;
+        } catch { /* fail-soft */ }
+      }
+
+      return j(headers, 200, {
+        ok: true,
+        conductGid: tuGid,
+        conductUrl: `https://app.asana.com/0/0/${tuGid}`,
+        storyGid: story?.gid ?? null,
+        ownerEmail,
+        tuGid,
+        keyboxSaved,
+        verifyTaskGid,
+        flaggedCount: flagged.length,
+        reportDate: todayStr,
+      });
+    }
+
     // ---------- moUpdate: real-time pushes DURING the move out inspection ----------
     // The keybox code and walkthrough video are the two things that must never wait
     // for submit (Brittany 2026-08-14): the code writes to the Unit Settings Keybox
