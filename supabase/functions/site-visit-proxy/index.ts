@@ -1234,7 +1234,6 @@ app.post("*", async (c) => {
         note: String(f.note ?? "").slice(0, 1000),
         photos: Number(f.photos ?? 0) || 0,
       })).filter((f: MoFinding) => f.type);
-      const kbInstalled = body.kbInstalled === true;
       const ratings = (body.ratings ?? {}) as Record<string, unknown>;
       const cleanRating = String(ratings.cleanliness ?? "").slice(0, 2);
       const yardRating = String(ratings.yard ?? "").slice(0, 2);
@@ -1287,13 +1286,14 @@ app.post("*", async (c) => {
       lines.push(`Move-out inspection date: ${todayStr}`);
       if (videoLink) lines.push(`Walkthrough video: ${videoLink}`);
       lines.push("");
-      lines.push("KEY BOX");
-      lines.push(`${kbInstalled ? "[x]" : "[ ]"} Key box installed`);
       // keybox CODE never prints in the report/PDF: it lives ONLY in the Unit Settings
       // Keybox Code field and the owner + vendor access emails (Brittany 2026-08-14)
-      if (keyboxLoc) lines.push(`Keybox location: ${keyboxLoc}${keyboxCode ? " (code updated in Unit Settings)" : ""}`);
-      else if (keyboxCode) lines.push("Keybox code updated in Unit Settings.");
-      lines.push("");
+      if (keyboxLoc || keyboxCode) {
+        lines.push("KEY BOX");
+        if (keyboxLoc) lines.push(`Keybox location: ${keyboxLoc}${keyboxCode ? " (code updated in Unit Settings)" : ""}`);
+        else lines.push("Keybox code updated in Unit Settings.");
+        lines.push("");
+      }
       lines.push("RATINGS & CONDITIONS");
       lines.push(`Cleanliness rating: ${cleanRating || "not graded"}`);
       lines.push(`Yard rating: ${yardRating || "not graded"}`);
