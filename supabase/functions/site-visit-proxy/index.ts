@@ -1507,6 +1507,45 @@ app.post("*", async (c) => {
         } catch { /* fail-soft; scope can be filled by hand */ }
       }
 
+      // Work order -> Turn Proposal field on the Listing Settings task, line by line
+      // (Brittany 2026-08-14). Find-or-create "Listing | {address}" like lsPush.
+      let turnProposalSaved = false;
+      if (findings.length) {
+        try {
+          const LS_PROJECT = "1217446710785429";
+          const lsSlug = (a: string) => a.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+          const slug = lsSlug(address);
+          let lsGid = "";
+          let off = "";
+          for (let page = 0; page < 5 && !lsGid; page++) {
+            const r0 = await fetch(`${ASANA}/projects/${LS_PROJECT}/tasks?limit=100&opt_fields=name${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
+              { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+            const j0 = await r0.json().catch(() => ({}));
+            for (const t of (j0.data ?? []) as Array<{ gid: string; name: string }>) {
+              if (lsSlug(String(t.name).replace(/^listing\s*\|/i, "").trim()) === slug) { lsGid = t.gid; break; }
+            }
+            off = j0.next_page?.offset ?? "";
+            if (!off) break;
+          }
+          const proposal = findings.map((f) => `${f.type}${f.note ? ": " + f.note : ""}`).join("\n").slice(0, 6000);
+          if (!lsGid) {
+            const t = await asana("POST", "/tasks", {
+              name: `Listing | ${address}`.slice(0, 250),
+              projects: [LS_PROJECT],
+              notes: "Source of truth for this property's Leasing URL. Edit fields here; the page updates live.\n\nCreated from the Turn Over Proposal inspection. Done by Claude on behalf of the inspector.",
+              custom_fields: { "1217509139690271": proposal },
+            });
+            lsGid = t?.gid ?? "";
+          } else {
+            await asana("PUT", `/tasks/${lsGid}`, { custom_fields: { "1217509139690271": proposal } });
+            await asana("POST", `/tasks/${lsGid}/stories`, {
+              text: `Turn Proposal updated from the ${todayStr} Turn Over Proposal inspection (via /wt Inspections). Done by Claude on behalf of the inspector.`,
+            }).catch(() => null);
+          }
+          turnProposalSaved = !!lsGid;
+        } catch { /* fail-soft: the field can be filled from the report by hand */ }
+      }
+
       return j(headers, 200, {
         ok: true,
         // photos + PDF attach here too: the Turn Over task carries everything
@@ -1517,6 +1556,7 @@ app.post("*", async (c) => {
         tuGid,
         scopeAppended,
         keyboxSaved,
+        turnProposalSaved,
         reportDate: todayStr,
       });
     }
