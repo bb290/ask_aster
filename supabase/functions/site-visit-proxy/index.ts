@@ -1286,6 +1286,8 @@ app.post("*", async (c) => {
       const ratings = (body.ratings ?? {}) as Record<string, unknown>;
       const cleanRating = String(ratings.cleanliness ?? "").slice(0, 2);
       const yardRating = String(ratings.yard ?? "").slice(0, 2);
+      const cleanNote = String(ratings.cleanNote ?? "").trim().slice(0, 400);
+      const yardNote = String(ratings.yardNote ?? "").trim().slice(0, 400);
       const odor = String(body.odor ?? "").slice(0, 200);
       const mold = String(body.mold ?? "").slice(0, 200);
       const pests = String(body.pests ?? "").slice(0, 200);
@@ -1329,33 +1331,25 @@ app.post("*", async (c) => {
       }
       if (!conduct?.gid) return j(headers, 502, { error: "conduct_subtask_failed" });
 
-      // Neutral report comment
-      const lines: string[] = [`MOVE OUT CONDITION REPORT | ${address}`];
-      if (inspector) lines.push(`Inspected by: ${inspector}`);
-      lines.push(`Move-out inspection date: ${todayStr}`);
-      if (videoLink) lines.push(`Walkthrough video: ${videoLink}`);
-      lines.push("");
+      // Flat report comment in the Site Visit style (simplified 2026-08-14)
+      const lines: string[] = [`TURN OVER PLAN -- ${todayStr} -- ${address}`, ""];
+      if (inspector) lines.splice(1, 0, `Inspected by: ${inspector}`);
+      if (videoLink) { lines.push(`Walkthrough video: ${videoLink}`); lines.push(""); }
       // keybox CODE never prints in the report/PDF: it lives ONLY in the Unit Settings
       // Keybox Code field and the owner + vendor access emails (Brittany 2026-08-14)
-      if (keyboxLoc || keyboxCode) {
-        lines.push("KEY BOX");
-        if (keyboxLoc) lines.push(`Keybox location: ${keyboxLoc}${keyboxCode ? " (code updated in Unit Settings)" : ""}`);
-        else lines.push("Keybox code updated in Unit Settings.");
-        lines.push("");
-      }
+      if (keyboxCode) { lines.push("Keybox code updated in Unit Settings."); lines.push(""); }
+      else if (keyboxLoc) { lines.push(`Keybox location: ${keyboxLoc}`); lines.push(""); }
       lines.push("RATINGS");
-      lines.push(`Cleanliness rating: ${cleanRating || "not graded"}`);
-      lines.push(`Yard rating: ${yardRating || "not graded"}`);
+      lines.push(`Cleanliness: ${cleanRating || "not graded"}${cleanNote ? " -- " + cleanNote : ""}`);
+      lines.push(`Exterior: ${yardRating || "not graded"}${yardNote ? " -- " + yardNote : ""}`);
       if (odor) lines.push(`Odor: ${odor}`);
       if (mold) lines.push(`Mold: ${mold}`);
       if (pests) lines.push(`Pests: ${pests}`);
       lines.push("");
       lines.push(`WORK ORDER (${findings.length} item${findings.length === 1 ? "" : "s"})`);
-      findings.forEach((f) => lines.push(`- ${f.type}${f.note ? ": " + f.note : ""}${f.photos ? ` (${f.photos} photo${f.photos > 1 ? "s" : ""})` : ""}`));
-      if (!findings.length) lines.push("No work order items documented. Everything not listed is assumed OK.");
-      if (generalNote) { lines.push(""); lines.push(`NOTES: ${generalNote}`); }
-      lines.push("");
-      lines.push("This report records observations only; it is reviewed together with the Move In Condition Report.");
+      findings.forEach((f) => lines.push(`- ${f.type}${f.note ? " -- " + f.note : ""}${f.photos ? ` (${f.photos} photo${f.photos > 1 ? "s" : ""})` : ""}`));
+      if (!findings.length) lines.push("None. Everything not listed is assumed OK.");
+      if (generalNote) { lines.push(""); lines.push("Notes:"); lines.push(generalNote); }
       const story = await postStory(conduct.gid, lines.join("\n").slice(0, 60000));
 
       // Complete the subtask, stamped with today
