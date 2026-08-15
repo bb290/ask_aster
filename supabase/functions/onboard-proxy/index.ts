@@ -1310,7 +1310,7 @@ app.post("/onboard-proxy", async (c) => {
         const t = await asana("GET", `/tasks/${hit.gid}?opt_fields=name,modified_at,custom_fields.gid,custom_fields.name,custom_fields.display_value,custom_fields.resource_subtype`);
         const scrub = (s: string) => s.replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "").trim();
         const fields: Array<{ name: string; value: string }> = [];
-        const team: Array<{ role: string; name: string }> = [];
+        const team: Array<{ role: string; name: string; [k: string]: string }> = [];
         let approval = "";
         for (const cf of (t.custom_fields ?? []) as Array<{ gid: string; name: string; display_value: string | null; resource_subtype?: string }>) {
           const nm = String(cf.name);
@@ -1376,6 +1376,38 @@ app.post("/onboard-proxy", async (c) => {
             }
           }
         } catch { /* best-effort */ }
+        // Leasing team cards: Asana says who is assigned, the HubDB directory says who they
+        // are (photo, phone, blurb). Assembled here so the page never waits on a second call
+        // and the module needs no HubDB access of its own.
+        try {
+          const HSTOK = Deno.env.get("HUBSPOT_CRM_TOKEN") ?? "";
+          const hsGet = (path: string) => fetch("https://api.hubapi.com" + path, {
+            headers: { "Authorization": `Bearer ${HSTOK}`, "Content-Type": "application/json" },
+          });
+          const dr = await hsGet("/cms/v3/hubdb/tables/3405630153/rows?limit=100");
+          if (dr.ok) {
+            const dj = await dr.json().catch(() => ({})) as { results?: Array<{ values?: Record<string, unknown> }> };
+            const dir = (dj.results ?? []).map((r) => r.values ?? {});
+            const norm = (x: unknown) => String(x ?? "").trim().toLowerCase();
+            for (const m of team) {
+              const want = norm(m.name);
+              const first = want.split(/\s+/)[0];
+              const row = dir.find((d) => norm(d.asana_name) === want)
+                ?? dir.find((d) => norm(d.asana_name).split(/\s+/)[0] === first && first.length > 2);
+              if (!row) continue;
+              const img = row.photo as { url?: string } | string | undefined;
+              Object.assign(m, {
+                displayName: String(row.staff_name ?? m.name).slice(0, 80),
+                email: String(row.email ?? "").slice(0, 120),
+                phone: String(row.phone ?? "").slice(0, 40),
+                photo: String((typeof img === "string" ? img : img?.url) ?? "").slice(0, 500),
+                blurb: String(row.responsibilities ?? "").slice(0, 300),
+                calendar: String(row.calendar_url ?? "").slice(0, 300),
+              });
+            }
+          }
+        } catch { /* cards fall back to name and role only */ }
+
         const turnRaw = String(((t.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>)
           .find((c) => String(c.gid) === LS_TURN)?.display_value ?? "");
         const turn = turnParse(turnRaw);
