@@ -1273,9 +1273,20 @@ app.post("/onboard-proxy", async (c) => {
     // ================= LEASING URL (open, per-property listing review at /en/listing?p={slug}) =================
     // Listing Settings task = source of truth; the page reads it live on every load.
     // Names only ride the open payload (team roles); emails are scrubbed from values.
-    if (action === "lsView" || action === "lsApprove" || action === "lsModify") {
+    if (action === "lsView" || action === "lsApprove" || action === "lsModify" || action === "lsTurn") {
       const LS_PROJECT = "1217446710785429";
       const LS_APPROVAL = "1217446658980732"; // Owner Approval Date
+      const LS_TURN = "1217509139690271";     // Turn Proposal, one work item per line
+      // Owner decisions live as a prefix marker on each line, so the field stays the single
+      // source of truth and the status is readable straight from Asana.
+      const turnParse = (raw: string) => String(raw ?? "").split(/\r?\n/)
+        .map((l) => l.trim()).filter(Boolean)
+        .map((l, i) => {
+          const m = l.match(/^\[(APPROVED|DEFERRED)\]\s*(.*)$/i);
+          return { i, status: m ? m[1].toUpperCase() : "PENDING", text: (m ? m[2] : l).slice(0, 400) };
+        });
+      const turnLine = (t: { status: string; text: string }) =>
+        t.status === "PENDING" ? t.text : `[${t.status}] ${t.text}`;
       const LS_PRIMARY = "1217446729380828";  // Primary Leasing Agent (people)
       const lsSlug = (addr: string) => addr.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
       const slugIn = String(body.slug ?? "").trim().toLowerCase().slice(0, 120).replace(/[^a-z0-9-]/g, "");
@@ -1308,6 +1319,7 @@ app.post("/onboard-proxy", async (c) => {
           if (/^(\u{1F512}|internal)/iu.test(nm)) continue;             // agent-hidden fields
           if (String(cf.gid) === LS_APPROVAL) { approval = val.slice(0, 10); continue; }
           if (/^unit id$/i.test(nm)) continue;                          // internal reference
+          if (String(cf.gid) === LS_TURN) continue;                     // rendered as its own approve/defer section
           if (cf.resource_subtype === "people") { team.push({ role: nm, name: scrub(val).slice(0, 120) }); continue; }
           fields.push({ name: nm, value: scrub(val).slice(0, 6000) });
         }
@@ -1364,7 +1376,10 @@ app.post("/onboard-proxy", async (c) => {
             }
           }
         } catch { /* best-effort */ }
-        return j(headers, 200, { ok: true, address: hit.address, fields, team, approval, dates, metrics, unitSettings, lastUpdated: String(t.modified_at ?? "").slice(0, 10) });
+        const turnRaw = String(((t.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>)
+          .find((c) => String(c.gid) === LS_TURN)?.display_value ?? "");
+        const turn = turnParse(turnRaw);
+        return j(headers, 200, { ok: true, address: hit.address, fields, team, approval, dates, metrics, unitSettings, turn, lastUpdated: String(t.modified_at ?? "").slice(0, 10) });
       }
 
       const who = String(body.name ?? "").trim().slice(0, 120);
@@ -1382,6 +1397,77 @@ app.post("/onboard-proxy", async (c) => {
           if (oa) await asana("PUT", `/tasks/${oa.gid}`, { completed: true });
         } catch { /* best-effort */ }
         return j(headers, 200, { ok: true, approval: today });
+      }
+
+      // lsTurn: owner approves or defers each turn proposal line. Decisions write back as
+      // prefix markers on the field itself, plus a comment and one subtask for the Team Lead.
+      // Estimates and scheduling stay human work; this only records the owner's answer.
+      if (action === "lsTurn") {
+        const t3 = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.gid,custom_fields.display_value,custom_fields.people_value.gid`);
+        const cf3 = (t3.custom_fields ?? []) as Array<{ gid: string; display_value: string | null; people_value?: Array<{ gid: string }> }>;
+        const lines = turnParse(String(cf3.find((c) => String(c.gid) === LS_TURN)?.display_value ?? ""));
+        if (!lines.length) return j(headers, 400, { error: "no_turn_proposal", message: "There is no turn proposal on this listing yet." });
+
+        const note = String(body.note ?? "").trim().slice(0, 2000);
+        const approveAll = body.approveAll === true;
+        const decIn = Array.isArray(body.decisions) ? (body.decisions as Array<{ i?: unknown; status?: unknown }>).slice(0, 60) : [];
+        const changed: string[] = [];
+        if (approveAll) {
+          for (const l of lines) {
+            if (l.status !== "APPROVED") { changed.push(`APPROVED: ${l.text}`); l.status = "APPROVED"; }
+          }
+        } else {
+          for (const d of decIn) {
+            const idx = Number(d.i);
+            const st = String(d.status ?? "").toUpperCase();
+            if (!Number.isInteger(idx) || idx < 0 || idx >= lines.length) continue;
+            if (st !== "APPROVED" && st !== "DEFERRED" && st !== "PENDING") continue;
+            if (lines[idx].status === st) continue;
+            lines[idx].status = st;
+            changed.push(`${st}: ${lines[idx].text}`);
+          }
+        }
+        if (!changed.length && !note) return j(headers, 400, { error: "no_changes", message: "Choose approve or defer on at least one item, or add a comment." });
+
+        if (changed.length) {
+          try { await asana("PUT", `/tasks/${hit.gid}`, { custom_fields: { [LS_TURN]: lines.map(turnLine).join("\n").slice(0, 6000) } }); }
+          catch { return j(headers, 502, { error: "write_failed", message: "Could not save your choices. Please try again or email listings@sagareus.com." }); }
+        }
+
+        const today = obDuePT(0);
+        const pending = lines.filter((l) => l.status === "PENDING").length;
+        const esc = (x: string) => x.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const bodyHtml = [
+          `<strong>Owner turn proposal decisions</strong> from ${who} on ${today} via the Leasing URL.`,
+          changed.length ? "<ul>" + changed.map((c) => `<li>${esc(c)}</li>`).join("") + "</ul>" : "",
+          note ? `<strong>Owner comment:</strong> ${esc(note)}` : "",
+          pending ? `${pending} item${pending === 1 ? "" : "s"} still undecided.` : "All items decided.",
+        ].filter(Boolean).join("\n");
+        await asana("POST", `/tasks/${hit.gid}/stories`, { html_text: `<body>${bodyHtml}</body>` });
+
+        const LS_TEAMLEAD2 = "1217446711292696";
+        let lead = String(cf3.find((f) => String(f.gid) === LS_TEAMLEAD2)?.people_value?.[0]?.gid ?? "");
+        if (!lead) lead = String(cf3.find((f) => String(f.gid) === LS_PRIMARY)?.people_value?.[0]?.gid ?? "");
+        // one subtask per property, reused: repeated visits append rather than pile up
+        let deciGid = "";
+        try {
+          const subs2 = await asana("GET", `/tasks/${hit.gid}/subtasks?limit=50&opt_fields=name,completed`);
+          deciGid = String(((subs2 ?? []) as Array<{ gid: string; name: string; completed: boolean }>)
+            .find((x) => /^turn proposal decisions/i.test(x.name) && !x.completed)?.gid ?? "");
+        } catch { /* fall through to create */ }
+        try {
+          if (deciGid) {
+            await asana("POST", `/tasks/${deciGid}/stories`, { html_text: `<body>${bodyHtml}</body>` });
+            await asana("PUT", `/tasks/${deciGid}`, { due_on: today });
+          } else await asana("POST", "/tasks", {
+            name: `Turn Proposal Decisions | ${hit.address}`.slice(0, 240),
+            parent: hit.gid,
+            ...(lead ? { assignee: lead } : {}),
+            due_on: today,
+            html_notes: `<body>${bodyHtml}\nSchedule the approved work and hold the deferred items. Update Buildium and the turn over task to match.</body>`,
+          });
+        } catch { /* the comment already carries the record */ }
+        return j(headers, 200, { ok: true, turn: lines.map((l) => ({ i: l.i, status: l.status, text: l.text })), pending });
       }
 
       // lsModify: owner-edited field values push straight into Listing Settings, and one
