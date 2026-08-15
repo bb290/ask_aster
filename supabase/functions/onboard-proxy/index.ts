@@ -1273,7 +1273,7 @@ app.post("/onboard-proxy", async (c) => {
     // ================= LEASING URL (open, per-property listing review at /en/listing?p={slug}) =================
     // Listing Settings task = source of truth; the page reads it live on every load.
     // Names only ride the open payload (team roles); emails are scrubbed from values.
-    if (action === "lsView" || action === "lsApprove" || action === "lsModify" || action === "lsTurn") {
+    if (action === "lsView" || action === "lsApprove" || action === "lsModify" || action === "lsTurn" || action === "lsRequest") {
       const LS_PROJECT = "1217446710785429";
       const LS_APPROVAL = "1217446658980732"; // Owner Approval Date
       const LS_TURN = "1217509139690271";     // Turn Proposal, one work item per line
@@ -1397,6 +1397,36 @@ app.post("/onboard-proxy", async (c) => {
           if (oa) await asana("PUT", `/tasks/${oa.gid}`, { completed: true });
         } catch { /* best-effort */ }
         return j(headers, 200, { ok: true, approval: today });
+      }
+
+      // lsRequest: the single owner-request mechanism. Every button on the feed that is not
+      // an approval routes here, so the team gets one consistent subtask shape no matter which
+      // section it came from. Never writes to Buildium or to any settings field; it only asks.
+      if (action === "lsRequest") {
+        const section = String(body.section ?? "").trim().slice(0, 40) || "General";
+        const topic = String(body.topic ?? "").trim().slice(0, 80) || "Owner request";
+        const detail = String(body.detail ?? "").trim().slice(0, 4000);
+        if (detail.length < 3) return j(headers, 400, { error: "missing_detail", message: "Tell us what you need and we will take it from there." });
+        const t4 = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.gid,custom_fields.people_value.gid`);
+        const cf4 = (t4.custom_fields ?? []) as Array<{ gid: string; people_value?: Array<{ gid: string }> }>;
+        const LS_TEAMLEAD3 = "1217446711292696";
+        let owner = String(cf4.find((f) => String(f.gid) === LS_TEAMLEAD3)?.people_value?.[0]?.gid ?? "");
+        if (!owner) owner = String(cf4.find((f) => String(f.gid) === LS_PRIMARY)?.people_value?.[0]?.gid ?? "");
+        const day = obDuePT(0);
+        const escR = (x: string) => x.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        const notes = `<body><strong>${escR(section)}: ${escR(topic)}</strong>\nRequested by ${escR(who)} on ${day} from the Leasing URL.\n<h2>What the owner asked for</h2>${escR(detail)}\nReply to the owner from listings@sagareus.com once handled.</body>`;
+        let subGid = "";
+        try {
+          const st = await asana("POST", "/tasks", {
+            name: `Owner Request | ${section}: ${topic}`.slice(0, 240),
+            parent: hit.gid, ...(owner ? { assignee: owner } : {}), due_on: day, html_notes: notes,
+          });
+          subGid = String(st?.gid ?? "");
+        } catch { /* the comment below still preserves the request */ }
+        await asana("POST", `/tasks/${hit.gid}/stories`, {
+          html_text: `<body><strong>Owner request logged</strong> from ${escR(who)} on ${day}.\n<ul><li><strong>Section:</strong> ${escR(section)}</li><li><strong>Topic:</strong> ${escR(topic)}</li></ul>${escR(detail)}${subGid ? "" : "\n<strong>Note:</strong> the subtask could not be created, so please action this from the comment."}</body>`,
+        });
+        return j(headers, 200, { ok: true, logged: true, assigned: Boolean(owner) });
       }
 
       // lsTurn: owner approves or defers each turn proposal line. Decisions write back as
