@@ -1412,6 +1412,11 @@ app.post("/onboard-proxy", async (c) => {
         const approveAll = body.approveAll === true;
         const decIn = Array.isArray(body.decisions) ? (body.decisions as Array<{ i?: unknown; status?: unknown }>).slice(0, 60) : [];
         const changed: string[] = [];
+        // An approved item is final from the owner's side: work gets scheduled off it, so
+        // letting an owner un-approve later would strand committed vendor work. Deferred
+        // items stay changeable, since approving later is the normal path. Only staff can
+        // reverse an approval, by editing the marker on the field in Asana.
+        const locked: string[] = [];
         if (approveAll) {
           for (const l of lines) {
             if (l.status !== "APPROVED") { changed.push(`APPROVED: ${l.text}`); l.status = "APPROVED"; }
@@ -1422,10 +1427,14 @@ app.post("/onboard-proxy", async (c) => {
             const st = String(d.status ?? "").toUpperCase();
             if (!Number.isInteger(idx) || idx < 0 || idx >= lines.length) continue;
             if (st !== "APPROVED" && st !== "DEFERRED" && st !== "PENDING") continue;
+            if (lines[idx].status === "APPROVED") { locked.push(lines[idx].text); continue; }
             if (lines[idx].status === st) continue;
             lines[idx].status = st;
             changed.push(`${st}: ${lines[idx].text}`);
           }
+        }
+        if (!changed.length && locked.length && !note) {
+          return j(headers, 409, { error: "already_approved", message: "Those items are already approved and the work is scheduled. Contact your leasing team to change anything that is already approved." });
         }
         if (!changed.length && !note) return j(headers, 400, { error: "no_changes", message: "Choose approve or defer on at least one item, or add a comment." });
 
@@ -1470,6 +1479,7 @@ app.post("/onboard-proxy", async (c) => {
           changed.length ? "<ul>" + changed.map((c) => `<li>${esc(c)}</li>`).join("") + "</ul>" : "",
           note ? `<strong>Owner comment:</strong> ${esc(note)}` : "",
           pending ? `${pending} item${pending === 1 ? "" : "s"} still undecided.` : "All items decided.",
+          locked.length ? `The owner tried to change ${locked.length} already-approved item${locked.length === 1 ? "" : "s"}; the approval was kept. Follow up if they want it pulled.` : "",
           scopeNote,
         ].filter(Boolean).join("\n");
         await asana("POST", `/tasks/${hit.gid}/stories`, { html_text: `<body>${bodyHtml}</body>` });
