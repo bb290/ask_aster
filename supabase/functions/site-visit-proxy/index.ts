@@ -1246,31 +1246,20 @@ app.post("*", async (c) => {
       }
       if (videoLink && taskGid) {
         try {
-          let target = taskGid;
-          const picked = await asana("GET", `/tasks/${taskGid}?opt_fields=parent.gid`);
-          const parentGid = picked?.parent?.gid;
-          if (parentGid) {
-            const subs = await asana("GET", `/tasks/${parentGid}/subtasks?limit=100&opt_fields=name`);
-            const moTask = (subs ?? []).find((t: { name: string }) => /^move.?out\s*\|/i.test(t.name));
-            if (moTask) {
-              const mos = await asana("GET", `/tasks/${moTask.gid}/subtasks?limit=100&opt_fields=name`);
-              const c = (mos ?? []).find((t: { name: string }) => /move.?out\s*inspection/i.test(t.name));
-              if (c) target = c.gid;
-            }
-          }
-          await postStory(target, `Move out walkthrough video (uploaded in real time from the inspection): ${videoLink}`);
+          // straight onto the picked Turn Over task, same home as the submit report
+          await postStory(taskGid, `Walkthrough video (uploaded in real time from the inspection): ${videoLink}`);
           videoPosted = true;
         } catch { /* fail-soft: the link rides the submit report */ }
       }
       return j(headers, 200, { ok: true, keyboxSaved, videoPosted });
     }
 
-    // ---------- moSubmit: Move Out inspection — neutral condition documentation ----------
-    // Posts the report to "Conduct | Move-out inspection & share report" under the
-    // Move-Out | task, stamps Move Out Completion Date on the LU task, and appends
-    // the findings to the open Turn Over task's Approved Scope (the initial work order).
-    // Deliberately NO verdict, NO tickets, NO deposit language: deductions are assessed
-    // later against the Move In report.
+    // ---------- moSubmit: Turn Over Plan (Propose) submission ----------
+    // Posts the report + photos + PDF on the picked TURN OVER task (Brittany
+    // 2026-08-14: not the Move-Out conduct subtask, which stays incomplete),
+    // stamps Move Out Completion Date on the LU task, and appends the work order
+    // items to the Turn Over task's Approved Scope. Deliberately NO verdict, NO
+    // tickets, NO deposit language.
     if (action === "moSubmit") {
       const taskGid = String(body.taskGid ?? "");
       const address = String(body.address ?? "").trim();
@@ -1299,37 +1288,25 @@ app.post("*", async (c) => {
       const generalNote = String(body.generalNote ?? "").slice(0, 2000);
       const todayStr = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
 
-      // taskGid is the picked Turn Over task (the picker serves both modes).
-      // Everything else hangs off its Leasing parent: the Move-Out | task with the
-      // Conduct subtask, and the LU task for owner email + Move Out Completion Date.
+      // taskGid is the picked Turn Over task (the picker serves both modes); the
+      // report lives HERE. Its Leasing parent gives the LU task for owner email +
+      // Move Out Completion Date.
       const tuGid = taskGid;
       const picked = await asana("GET", `/tasks/${taskGid}?opt_fields=parent.gid,parent.name`);
       const parentGid = picked?.parent?.gid ?? null;
       let luGid: string | null = null;
       let ownerEmail = "";
-      let conduct: { gid: string; name?: string } | null = null;
-      let moGid: string | null = null;
       if (parentGid) {
         try {
           const subs = await asana("GET", `/tasks/${parentGid}/subtasks?limit=100&opt_fields=name`);
-          const moTask = (subs ?? []).find((t: { name: string }) => /^move.?out\s*\|/i.test(t.name));
           const luTask = (subs ?? []).find((t: { name: string }) => /^(lu|tp|pre.?lease)\s*\|/i.test(t.name));
           if (luTask) {
             luGid = luTask.gid;
             const lu = await asana("GET", `/tasks/${luGid}?opt_fields=custom_fields.name,custom_fields.display_value`);
             ownerEmail = String(((lu.custom_fields ?? []).find((f: { name: string }) => /owner e-?mail/i.test(f.name)) ?? {}).display_value ?? "").replace(/;/g, ",").trim();
           }
-          if (moTask) {
-            moGid = moTask.gid;
-            const mos = await asana("GET", `/tasks/${moTask.gid}/subtasks?limit=100&opt_fields=name`);
-            conduct = (mos ?? []).find((t: { name: string }) => /move.?out\s*inspection/i.test(t.name)) ?? null;
-          }
-        } catch { /* fall through to create */ }
+        } catch { /* fail-soft: owner email just stays blank */ }
       }
-      if (!conduct) {
-        conduct = await asana("POST", `/tasks/${moGid || parentGid || taskGid}/subtasks`, { name: "Conduct | Move-out inspection & share report" });
-      }
-      if (!conduct?.gid) return j(headers, 502, { error: "conduct_subtask_failed" });
 
       // Flat report comment in the Site Visit style (simplified 2026-08-14)
       const lines: string[] = [`TURN OVER PLAN -- ${todayStr} -- ${address}`, ""];
@@ -1350,10 +1327,10 @@ app.post("*", async (c) => {
       findings.forEach((f) => lines.push(`- ${f.type}${f.note ? " -- " + f.note : ""}${f.photos ? ` (${f.photos} photo${f.photos > 1 ? "s" : ""})` : ""}`));
       if (!findings.length) lines.push("None. Everything not listed is assumed OK.");
       if (generalNote) { lines.push(""); lines.push("Notes:"); lines.push(generalNote); }
-      const story = await postStory(conduct.gid, lines.join("\n").slice(0, 60000));
+      const story = await postStory(tuGid, lines.join("\n").slice(0, 60000));
 
-      // Complete the subtask, stamped with today
-      try { await asana("PUT", `/tasks/${conduct.gid}`, { completed: true, due_on: todayStr }); } catch { /* fail-soft */ }
+      // The Move-Out inspection subtask is deliberately left incomplete
+      // (Brittany 2026-08-14); only the completion-date field below is stamped.
 
       // Move Out Completion Date on the LU task (date fields need object form)
       if (luGid) {
@@ -1387,14 +1364,14 @@ app.post("*", async (c) => {
           const merged = (existing ? existing + "\n" : "") + block;
           await asana("PUT", `/tasks/${tuGid}`, { custom_fields: { "1216811465429492": merged.slice(0, 4900) } });
           scopeAppended = findings.length;
-          await postStory(tuGid, `Move out inspection complete: ${findings.length} work order item${findings.length > 1 ? "s" : ""} added to the Approved Scope. Full report: https://app.asana.com/0/0/${conduct.gid}`);
         } catch { /* fail-soft; scope can be filled by hand */ }
       }
 
       return j(headers, 200, {
         ok: true,
-        conductGid: conduct.gid,
-        conductUrl: `https://app.asana.com/0/0/${conduct.gid}`,
+        // photos + PDF attach here too: the Turn Over task carries everything
+        conductGid: tuGid,
+        conductUrl: `https://app.asana.com/0/0/${tuGid}`,
         storyGid: story?.gid ?? null,
         ownerEmail,
         tuGid,
