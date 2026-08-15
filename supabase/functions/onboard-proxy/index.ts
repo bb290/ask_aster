@@ -1437,11 +1437,40 @@ app.post("/onboard-proxy", async (c) => {
         const today = obDuePT(0);
         const pending = lines.filter((l) => l.status === "PENDING").length;
         const esc = (x: string) => x.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+        // Approved items flow into the Turn Over task's Approved Scope field, which is what
+        // the turnover crew actually works from. Kept in sync both ways: un-approving an item
+        // pulls it back out. Lines the crew added by hand are never touched.
+        const TO_SCOPE = "1216811465429492";
+        let scopeNote = "";
+        try {
+          const streetNo3 = (hit.address.match(/^\d+/) ?? [""])[0];
+          const th3 = await asana("GET", `/workspaces/${FEED_WS}/typeahead?resource_type=task&query=${encodeURIComponent("Turn Over " + hit.address.slice(0, 34))}&count=20&opt_fields=name`);
+          const to = ((th3 ?? []) as Array<{ gid: string; name: string }>)
+            .find((x) => /^turn\s*over\s*\|/i.test(x.name) && (!streetNo3 || x.name.includes(streetNo3)));
+          if (to) {
+            const tt = await asana("GET", `/tasks/${to.gid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
+            const scopeRaw = String(((tt.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>)
+              .find((c) => String(c.gid) === TO_SCOPE)?.display_value ?? "");
+            const scopeLines = scopeRaw.split(/\r?\n/).map((x) => x.trim()).filter(Boolean);
+            const proposalTexts = new Set(lines.map((l) => l.text));
+            const kept = scopeLines.filter((x) => !proposalTexts.has(x));   // crew-added lines survive
+            const approved = lines.filter((l) => l.status === "APPROVED").map((l) => l.text);
+            const nextScope = [...kept, ...approved].join("\n").slice(0, 6000);
+            if (nextScope !== scopeRaw.trim()) {
+              await asana("PUT", `/tasks/${to.gid}`, { custom_fields: { [TO_SCOPE]: nextScope } });
+              scopeNote = `Approved Scope on the Turn Over task now lists ${approved.length} approved item${approved.length === 1 ? "" : "s"}.`;
+            }
+          } else {
+            scopeNote = "No Turn Over task found for this address, so Approved Scope was not updated.";
+          }
+        } catch { scopeNote = "Could not update Approved Scope on the Turn Over task; please copy the approved items over by hand."; }
         const bodyHtml = [
           `<strong>Owner turn proposal decisions</strong> from ${who} on ${today} via the Leasing URL.`,
           changed.length ? "<ul>" + changed.map((c) => `<li>${esc(c)}</li>`).join("") + "</ul>" : "",
           note ? `<strong>Owner comment:</strong> ${esc(note)}` : "",
           pending ? `${pending} item${pending === 1 ? "" : "s"} still undecided.` : "All items decided.",
+          scopeNote,
         ].filter(Boolean).join("\n");
         await asana("POST", `/tasks/${hit.gid}/stories`, { html_text: `<body>${bodyHtml}</body>` });
 
