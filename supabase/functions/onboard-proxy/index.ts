@@ -1287,7 +1287,7 @@ app.post("/onboard-proxy", async (c) => {
         });
       const turnLine = (t: { status: string; text: string }) =>
         t.status === "PENDING" ? t.text : `[${t.status}] ${t.text}`;
-      const LS_PRIMARY = "1217446729380828";  // Primary Leasing Agent (people)
+      const LS_PRIMARY = "1217446729380828";  // Leasing Agent (people); fallback owner for owner requests
       const lsSlug = (addr: string) => addr.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
       const slugIn = String(body.slug ?? "").trim().toLowerCase().slice(0, 120).replace(/[^a-z0-9-]/g, "");
       if (!slugIn) return j(headers, 400, { error: "missing_slug" });
