@@ -1216,6 +1216,55 @@ app.post("*", async (c) => {
       });
     }
 
+    // ---------- moUpdate: real-time pushes DURING the move out inspection ----------
+    // The keybox code and walkthrough video are the two things that must never wait
+    // for submit (Brittany 2026-08-14): the code writes to the Unit Settings Keybox
+    // Code field the moment it is typed, the video posts to the Conduct subtask the
+    // moment the upload finishes. moSubmit re-writes both later; all idempotent.
+    if (action === "moUpdate") {
+      const taskGid = String(body.taskGid ?? "");
+      const address = String(body.address ?? "").trim();
+      const keyboxCode = String(body.keyboxCode ?? "").trim().slice(0, 40);
+      const videoLink = String(body.videoLink ?? "").trim().slice(0, 400);
+      if (!keyboxCode && !videoLink) return j(headers, 400, { error: "missing_fields" });
+      let keyboxSaved = false, videoPosted = false;
+      if (keyboxCode && address) {
+        try {
+          const ms = await matchSettings(address);
+          if (ms.hit) {
+            const cur = await asana("GET", `/tasks/${ms.hit.gid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
+            const f = (cur.custom_fields ?? []).find((x: { gid: string }) => x.gid === "1217495572560475");
+            if (String(f?.display_value ?? "").trim() !== keyboxCode) {
+              await asana("PUT", `/tasks/${ms.hit.gid}`, { custom_fields: { "1217495572560475": keyboxCode } });
+              await asana("POST", `/tasks/${ms.hit.gid}/stories`, {
+                text: `Keybox code updated in real time from the move out inspection (via /wt Inspections, Turn Over Plan). Done by Claude on behalf of the inspector.`,
+              }).catch(() => null);
+            }
+            keyboxSaved = true;
+          }
+        } catch { /* fail-soft: submit re-writes it */ }
+      }
+      if (videoLink && taskGid) {
+        try {
+          let target = taskGid;
+          const picked = await asana("GET", `/tasks/${taskGid}?opt_fields=parent.gid`);
+          const parentGid = picked?.parent?.gid;
+          if (parentGid) {
+            const subs = await asana("GET", `/tasks/${parentGid}/subtasks?limit=100&opt_fields=name`);
+            const moTask = (subs ?? []).find((t: { name: string }) => /^move.?out\s*\|/i.test(t.name));
+            if (moTask) {
+              const mos = await asana("GET", `/tasks/${moTask.gid}/subtasks?limit=100&opt_fields=name`);
+              const c = (mos ?? []).find((t: { name: string }) => /move.?out\s*inspection/i.test(t.name));
+              if (c) target = c.gid;
+            }
+          }
+          await postStory(target, `Move out walkthrough video (uploaded in real time from the inspection): ${videoLink}`);
+          videoPosted = true;
+        } catch { /* fail-soft: the link rides the submit report */ }
+      }
+      return j(headers, 200, { ok: true, keyboxSaved, videoPosted });
+    }
+
     // ---------- moSubmit: Move Out inspection — neutral condition documentation ----------
     // Posts the report to "Conduct | Move-out inspection & share report" under the
     // Move-Out | task, stamps Move Out Completion Date on the LU task, and appends
@@ -1294,7 +1343,7 @@ app.post("*", async (c) => {
         else lines.push("Keybox code updated in Unit Settings.");
         lines.push("");
       }
-      lines.push("RATINGS & CONDITIONS");
+      lines.push("RATINGS");
       lines.push(`Cleanliness rating: ${cleanRating || "not graded"}`);
       lines.push(`Yard rating: ${yardRating || "not graded"}`);
       if (odor) lines.push(`Odor: ${odor}`);
