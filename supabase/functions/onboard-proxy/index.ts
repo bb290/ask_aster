@@ -373,7 +373,7 @@ function obDump(kind: string, address: string, sectionsDump: { title: string; ro
     units.forEach((u) => lines.push(`${u.label}: ${obUnitLine(u)}`));
     lines.push("");
   }
-  lines.push("Photos, leases, and HOA documents: owner was directed to email them to onboarding@sagareus.com.");
+  lines.push("Photos, leases, and HOA documents: the confirmation screen offers direct upload and link sharing (files land as comments on this task); onboarding@sagareus.com is the fallback.");
   const hesc = (t: string) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const htmlParts: string[] = [`<b>${hesc(head)}</b>\n${hesc(sub)}\n`];
   for (const sec of sectionsDump) {
@@ -382,7 +382,7 @@ function obDump(kind: string, address: string, sectionsDump: { title: string; ro
   if (units.length) {
     htmlParts.push(`\n<b><u>UNITS</u></b>\n<ul>${units.map((u) => `<li><b>${hesc(u.label)}:</b> ${hesc(obUnitLine(u))}</li>`).join("")}</ul>`);
   }
-  htmlParts.push(`\nPhotos, leases, and HOA documents: owner was directed to email them to onboarding@sagareus.com.`);
+  htmlParts.push(`\nPhotos, leases, and HOA documents: the confirmation screen offers direct upload and link sharing (files land as comments on this task); onboarding@sagareus.com is the fallback.`);
   return { lines, htmlNotes: `<body>${htmlParts.join("")}</body>`.slice(0, 60000) };
 }
 async function obFieldSettings(): Promise<Map<string, { gid: string; type: string; options: { gid: string; name: string }[] }>> {
