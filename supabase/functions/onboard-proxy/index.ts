@@ -423,7 +423,7 @@ function obMapAnswers(byName: Map<string, { gid: string; type: string; options: 
     if (f && Number.isFinite(n) && n > 0) cf[f.gid] = n;
   };
   setEnum("Applicant Criteria", answers.criteria ?? "");
-  setEnum("Pet Policy", answers.pets ?? "");
+  setMulti("Pet Policy", answers.pets ?? ""); // multi_enum since 2026-08-19; wizard sends comma-joined option names
   setText("Construction Plans", answers.construction ?? "");
   setNum("Year Built", answers.yearBuilt ?? "");
   setText("\u{1F646} Owner Phone(s)", answers.ownerPhones ?? "");
@@ -446,6 +446,71 @@ function obMapAnswers(byName: Map<string, { gid: string; type: string; options: 
   setText("Common Area Cleaning", answers.commonArea ?? "");
   return cf;
 }
+// ---- Leasing Plan approval helpers (lsAccept / lsRequest, 2026-08-17) ----
+const OB_WORKSPACE = "706990140225747";
+const OB_UNIT_F = "1213183515622826";
+const OB_PS_F = "1217569409567702";
+const OB_PS_OPT: Record<string, string> = { Draft: "1217569409567703", Sent: "1217569409567704", Accepted: "1217569409567705", "Team Lead Approved": "1217569409567706", Revised: "1217569409567707" };
+const OB_RN_F = "1217569237386930";
+const OB_ADJ_SECTION = "1217553095980495";
+// field-staff priority definitions (locked with Brittany 2026-08-17)
+const OB_PRIO_DEF: Record<string, string> = {
+  "Listing:Maximize Rent": "price above market and hold; slower adjustments; owner accepts longer vacancy to chase top rent",
+  "Listing:Balanced": "price at market with the standard weekly adjustment schedule; lease within a normal window",
+  "Listing:Minimize Vacancy": "price to move; adjust fast and early; filling the unit beats squeezing the last dollar",
+  "Turn:Essentials Only": "repair what blocks rent ready; skip cosmetic upgrades; estimates only for must-fix items",
+  "Turn:Balanced": "rent ready plus low-cost fixes that clearly help the unit show; bigger items get owner-approved estimates",
+  "Turn:Upgrade": "owner wants estimates for improvements that raise rent or cut future maintenance; think beyond rent ready",
+  "Risk:Selective": "hold the line on terms: full deposit, no move in specials or rent credits, standard pet policy only; strict screening at the criteria line",
+  "Risk:Balanced": "standard deposit and screening; a modest concession (move in special or rent credit) or a small pet allowance stretch may be used if activity stalls",
+  "Risk:Flexible": "use the levers to fill the unit: reduced deposit, move in special or rent credit, and expanded pet allowances (number, type, and/or weight); terms priced to compensate",
+};
+async function obTaskByUnitId(projectGid: string, uid: string): Promise<{ gid: string; name: string } | null> {
+  if (!/^\d+$/.test(uid)) return null;
+  try {
+    const list = ((await asana("GET",
+      `/workspaces/${OB_WORKSPACE}/tasks/search?projects.any=${projectGid}&custom_fields.${OB_UNIT_F}.value=${uid}&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+    return list.find((t) => !t.completed) ?? list[0] ?? null;
+  } catch { return null; }
+}
+async function obLuByUnitId(uid: string): Promise<{ gid: string; name: string } | null> {
+  if (!/^\d+$/.test(uid)) return null;
+  try {
+    const list = ((await asana("GET",
+      `/workspaces/${OB_WORKSPACE}/tasks/search?projects.any=1213171758682884&custom_fields.${OB_UNIT_F}.value=${uid}&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+    const lus = list.filter((t) => /^(LU|TP|PreLease)\s*\|/i.test(t.name));
+    return lus.find((t) => !t.completed) ?? lus[0] ?? null;
+  } catch { return null; }
+}
+// approver check: any owner email on file for the unit (field may hold several,
+// split on ; or ,), or the team address. Never expose the emails to the page.
+async function obValidApprover(email: string, unitId: string): Promise<{ ok: boolean; isTeam: boolean }> {
+  const e = String(email ?? "").trim().toLowerCase();
+  if (!/^[\w.+-]+@[\w-]+\.[\w.-]+$/.test(e)) return { ok: false, isTeam: false };
+  if (e === "listing@sagareus.com" || e === "listings@sagareus.com") return { ok: true, isTeam: true };
+  const lu = await obLuByUnitId(unitId);
+  if (!lu) return { ok: false, isTeam: false };
+  try {
+    const t = await asana("GET", `/tasks/${lu.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+    const raw = String(((t.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>).find((f) => /owner e-?mail/i.test(f.name))?.display_value ?? "");
+    const owners = raw.split(/[;,]/).map((x) => x.trim().toLowerCase()).filter(Boolean);
+    return { ok: owners.includes(e), isTeam: false };
+  } catch { return { ok: false, isTeam: false }; }
+}
+type RnState = { appr: Record<string, { d: string; by: string }>; req: Array<{ s: string; t: string }>; resp: string; d: string };
+function obRnParse(raw: string): RnState {
+  try { const p = JSON.parse(raw); return { appr: p.appr ?? {}, req: Array.isArray(p.req) ? p.req : [], resp: String(p.resp ?? ""), d: String(p.d ?? "") }; }
+  catch { return { appr: {}, req: [], resp: "", d: "" }; }
+}
+// replace-or-append a marker-delimited block in a task description (plain text notes)
+function obBlockMerge(notes: string, tag: string, block: string): string {
+  const begin = `--- ${tag} `;
+  const end = `--- end ${tag.toLowerCase()} ---`;
+  const re = new RegExp(`\\n?-{3} ${tag}[^\\n]*\\n[\\s\\S]*?-{3} end ${tag.toLowerCase()} -{3}`, "i");
+  const clean = String(notes ?? "").replace(re, "").trimEnd();
+  return (clean ? clean + "\n\n" : "") + block + "\n" + end;
+}
+
 function obDuePT(days: number): string {
   return new Date(Date.now() + days * 86400000).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
 }
@@ -1270,10 +1335,10 @@ app.post("/onboard-proxy", async (c) => {
       return j(headers, 200, { ok: true, uploadUrl: `${supaUrl}/storage/v1${jr.url}`, publicUrl: `${supaUrl}/storage/v1/object/public/inspections/${key}` });
     }
 
-    // ================= LEASING URL (open, per-property listing review at /en/listing?p={slug}) =================
+    // ================= LEASING URL (open, per-property listing review at /leasing-plan?p={slug}) =================
     // Listing Settings task = source of truth; the page reads it live on every load.
     // Names only ride the open payload (team roles); emails are scrubbed from values.
-    if (action === "lsView" || action === "lsApprove" || action === "lsModify" || action === "lsTurn" || action === "lsRequest") {
+    if (action === "lsView" || action === "lsApprove" || action === "lsModify" || action === "lsTurn" || action === "lsRequest" || action === "lsAccept" || action === "lsComps" || action === "lsDraft" || action === "lsInspect") {
       const LS_PROJECT = "1217446710785429";
       const LS_APPROVAL = "1217446658980732"; // Owner Approval Date
       const LS_TURN = "1217509139690271";     // Turn Proposal, one work item per line
@@ -1307,7 +1372,7 @@ app.post("/onboard-proxy", async (c) => {
       if (!hit) return j(headers, 404, { error: "not_found", message: "No listing matches this link. Check the URL or contact listings@sagareus.com." });
 
       if (action === "lsView") {
-        const t = await asana("GET", `/tasks/${hit.gid}?opt_fields=name,modified_at,custom_fields.gid,custom_fields.name,custom_fields.display_value,custom_fields.resource_subtype`);
+        const t = await asana("GET", `/tasks/${hit.gid}?opt_fields=name,created_at,modified_at,custom_fields.gid,custom_fields.name,custom_fields.display_value,custom_fields.resource_subtype`);
         const scrub = (s: string) => s.replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "").trim();
         const fields: Array<{ name: string; value: string }> = [];
         const team: Array<{ role: string; name: string; [k: string]: string }> = [];
@@ -1319,6 +1384,7 @@ app.post("/onboard-proxy", async (c) => {
           if (/^(\u{1F512}|internal)/iu.test(nm)) continue;             // agent-hidden fields
           if (String(cf.gid) === LS_APPROVAL) { approval = val.slice(0, 10); continue; }
           if (/^unit id$/i.test(nm)) continue;                          // internal reference
+          if (/^plan status$/i.test(nm)) continue;                      // returned separately, drives lock state
           if (String(cf.gid) === LS_TURN) continue;                     // rendered as its own approve/defer section
           if (cf.resource_subtype === "people") { team.push({ role: nm, name: scrub(val).slice(0, 120) }); continue; }
           fields.push({ name: nm, value: scrub(val).slice(0, 6000) });
@@ -1326,6 +1392,31 @@ app.post("/onboard-proxy", async (c) => {
         // key dates + leasing metrics pull LIVE from the leasing projects, never from Listing Settings
         const dates: Record<string, string> = {};
         const metrics: Record<string, string> = {};
+        // Scheduled move out: open Leasing | Move-Out task matched by Unit ID ONLY
+        // (the Listing Settings Move-Out Date field was removed 2026-08-17; move out
+        // is tracked in the Leasing pipeline and read live here).
+        try {
+          const MO_PROJECT2 = "1213171760534561";
+          const MO_DATE_F2 = "1213182815411738";
+          const UNIT_F3 = "1213183515622826";
+          const uidMO = String((t.custom_fields ?? []).find((f: { gid: string; display_value: string | null }) => String(f.gid) === UNIT_F3)?.display_value ?? "").trim();
+          if (/^\d+$/.test(uidMO)) {
+            let offM = "";
+            for (let pg = 0; pg < 5 && !dates.moveOut; pg++) {
+              const rM = await fetch(`${ASANA}/projects/${MO_PROJECT2}/tasks?completed_since=now&limit=100&opt_fields=custom_fields.gid,custom_fields.display_value${offM ? `&offset=${encodeURIComponent(offM)}` : ""}`,
+                { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+              const jM = await rM.json().catch(() => ({}));
+              for (const tk of (jM.data ?? []) as Array<{ gid: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>) {
+                const cfm = tk.custom_fields ?? [];
+                if (String(cfm.find((f) => f.gid === UNIT_F3)?.display_value ?? "").trim() !== uidMO) continue;
+                const dM = String(cfm.find((f) => f.gid === MO_DATE_F2)?.display_value ?? "").slice(0, 10);
+                if (/^\d{4}-\d{2}-\d{2}$/.test(dM)) { dates.moveOut = dM; break; }
+              }
+              offM = jM.next_page?.offset ?? "";
+              if (!offM) break;
+            }
+          }
+        } catch { /* best-effort */ }
         try {
           const streetNo = (hit.address.match(/^\d+/) ?? [""])[0];
           const th = await asana("GET", `/workspaces/${FEED_WS}/typeahead?resource_type=task&query=${encodeURIComponent(hit.address.slice(0, 40))}&count=20&opt_fields=name`);
@@ -1335,7 +1426,7 @@ app.post("/onboard-proxy", async (c) => {
             const cfs = (lt.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
             const g = (re: RegExp) => String(cfs.find((f) => re.test(f.name) && f.display_value)?.display_value ?? "").slice(0, 10);
             const gn = (re: RegExp) => String(cfs.find((f) => re.test(f.name) && f.display_value)?.display_value ?? "").trim().slice(0, 12);
-            dates.moveOut = g(/move\s*out/i);
+            if (!dates.moveOut) dates.moveOut = g(/move\s*out/i);
             dates.listDate = g(/list date/i);
             dates.moveIn = g(/move\s*in date/i);
             dates.leaseSigned = g(/lease signed/i);
@@ -1361,16 +1452,38 @@ app.post("/onboard-proxy", async (c) => {
         // deliberately NOT duplicated into Listing Settings (Brittany 2026-08-13)
         const unitSettings: Record<string, string> = {};
         try {
-          const th2 = await asana("GET", `/workspaces/${FEED_WS}/typeahead?resource_type=task&query=${encodeURIComponent("Settings // " + hit.address.slice(0, 40))}&count=10&opt_fields=name`);
-          const streetNo2 = (hit.address.match(/^\d+/) ?? [""])[0];
-          const st = (th2 ?? []).find((x: { name: string }) => /^settings\s*\/\//i.test(x.name) && (!streetNo2 || x.name.includes(streetNo2)));
-          if (st) {
-            const stt = await asana("GET", `/tasks/${st.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+          // Settings task by Unit ID first (stable key; #A/#B units make address
+          // matching ambiguous — Brittany 2026-08-17), typeahead as the fallback.
+          const UNIT_SETTINGS_PROJECT = "1213032009308835";
+          const UNIT_ID_F = "1213183515622826";
+          const uidLS = String((t.custom_fields ?? []).find((f: { gid: string; display_value: string | null }) => String(f.gid) === UNIT_ID_F)?.display_value ?? "").trim();
+          let stGid = "";
+          if (/^\d+$/.test(uidLS)) {
+            let offU = "";
+            for (let pg = 0; pg < 5 && !stGid; pg++) {
+              const ru = await fetch(`${ASANA}/projects/${UNIT_SETTINGS_PROJECT}/tasks?limit=100&opt_fields=custom_fields.gid,custom_fields.display_value${offU ? `&offset=${encodeURIComponent(offU)}` : ""}`,
+                { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+              const ju = await ru.json().catch(() => ({}));
+              for (const tk of (ju.data ?? []) as Array<{ gid: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>) {
+                if (String((tk.custom_fields ?? []).find((f) => String(f.gid) === UNIT_ID_F)?.display_value ?? "").trim() === uidLS) { stGid = tk.gid; break; }
+              }
+              offU = ju.next_page?.offset ?? "";
+              if (!offU) break;
+            }
+          }
+          if (!stGid) {
+            const th2 = await asana("GET", `/workspaces/${FEED_WS}/typeahead?resource_type=task&query=${encodeURIComponent("Settings // " + hit.address.slice(0, 40))}&count=10&opt_fields=name`);
+            const streetNo2 = (hit.address.match(/^\d+/) ?? [""])[0];
+            const st = (th2 ?? []).find((x: { name: string }) => /^settings\s*\/\//i.test(x.name) && (!streetNo2 || x.name.includes(streetNo2)));
+            if (st) stGid = st.gid;
+          }
+          if (stGid) {
+            const stt = await asana("GET", `/tasks/${stGid}?opt_fields=custom_fields.name,custom_fields.display_value`);
             for (const cf of (stt.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>) {
               const nm = String(cf.name);
               const val = String(cf.display_value ?? "").trim();
               if (!val) continue;
-              if (/^(laundry|parking|ev charger|cooling|heating type|storage|mailbox|landscaping maintenance|utilities|internet provider|utilities - .+)$/i.test(nm)) {
+              if (/^(laundry|parking|ev charger|cooling|heating type|storage|mailbox|security system|landscaping maintenance|utilities|internet provider|utilities - .+)$/i.test(nm)) {
                 unitSettings[nm] = val.replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "").slice(0, 1000);
               }
             }
@@ -1411,17 +1524,171 @@ app.post("/onboard-proxy", async (c) => {
         const turnRaw = String(((t.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>)
           .find((c) => String(c.gid) === LS_TURN)?.display_value ?? "");
         const turn = turnParse(turnRaw);
-        return j(headers, 200, { ok: true, address: hit.address, fields, team, approval, dates, metrics, unitSettings, turn, lastUpdated: String(t.modified_at ?? "").slice(0, 10) });
+        // lock state: Plan Status + per-section approvals + the revision exchange
+        // (approval dates only on the wire; approver emails never reach the page)
+        const psVal = String(((t.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>).find((f) => String(f.gid) === OB_PS_F)?.display_value ?? "");
+        const rnRaw = String(((t.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>).find((f) => String(f.gid) === OB_RN_F)?.display_value ?? "");
+        const rnV = obRnParse(rnRaw);
+        const apprOut: Record<string, string> = {};
+        for (const [k, v] of Object.entries(rnV.appr)) apprOut[k] = String((v as { d: string }).d ?? "");
+        return j(headers, 200, { ok: true, address: hit.address, fields, team, approval, dates, metrics, unitSettings, turn, turnNote: turnRaw.slice(0, 2000), planStatus: psVal, approvals: apprOut, revision: { req: rnV.req, resp: rnV.resp, d: rnV.d }, lastUpdated: String(t.modified_at ?? "").slice(0, 10), createdAt: String(t.created_at ?? "").slice(0, 10) });
+      }
+
+      // lsDraft: the Draft Listing section — photos, listing description, and the
+      // amenity checkboxes exactly as they stand in Buildium (read-only sync; the
+      // feature list is fixed by the listing service providers).
+      // fresh download link for the newest inspection PDF on the Buildium UNIT profile
+      // (file URLs expire, so the page fetches one at click time; Brittany 2026-08-17)
+      if (action === "lsInspect") {
+        const B_ID = Deno.env.get("BUILDIUM_CLIENT_ID") ?? "";
+        const B_SEC = Deno.env.get("BUILDIUM_CLIENT_SECRET") ?? "";
+        if (!B_ID || !B_SEC) return j(headers, 500, { error: "buildium_not_configured" });
+        const t3 = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+        const uid3 = String(((t3.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>)
+          .find((f) => /^unit id$/i.test(String(f.name)))?.display_value ?? "").trim();
+        if (!/^\d+$/.test(uid3)) return j(headers, 404, { error: "no_unit_id", message: "This listing has no Unit ID yet." });
+        const BH3 = { "x-buildium-client-id": B_ID, "x-buildium-client-secret": B_SEC, "Content-Type": "application/json" };
+        const fr3 = await fetch(`https://api.buildium.com/v1/files?entitytype=RentalUnit&entityid=${encodeURIComponent(uid3)}&limit=200`, { headers: BH3 });
+        if (!fr3.ok) return j(headers, 502, { error: "buildium_failed" });
+        const files3 = await fr3.json().catch(() => []);
+        const cand3 = (Array.isArray(files3) ? files3 : [])
+          .map((f: Record<string, unknown>) => ({
+            id: f.Id,
+            name: String(f.Title ?? f.FileName ?? f.Name ?? ""),
+            uploaded: String(f.UploadedDateTime ?? ""),
+            ct: String(f.ContentType ?? ""),
+          }))
+          .filter((f) => /inspect/i.test(f.name) && (/pdf/i.test(f.ct) || /\.pdf$/i.test(f.name) || !f.ct));
+        cand3.sort((a, b) => b.uploaded.localeCompare(a.uploaded));
+        const mi3 = cand3.filter((f) => /move.?in/i.test(f.name));
+        const pick = mi3[0] ?? cand3[0] ?? null;
+        if (!pick) return j(headers, 404, { error: "no_inspection", message: "No inspection report is on file for this unit yet." });
+        const dl = await fetch(`https://api.buildium.com/v1/files/${encodeURIComponent(String(pick.id))}/downloadrequest`, { method: "POST", headers: BH3 });
+        if (!dl.ok) return j(headers, 502, { error: "buildium_failed" });
+        const dj = await dl.json().catch(() => ({} as Record<string, unknown>));
+        const url3 = String((dj as Record<string, unknown>).DownloadUrl ?? (dj as Record<string, unknown>).DownloadURL ?? "");
+        if (!url3) return j(headers, 502, { error: "no_download_url" });
+        return j(headers, 200, { ok: true, url: url3, name: pick.name });
+      }
+
+      if (action === "lsDraft") {
+        const B_ID = Deno.env.get("BUILDIUM_CLIENT_ID") ?? "";
+        const B_SEC = Deno.env.get("BUILDIUM_CLIENT_SECRET") ?? "";
+        const out: Record<string, unknown> = { ok: true, photos: [], description: "", beds: null, baths: null, sqft: null, unitFeatures: null, propFeatures: null };
+        if (!B_ID || !B_SEC) return j(headers, 200, out);
+        try {
+          const t = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+          const cfs = (t.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
+          const uid = String(cfs.find((f) => /^unit id$/i.test(String(f.name)))?.display_value ?? "").trim();
+          if (!/^\d+$/.test(uid)) return j(headers, 200, out);
+          const BH = { "x-buildium-client-id": B_ID, "x-buildium-client-secret": B_SEC, "Content-Type": "application/json" };
+          const ru = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}`, { headers: BH });
+          if (!ru.ok) return j(headers, 200, out);
+          const u = await ru.json().catch(() => ({} as Record<string, unknown>));
+          out.description = String((u as Record<string, unknown>).Description ?? "").slice(0, 12000);
+          out.beds = (u as Record<string, unknown>).UnitBedrooms ?? null;
+          out.baths = (u as Record<string, unknown>).UnitBathrooms ?? null;
+          out.sqft = (u as Record<string, unknown>).UnitSize ?? null;
+          const pid = (u as Record<string, unknown>).PropertyId;
+          // selected amenities (dedicated endpoints; the Draft Listing section shows
+          // ONLY what is checked in Buildium)
+          try {
+            const au = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}/amenities`, { headers: BH });
+            if (au.ok) {
+              const aj = await au.json().catch(() => ({} as Record<string, unknown>));
+              out.unitFeatures = Array.isArray((aj as Record<string, unknown>).Features) ? ((aj as Record<string, unknown>).Features as unknown[]).slice(0, 100) : [];
+            }
+          } catch { /* best-effort */ }
+          if (pid) {
+            try {
+              const ap = await fetch(`https://api.buildium.com/v1/rentals/${encodeURIComponent(String(pid))}/amenities`, { headers: BH });
+              if (ap.ok) {
+                const aj2 = await ap.json().catch(() => ({} as Record<string, unknown>));
+                out.propFeatures = Array.isArray((aj2 as Record<string, unknown>).Features) ? ((aj2 as Record<string, unknown>).Features as unknown[]).slice(0, 100) : [];
+              }
+            } catch { /* best-effort */ }
+            // deposit balance held on the most recent lease (Turn Over Plan row on the owner page)
+            try {
+              const lr = await fetch(`https://api.buildium.com/v1/leases?propertyids=${encodeURIComponent(String(pid))}&limit=500`, { headers: BH });
+              if (lr.ok) {
+                const leases = await lr.json().catch(() => []);
+                const dep = (Array.isArray(leases) ? leases : [])
+                  .filter((l: { UnitId?: number }) => String(l?.UnitId ?? "") === uid)
+                  .sort((a: { LeaseFromDate?: string }, b: { LeaseFromDate?: string }) => String(b?.LeaseFromDate ?? "").localeCompare(String(a?.LeaseFromDate ?? "")))
+                  .map((l: { AccountDetails?: { SecurityDeposit?: number } }) => l?.AccountDetails?.SecurityDeposit)
+                  .find((d: unknown) => typeof d === "number" && d > 0);
+                out.depositHeld = dep ?? null;
+              }
+            } catch { /* best-effort */ }
+          }
+          // photos: unit images first, property images as the fallback (same dance
+          // as the workbench unitPhotos action; download endpoints vary singular/plural)
+          const grab = async (base: string) => {
+            const lr = await fetch(`${base}?limit=50`, { headers: BH });
+            if (!lr.ok) return [] as { name: string; url: string }[];
+            const list = await lr.json().catch(() => []);
+            if (!Array.isArray(list) || !list.length) return [];
+            const photos: { name: string; url: string }[] = [];
+            for (const img of list.slice(0, 12)) {
+              let dr = await fetch(`${base}/${img.Id}/downloadrequest`, { method: "POST", headers: BH, body: "{}" });
+              if (dr.status === 404 || dr.status === 405) {
+                dr = await fetch(`${base}/${img.Id}/downloadrequests`, { method: "POST", headers: BH, body: "{}" });
+              }
+              if (!dr.ok) continue;
+              const d = await dr.json().catch(() => ({}));
+              const url = String(d.DownloadUrl ?? d.Url ?? d.ResultUrl ?? "");
+              if (url) photos.push({ name: String(img.Description ?? "").slice(0, 80), url });
+            }
+            return photos;
+          };
+          let photos = await grab(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}/images`);
+          if (!photos.length && pid) photos = await grab(`https://api.buildium.com/v1/rentals/${encodeURIComponent(String(pid))}/images`);
+          out.photos = photos;
+        } catch { /* section renders its pending states */ }
+        return j(headers, 200, out);
+      }
+
+      // lsComps: the market rent analysis behind the Comp Review section. Source of
+      // truth is the listing task's agent-hidden Comps Data field (JSON written by the
+      // Listing Workbench; same shape the proposal workbench saves to deals).
+      if (action === "lsComps") {
+        try {
+          const t = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+          const cfs = (t.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
+          const g = (re: RegExp) => String(cfs.find((f) => re.test(String(f.name)) && f.display_value)?.display_value ?? "");
+          const raw = g(/comps data/i);
+          if (!raw) return j(headers, 200, { ok: true, comps: null });
+          let data: Record<string, unknown> | null = null;
+          try { data = JSON.parse(raw); } catch { data = null; }
+          if (!data) return j(headers, 200, { ok: true, comps: null });
+          const dnum = (v: unknown) => { const n = Number(v); return isFinite(n) && n > 0 ? n : null; };
+          const rawList = (data as { comps?: Array<Record<string, unknown>> }).comps;
+          const list = Array.isArray(rawList) ? rawList.slice(0, 8).map((cc) => ({
+            address: String(cc.address ?? "").slice(0, 140),
+            rent: Number(cc.rent) || null,
+            bedrooms: cc.bedrooms ?? null,
+            bathrooms: cc.bathrooms ?? null,
+            squareFootage: Number(cc.squareFootage) || null,
+            distance: cc.distance != null && isFinite(Number(cc.distance)) ? Number(cc.distance) : null,
+          })) : [];
+          return j(headers, 200, { ok: true, comps: {
+            rent: dnum(data.rent) ?? dnum(g(/^market rent$/i)),
+            low: dnum(data.low), high: dnum(data.high), model: dnum(data.model),
+            comments: String(data.comments ?? "").slice(0, 2000),
+            list,
+          } });
+        } catch { return j(headers, 200, { ok: true, comps: null }); }
       }
 
       const who = String(body.name ?? "").trim().slice(0, 120);
-      if (!who) return j(headers, 400, { error: "missing_name", message: "Add your name first." });
+      // lsRequest/lsAccept identify by validated email, not typed name (2026-08-17)
+      if (!who && action !== "lsRequest" && action !== "lsAccept") return j(headers, 400, { error: "missing_name", message: "Add your name first." });
 
       if (action === "lsApprove") {
         const today = obDuePT(0);
         try { await asana("PUT", `/tasks/${hit.gid}`, { custom_fields: { [LS_APPROVAL]: { date: today } } }); } catch { /* field may be blocked; the comment still lands */ }
         await asana("POST", `/tasks/${hit.gid}/stories`, {
-          html_text: storyHtml(`Owner Approves listing! Approved by ${who} on ${today} via the Leasing URL (/en/listing). Done by Claude on behalf of the owner.`),
+          html_text: storyHtml(`Owner Approves listing! Approved by ${who} on ${today} via the Leasing URL (/leasing-plan). Done by Claude on behalf of the owner.`),
         });
         try {
           const subs = await asana("GET", `/tasks/${hit.gid}/subtasks?limit=50&opt_fields=name,completed`);
@@ -1435,30 +1702,146 @@ app.post("/onboard-proxy", async (c) => {
       // an approval routes here, so the team gets one consistent subtask shape no matter which
       // section it came from. Never writes to Buildium or to any settings field; it only asks.
       if (action === "lsRequest") {
-        const section = String(body.section ?? "").trim().slice(0, 40) || "General";
-        const topic = String(body.topic ?? "").trim().slice(0, 80) || "Owner request";
+        // Modify {Section} | {address} -> subtask of the Listing task, multi-homed into the
+        // Listing Adjustments section so it surfaces in the workbench queue (Brittany 2026-08-17)
+        const SECTIONS = ["Unit Settings", "Listing Plan", "Turn Over Plan", "Draft Listing"];
+        const secIn = String(body.section ?? "").trim();
+        const section = SECTIONS.find((s) => s.toLowerCase() === secIn.toLowerCase()) ?? "Listing Plan";
         const detail = String(body.detail ?? "").trim().slice(0, 4000);
         if (detail.length < 3) return j(headers, 400, { error: "missing_detail", message: "Tell us what you need and we will take it from there." });
-        const t4 = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.gid,custom_fields.people_value.gid`);
-        const cf4 = (t4.custom_fields ?? []) as Array<{ gid: string; people_value?: Array<{ gid: string }> }>;
+        const t4 = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.gid,custom_fields.display_value,custom_fields.people_value.gid`);
+        const cf4 = (t4.custom_fields ?? []) as Array<{ gid: string; display_value?: string | null; people_value?: Array<{ gid: string }> }>;
+        const reqUid = String(cf4.find((f) => String(f.gid) === OB_UNIT_F)?.display_value ?? "").trim();
+        // validated exactly like approvals: owner email(s) on file or the team address
+        const vr = await obValidApprover(String(body.email ?? ""), reqUid);
+        if (!vr.ok) return j(headers, 403, { error: "email_mismatch", message: "That email does not match our records for this property. Use the email we have on file, or contact listings@sagareus.com." });
         const LS_TEAMLEAD3 = "1217446711292696";
         let owner = String(cf4.find((f) => String(f.gid) === LS_TEAMLEAD3)?.people_value?.[0]?.gid ?? "");
         if (!owner) owner = String(cf4.find((f) => String(f.gid) === LS_PRIMARY)?.people_value?.[0]?.gid ?? "");
         const day = obDuePT(0);
-        const escR = (x: string) => x.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-        const notes = `<body><strong>${escR(section)}: ${escR(topic)}</strong>\nRequested by ${escR(who)} on ${day} from the Leasing URL.\n<h2>What the owner asked for</h2>${escR(detail)}\nReply to the owner from listings@sagareus.com once handled.</body>`;
+        const reqEmail = String(body.email ?? "").trim().toLowerCase().slice(0, 120);
         let subGid = "";
         try {
           const st = await asana("POST", "/tasks", {
-            name: `Owner Request | ${section}: ${topic}`.slice(0, 240),
-            parent: hit.gid, ...(owner ? { assignee: owner } : {}), due_on: day, html_notes: notes,
+            name: `Modify ${section} | ${hit.address}`.slice(0, 240),
+            parent: hit.gid, ...(owner ? { assignee: owner } : {}), due_on: day,
+            notes: `${detail}\n\nSection: ${section}\nRequested by ${reqEmail} on ${day} from the Leasing Plan page.\nReply to the owner from listings@sagareus.com once handled.`,
           });
           subGid = String(st?.gid ?? "");
+          if (subGid) await asana("POST", `/sections/${OB_ADJ_SECTION}/addTask`, { task: subGid }).catch(() => null);
         } catch { /* the comment below still preserves the request */ }
         await asana("POST", `/tasks/${hit.gid}/stories`, {
-          html_text: `<body><strong>Owner request logged</strong> from ${escR(who)} on ${day}.\n<ul><li><strong>Section:</strong> ${escR(section)}</li><li><strong>Topic:</strong> ${escR(topic)}</li></ul>${escR(detail)}${subGid ? "" : "\n<strong>Note:</strong> the subtask could not be created, so please action this from the comment."}</body>`,
-        });
+          text: `Owner request (${section}) from ${reqEmail} on ${day}:\n${detail}` + (subGid ? "" : "\nNote: the Modify task could not be created; action this from the comment."),
+        }).catch(() => null);
         return j(headers, 200, { ok: true, logged: true, assigned: Boolean(owner) });
+      }
+
+      // lsAccept: per-step approval with email signature (Brittany 2026-08-17).
+      // Records a comment on the Listing task, tracks section state in the
+      // revision-note field, flips Plan Status when both plan sections are
+      // approved, and fans the approved plan out to the Leasing pipeline.
+      if (action === "lsAccept") {
+        const STEP_NAMES: Record<string, string> = { ud: "Unit Details", pr: "Client Priorities", lp: "Listing Plan", to: "Turn Over Plan", dl: "Draft Listing" };
+        const step = String(body.step ?? "").trim().toLowerCase();
+        if (!STEP_NAMES[step]) return j(headers, 400, { error: "bad_step" });
+        const t5 = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
+        const cf5 = (t5.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>;
+        const accUid = String(cf5.find((f) => String(f.gid) === OB_UNIT_F)?.display_value ?? "").trim();
+        const vr2 = await obValidApprover(String(body.email ?? ""), accUid);
+        if (!vr2.ok) return j(headers, 403, { error: "email_mismatch", message: "That email does not match our records for this property. Use the email we have on file, or contact listings@sagareus.com." });
+        const accEmail = String(body.email ?? "").trim().toLowerCase().slice(0, 120);
+        const day5 = obDuePT(0);
+        const snap = (body.snapshot ?? {}) as Record<string, unknown>;
+        const fm = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? "$" + Math.round(n).toLocaleString("en-US") : "TBD"; };
+        // priorities block: chosen flavors + field-staff definitions
+        const prio = (Array.isArray(snap.prio) ? snap.prio : []) as Array<{ k?: string; name?: string }>;
+        const prioLines = prio.map((p) => {
+          const k = String(p.k ?? ""); const n = String(p.name ?? "");
+          const def = OB_PRIO_DEF[k + ":" + n] ?? "";
+          return `${k}: ${n}` + (def ? ` - ${def}` : "");
+        });
+        const nums = (snap.nums ?? {}) as Record<string, unknown>;
+        const sched = (Array.isArray(snap.sched) ? snap.sched : []) as Array<[number, number]>;
+        const schedLines = sched.map((s) => `Week ${s[0]}: ${fm(s[1])}`);
+        const url5 = `https://www.sagareus.com/leasing-plan?p=${slugIn}`;
+        let summary = "";
+        if (step === "lp") {
+          summary = "LISTING PLAN\n" +
+            `Starting Rent: ${fm(nums.start)} | Target Rent: ${fm(nums.target)} | Minimum Rent: ${fm(nums.min)}\n` +
+            `Security Deposit: ${fm(nums.deposit)}\n\n` +
+            "WEEKLY ADJUSTMENT SCHEDULE\n" +
+            `Hold criteria, checked weekly: 10 inquiries OR 5 showings OR 1 application.\nCriteria met = hold price that week. Criteria missed = adjust down ${String(nums.pct ?? "3")}%:\n` +
+            schedLines.join("\n") +
+            `\nNever below Minimum Rent (${fm(nums.min)}). Below-minimum action requires owner contact.`;
+        } else if (step === "to") {
+          summary = "TURN OVER PLAN\n" +
+            "Standard: Rent Ready + Cleaning (minimum standard)\n" +
+            (Number(snap.budget) > 0 ? `Turn budget AUTHORIZED by the owner: ${fm(snap.budget)} (estimates approved by priority up to this total)\n` : "") +
+            (snap.depositHeld != null && snap.depositHeld !== "" ? `Deposit Balance held: ${fm(snap.depositHeld)}\n` : "") +
+            "Repairs over the authorized amount, appliances, flooring, and cabinet or counter replacement require owner approval";
+        }
+        // comment on the Listing task = the human record
+        const head5 = `${STEP_NAMES[step]} approved by ${accEmail} on ${day5}` + (vr2.isTeam ? " (team lead approval)" : "");
+        const prioBlock = prioLines.length ? "CLIENT PRIORITIES\n" + prioLines.join("\n") + "\n\n" : "";
+        await asana("POST", `/tasks/${hit.gid}/stories`, {
+          text: head5 + (summary ? `\n\n${prioBlock}${summary}` : "") + "\n\nApproved on the Leasing Plan page. Done by Claude on behalf of the owner's click.",
+        }).catch(() => null);
+        // state update: section approvals live in the revision-note field
+        const rnRaw5 = String(cf5.find((f) => String(f.gid) === OB_RN_F)?.display_value ?? "");
+        const st5 = obRnParse(rnRaw5);
+        st5.appr[step] = { d: day5, by: vr2.isTeam ? "team" : "owner" };
+        const bothDone = Boolean(st5.appr.lp && st5.appr.to);
+        if (bothDone) { st5.req = []; st5.resp = ""; }
+        const cfW: Record<string, unknown> = { [OB_RN_F]: JSON.stringify(st5).slice(0, 1020) };
+        // Priorities / Listing Plan approvals also write the Client Priorities multi-select
+        if ((step === "pr" || step === "lp") && prio.length) {
+          const PRI_F = "1217535711314799";
+          const PRI_O: Record<string, string> = {
+            "Listing - Maximize Rent": "1217535711314800", "Listing - Balanced": "1217535711314801",
+            "Listing - Minimize Vacancy": "1217535711314802", "Turn - Essentials Only": "1217535711314803",
+            "Turn - Balanced": "1217535711314804", "Turn - Upgrade": "1217535711314805",
+            "Risk - Selective": "1217535711314806", "Risk - Balanced": "1217535711314807",
+            "Risk - Flexible": "1217535711314808",
+          };
+          const pg = prio.map((p) => PRI_O[`${String(p.k ?? "")} - ${String(p.name ?? "")}`]).filter(Boolean);
+          if (pg.length === 3) cfW[PRI_F] = pg;
+        }
+        let psOut = "";
+        if (bothDone) {
+          const allOwner = st5.appr.lp.by === "owner" && st5.appr.to.by === "owner";
+          psOut = allOwner ? "Accepted" : "Team Lead Approved";
+          cfW[OB_PS_F] = OB_PS_OPT[psOut];
+        }
+        await asana("PUT", `/tasks/${hit.gid}`, { custom_fields: cfW }).catch(() => null);
+        // fan-out to the Leasing pipeline (LP + TO only; all tasks by Unit ID)
+        const fanNotes: string[] = [];
+        try {
+          if (step === "to" && /^\d+$/.test(accUid)) {
+            const toTask = await obTaskByUnitId("1213171760535170", accUid);
+            if (toTask) {
+              const block = `--- Turn Over Plan (approved ${day5}${vr2.isTeam ? " by team lead" : ""}) ---\n` + prioBlock + summary + `\nLeasing Plan: ${url5}`;
+              const cur = await asana("GET", `/tasks/${toTask.gid}?opt_fields=notes`);
+              await asana("PUT", `/tasks/${toTask.gid}`, { notes: obBlockMerge(String(cur.notes ?? ""), "Turn Over Plan", block) });
+              fanNotes.push("turnover description updated");
+            } else fanNotes.push("no turn over task");
+          }
+          if (step === "lp" && /^\d+$/.test(accUid)) {
+            const lu5 = await obLuByUnitId(accUid);
+            if (lu5) {
+              const block = `--- Leasing Plan (approved ${day5}${vr2.isTeam ? " by team lead" : ""}) ---\n` + prioBlock + summary + `\nLeasing Plan: ${url5}`;
+              const subs5 = await asana("GET", `/tasks/${lu5.gid}/subtasks?limit=100&opt_fields=name`);
+              const war = ((subs5 ?? []) as Array<{ gid: string; name: string }>).find((s) => /weekly activity report/i.test(s.name));
+              if (war) {
+                const curW = await asana("GET", `/tasks/${war.gid}?opt_fields=notes`);
+                await asana("PUT", `/tasks/${war.gid}`, { notes: obBlockMerge(String(curW.notes ?? ""), "Leasing Plan", block) });
+                fanNotes.push("weekly activity report updated");
+              } else fanNotes.push("no weekly activity report subtask");
+              const story = await asana("POST", `/tasks/${lu5.gid}/stories`, { text: block });
+              if (story?.gid) { await asana("PUT", `/stories/${story.gid}`, { is_pinned: true }).catch(() => null); fanNotes.push("lu comment pinned"); }
+            } else fanNotes.push("no LU task");
+          }
+        } catch { fanNotes.push("fanout error"); }
+        return j(headers, 200, { ok: true, step, approvedOn: day5, planStatus: psOut, approvals: Object.fromEntries(Object.entries(st5.appr).map(([k, v]) => [k, (v as { d: string }).d])), fanNotes });
       }
 
       // lsTurn: owner approves or defers each turn proposal line. Decisions write back as
