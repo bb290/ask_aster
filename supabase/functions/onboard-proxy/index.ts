@@ -791,6 +791,12 @@ app.post("/onboard-proxy", async (c) => {
               const oe = String(answers.ownerEmails ?? "").trim().slice(0, 500);
               if (oe) await asana("PUT", `/tasks/${crGid}`, { custom_fields: { [CR_OWNER_EMAILS_FIELD]: oe } });
             } catch { /* best-effort */ }
+            // Onboard Received date = wizard submission date (Brittany 2026-08-19: the wizard
+            // never stamped this; /onboard-asana verifies it on the UPLOAD | Onboarding Form step)
+            try {
+              const subDate = new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+              await asana("PUT", `/tasks/${crGid}`, { custom_fields: { "1211334026744269": { date: subDate } } });
+            } catch { /* best-effort */ }
             await asana("POST", `/tasks/${crGid}/stories`, { html_text: storyHtml(`Created by the onboarding wizard. Full onboarding data: https://app.asana.com/0/0/${task.gid}`) }).catch(() => null);
             await asana("POST", `/tasks/${task.gid}/stories`, { html_text: storyHtml(`Client Relations task created: ${crUrl}`) }).catch(() => null);
           }
