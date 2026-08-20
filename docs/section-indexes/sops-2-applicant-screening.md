@@ -87,10 +87,14 @@ Applicant Screening 2.0 procedures are executed constantly, as applications are 
 1. Send "Application Received" Email
 2. Charge App Fee
 3. Run Credit / eviction / criminal background
-4. Request Landlord Reference
-5. Any flags on the Credit Report? **If yes →** Enhanced Applicant Review
-6. Income Verification | Last 2 Paystubs; Does paystub match employer listed on application? **If No →** Enhanced Applicant Review
-7. Review Rental History Ledger
+4. **Photo ID | Required from every applicant.** Confirm an ID is on file for each person on the application. **If missing →** request it; the application is not complete until every applicant's ID is received
+5. Request Landlord Reference
+6. Any flags on the Credit Report? **If yes →** Enhanced Applicant Review
+7. Income Verification | Last 2 Paystubs; Does paystub match employer listed on application? **If No →** Enhanced Applicant Review
+8. Does the name and DOB on the Photo ID match the application and credit report? **If No →** Enhanced Applicant Review
+9. Review Rental History Ledger
+
+Photo ID is required from every applicant, with no exceptions and no judgment calls. Acceptable documents (any one): Driver's License, State-Issued ID, Passport, Permanent Resident Card, Employment Authorization Document, Work Visa, Military ID, or Tribal ID. Requesting ID selectively is a fair housing violation.
 
 
 ---
@@ -99,9 +103,9 @@ Applicant Screening 2.0 procedures are executed constantly, as applications are 
 
 
 1. Send email to applicant requesting additional documents
-2. Upload copy of photo ID
-3. Upload copy of last 2 month bank statement
-4. Social Media Audit
+2. Upload copy of last 2 month bank statement
+3. Social Media Audit
+4. Re-request Photo ID only if the ID collected at application is unreadable, expired, or does not match the application
 
 
 ---

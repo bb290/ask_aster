@@ -18,9 +18,9 @@ Flow: Move In task assigned to Leasing Agent and moved to the Move In section; P
 ## Schedule Move In with Resident
 
 1. Schedule move in day and time with the Resident directly. Allow 30 minutes to 1 hour before Residents arrive to complete the Move In Condition Report, depending on the size of the house.
-2. Confirm with tenants ahead of time how their funds will be paid: almost always a cashier's check or money order. If they show up having "paid on the portal" without authorization, they will not receive the keys.
+2. Confirm with tenants ahead of time that they are bringing a cashier's check or money order. This is the only accepted form of move-in funds. If they show up having "paid on the portal", they will not receive the keys.
 
-**Cashier's Check Required (unless portal payment is pre-approved).** Check authorization in the Move In task description under the amount owed. If a tenant pays on the portal without authorization: do NOT hand over the keys. Portal payments are still pending and do not mean the funds are in Sagareus' account. The tenant must either cancel the portal payment, obtain a cashier's check, and meet you again, or wait 1 to 2 business days for funds to clear and schedule another appointment. Keys are only released once funds are confirmed in Sagareus' account.
+**Cashier's Check or Money Order Required. No exceptions.** There is no portal payment option and no pre-approval path; the credit score exception was retired August 20, 2026. If a tenant pays on the portal anyway: do NOT hand over the keys. Portal payments are still pending and do not mean the funds are in Sagareus' account. The tenant must either cancel the portal payment, obtain a cashier's check, and meet you again, or wait 1 to 2 business days for funds to clear and schedule another appointment. Keys are only released once funds are confirmed in Sagareus' account.
 
 ## Move In Inspection
 

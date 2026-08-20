@@ -79,7 +79,7 @@ The Leasing Assistant's move-in tasks, from lease signing through move-in prep. 
 >
 > Move In Funds: the remaining balance must be paid on your Move-In Date via Cashier's Check or Money Order. Bring this in exchange for keys. Pay to: Sagareus Group LLC, 2265 116th Ave NE #200-8 Bellevue, WA 98004. Important: include the property address in the memo line.
 >
-> [IF APPROVED for portal payment] The remaining balance must be paid on your Move-In Date via your Resident Portal. Charges post on Move In Date; do not pay early.
+> Important: charges will be posted to your account on Move In Date. Do not pay early. Security Deposit and Move-In Inspection must be date-stamped the same day.
 >
 > Renter's Insurance: all residents must obtain renter's insurance within 30 days. If not acquired within 30 days, a $20/month insurance fee will be added to your ledger.
 
@@ -88,8 +88,8 @@ The Leasing Assistant's move-in tasks, from lease signing through move-in prep. 
 * Buildium: Listings, search property, open Property Listings, click DeList. This removes the listing and stops leads going to the Leasing Agent.
 * From the Application / Move In Task in Asana, choose the parent "LU" task and mark complete. This removes the LU task from the Active Listings section of the Leasing Project for workload management.
 
-## Update Move In Amount / Approved to Pay on Portal? / Block EFT Payment
+## Update Move In Amount / Block EFT Payment
 
 * Add the total Move In Cost to the Move In Task in Asana.
-* Determine if residents may pay move in funds online (see [Move In // Policies](https://sagareus.getoutline.com/doc/move-in-policies-aoMfZSfGI4), the 700+ credit rule). Update the description with detail.
-* If not allowed: mark due date for 48hrs to ensure we receive prorated rent, then block the EFT payment option AFTER we have received 1st month prorated rent within 48 hours. Buildium: Lease Profile, Financials tab, Payment Settings subtab, Payment Methods, click "Override payment methods", uncheck "EFT / eCheck" and "Credit Card", save.
+* Answer "Approved to pay on portal?" with NO. This is always NO; there is no longer an online payment exception (see [Move In // Policies](https://sagareus.getoutline.com/doc/move-in-policies-aoMfZSfGI4)). Do not pull credit reports to decide payment method. Update the description with detail.
+* Then: mark due date for 48hrs to ensure we receive prorated rent, then block the EFT payment option AFTER we have received 1st month prorated rent within 48 hours. Buildium: Lease Profile, Financials tab, Payment Settings subtab, Payment Methods, click "Override payment methods", uncheck "EFT / eCheck" and "Credit Card", save.

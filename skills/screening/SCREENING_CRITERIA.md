@@ -370,6 +370,12 @@ list for the manager:
 - Court-ordered income where receipts are inconsistent across the
   60-day verification window
 - Multiple addresses across multiple states within the prior 12 months
+- Photo ID missing for one or more applicants on the task. A photo ID
+  is required from every applicant, so the application is not complete
+  until each one is on file. Note the missing ID; do not treat it as a
+  denial reason and do not evaluate which type of ID was provided
+- Name or date of birth on a photo ID does not match the application or
+  the credit report, or the ID is expired or unreadable
 - Tier results that diverge sharply (e.g., Approved at Lenient,
   Denied at Stringent due to income gap), where the manager may want
   to discuss the application before responding

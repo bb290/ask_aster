@@ -44,6 +44,6 @@ The owner is really asking when they will receive their Owner Distribution. Use 
 2. Tell Residents we will send the Move In Report for e-signature (same way as the lease) within 2 days.
 3. Signing protects their security deposit: they are not charged for damages or conditions present at move in.
 
-## Paid on Portal - Not approved for online payment
+## Paid on Portal - Move In Funds Must Be Cashier's Check or Money Order
 
-Cashier's check required unless portal payment is pre-approved (check the Move In task description). If a tenant pays on the portal without authorization: portal payments are pending, not cleared. Do NOT hand over the keys. They must either cancel the portal payment and obtain a cashier's check, or wait 1 to 2 business days for funds to clear and schedule another appointment. Keys are released only once funds are confirmed in Sagareus' account.
+Cashier's check or money order required for move-in funds. No exceptions. There is no portal payment option and no pre-approval path; the 700+ credit score carve-out was retired August 20, 2026. If a tenant pays on the portal anyway: portal payments are pending, not cleared. Do NOT hand over the keys. They must either cancel the portal payment and obtain a cashier's check, or wait 1 to 2 business days for funds to clear and schedule another appointment. Keys are released only once funds are confirmed in Sagareus' account.

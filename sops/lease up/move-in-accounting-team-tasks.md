@@ -31,7 +31,7 @@ The Accounting Team's move-in tasks, each owned by the role in angle brackets. P
 ## Unblock tenant online payment (Resident Account Manager)
 
 * Once move-in funds have been received and deposited, the tenant may submit ongoing payments online.
-* If online payments were blocked at move in, unblock: Buildium, Lease Profile, Financials tab, Payment Settings subtab, Payment Methods, "Override payment methods", check "EFT / eCheck" and "Credit Card", save.
+* Online payments are blocked for every move in, so this step always applies. Once move-in funds are deposited, unblock: Buildium, Lease Profile, Financials tab, Payment Settings subtab, Payment Methods, "Override payment methods", check "EFT / eCheck" and "Credit Card", save.
 
 ## Verify Resident Insurance + assess fee (Resident Account Manager)
 

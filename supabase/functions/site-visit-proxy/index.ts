@@ -131,6 +131,26 @@ function normAddr(s: string): string {
 }
 // Best Unit Settings match for a typed address; "ambiguous" when a multi-unit
 // building matches but the typed address doesn't say which unit.
+// LU task by Unit ID (Brittany 2026-08-17: Unit ID only, never addresses): search
+// Leasing | \u{1F916} by the Unit ID field, prefer the open LU/TP/PreLease task, else walk
+// down from the Leasing task's subtasks.
+async function luByUnitId(uid: string): Promise<{ gid: string; name: string } | null> {
+  if (!/^\d+$/.test(uid)) return null;
+  const LEASING_ROBOT_PROJECT = "1213171758682884";
+  try {
+    const list = ((await asana("GET",
+      `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LEASING_ROBOT_PROJECT}&custom_fields.1213183515622826.value=${uid}&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+    const lus = list.filter((t) => /^(LU|TP|PreLease)\s*\|/i.test(t.name));
+    const hit = lus.find((t) => !t.completed) ?? lus[0];
+    if (hit) return hit;
+    const leasing = list.find((t) => /^leasing\s*\|/i.test(t.name));
+    if (!leasing) return null;
+    const subs = ((await asana("GET", `/tasks/${leasing.gid}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+    const sl = subs.filter((s) => /^(LU|TP|PreLease)\s*\|/i.test(s.name));
+    return sl.find((s) => !s.completed) ?? sl[0] ?? null;
+  } catch { return null; }
+}
+
 function matchUnit(units: Array<{ gid: string; address: string }>, typed: string):
   { hit?: { gid: string; address: string }; ambiguous?: string[] } {
   const t = addrTokens(typed);
@@ -277,6 +297,26 @@ async function allPropSettings(): Promise<Array<{ gid: string; address: string }
   propCache = { at: Date.now(), units };
   return units;
 }
+// Property Settings match by address. Property task names may cover several street
+// numbers ("9315, 9317, 9319 51st Ave S"), so the plain matcher's first-token rule
+// misses: accept when the unit's street number appears among the property's numbers
+// and the street tokens line up (longest name wins).
+function matchPropByAddress(plist: Array<{ gid: string; address: string }>, address: string): { gid: string; address: string } | null {
+  const direct = matchUnit(plist, address).hit;
+  if (direct) return direct;
+  const tt = addrTokens(address);
+  if (!tt.length || !/^\d+$/.test(tt[0])) return null;
+  const tset = new Set(tt);
+  const cands = plist.filter((u) => {
+    const ut = addrTokens(u.address);
+    if (ut.length < 2) return false;
+    if (!ut.filter((w) => /^\d+$/.test(w)).includes(tt[0])) return false;
+    const rest = ut.filter((w) => !/^\d+$/.test(w) && !w.startsWith("#"));
+    return rest.length > 0 && rest.filter((w) => !tset.has(w)).length <= 1;
+  }).sort((a, b) => addrTokens(b.address).length - addrTokens(a.address).length);
+  return cands[0] ?? null;
+}
+
 // Unit Settings first (multi-unit); Property Settings fallback (single-unit).
 async function matchSettings(address: string): Promise<{ hit?: { gid: string; address: string }; ambiguous?: string[] }> {
   let m = matchUnit(await allUnits(), address);
@@ -444,6 +484,12 @@ app.post("*", async (c) => {
         if (to?.assignee) toCoordinator = { gid: to.assignee.gid, name: to.assignee.name };
       } catch { /* non-fatal */ }
 
+      // 3b) the open Turn Over task for this address: dated visit tasks nest under it
+      //     (Brittany 2026-08-19; previously under the leasing anchor), and it gets the
+      //     duplicate visit comment. No open Turn Over = fall back to the leasing anchor.
+      let toTask: { gid: string } | null = null;
+      try { toTask = matchUnit(await openTurnOvers(), address).hit ?? null; } catch { /* non-fatal */ }
+
       // 4) due date: every ticket is due the NEXT DAY (Brittany, 2026-07-22).
       //    Always inside the 72-hour Accountability Rule, however close move-in is.
       const todayStr = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10); // Seattle-ish today
@@ -472,7 +518,8 @@ app.post("*", async (c) => {
         vLines.push("", "Photos for flagged items are attached here; the full set lives on the site visit subtask.");
         if (assignee === DEFAULT_MAINT) vLines.push("", "Assigned to the default maintenance coordinator; reroute if this property has someone else.");
         if (!assignee) vLines.push("", "No Turn Over task found for this property. Assign to your Turn Over Coordinator.");
-        visitTask = await asana("POST", `/tasks/${anchorGid}/subtasks`, {
+        if (source === "lu" && !toTask) vLines.push("", "No open Turn Over task for this property, so this visit task is filed on the leasing task instead.");
+        visitTask = await asana("POST", `/tasks/${(source === "lu" && toTask) ? toTask.gid : anchorGid}/subtasks`, {
           name: `Site Visit ${todayStr} | ${address}`.slice(0, 250),
           ...(assignee ? { assignee: assignee.gid } : {}),
           due_on: dueOn,
@@ -507,9 +554,8 @@ app.post("*", async (c) => {
       // duplicate of the visit comment on that task (Brittany, 2026-07-23).
       // The original posting above is unchanged; this is visibility only.
       try {
-        const toHit = matchUnit(await openTurnOvers(), address).hit;
-        if (toHit) {
-          await postStory(toHit.gid, lines.join("\n") +
+        if (toTask) {
+          await postStory(toTask.gid, lines.join("\n") +
             `\n\nFull record (photos + inspection PDF): https://app.asana.com/0/0/${inspection.gid}`);
         }
       } catch { /* non-fatal: the visit itself already posted */ }
@@ -976,18 +1022,74 @@ app.post("*", async (c) => {
           }
         }
       } catch { /* best-effort */ }
+      // Buildium amenity checkboxes (unit + property): what the owner page chips and
+      // the listing show. Surfaced on Confirm Unit Details for the settings gap check.
+      let unitFeatures: unknown[] = [];
+      let propFeatures: unknown[] = [];
+      try {
+        const au = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(String(uid))}/amenities`, {
+          headers: { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET },
+        });
+        if (au.ok) {
+          const aj = await au.json().catch(() => ({} as Record<string, unknown>));
+          unitFeatures = Array.isArray((aj as Record<string, unknown>).Features) ? ((aj as Record<string, unknown>).Features as unknown[]).slice(0, 100) : [];
+        }
+      } catch { /* best-effort */ }
+      try {
+        if (u.PropertyId) {
+          const ap = await fetch(`https://api.buildium.com/v1/rentals/${encodeURIComponent(String(u.PropertyId))}/amenities`, {
+            headers: { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET },
+          });
+          if (ap.ok) {
+            const aj2 = await ap.json().catch(() => ({} as Record<string, unknown>));
+            propFeatures = Array.isArray((aj2 as Record<string, unknown>).Features) ? ((aj2 as Record<string, unknown>).Features as unknown[]).slice(0, 100) : [];
+          }
+        }
+      } catch { /* best-effort */ }
       // PreListing Workbench populate: amenities/utilities/landscaping from the Unit
       // Settings task, pet policy/criteria/construction from Initial Onboard (best-effort)
       let settings: Record<string, unknown> | null = null;
       let settingsGid = "";
+      let psGid = "";
+      type SettingsCF = { gid: string; name: string; resource_subtype?: string; display_value: string | null; enum_options?: Array<Record<string, unknown>>; enum_value?: Record<string, unknown>; multi_enum_values?: Array<Record<string, unknown>> };
+      let cfUnit: SettingsCF[] = [];
+      let cfProp: SettingsCF[] = [];
       let onboard: Record<string, unknown> | null = null;
       try {
-        const m2 = await matchSettings(fullAddress);
-        if (m2.hit) {
-          settingsGid = m2.hit.gid;
-          const st = await asana("GET", `/tasks/${settingsGid}?opt_fields=custom_fields.name,custom_fields.display_value`);
-          const cf3 = (st.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
-          const g = (re: RegExp) => String(cf3.find((f) => re.test(f.name))?.display_value ?? "").trim();
+        // Settings task by Unit ID field, never by address (Brittany 2026-08-17).
+        // Unit Settings first; single-family homes have no Unit Settings task, so
+        // fall back to Property Settings, which carries the same Unit ID field
+        // (Brittany 2026-08-20).
+        const UNIT_SETTINGS_PROJ = "1213032009308835";
+        const UNIT_ID_FIELD = "1213183515622826";
+        // Both tasks load from the start: Unit Settings values win field by field, and
+        // any blank field fills from Property Settings (Brittany 2026-08-20).
+        const scanSettings = async (proj: string): Promise<string> => {
+          let offS = "";
+          for (let pg = 0; pg < 5; pg++) {
+            const rS = await fetch(`${ASANA}/projects/${proj}/tasks?limit=100&opt_fields=custom_fields.gid,custom_fields.display_value${offS ? `&offset=${encodeURIComponent(offS)}` : ""}`,
+              { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+            const jS = await rS.json().catch(() => ({}));
+            for (const tk of (jS.data ?? []) as Array<{ gid: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>) {
+              if (String((tk.custom_fields ?? []).find((f) => f.gid === UNIT_ID_FIELD)?.display_value ?? "").trim() === String(uid)) return tk.gid;
+            }
+            offS = jS.next_page?.offset ?? "";
+            if (!offS) break;
+          }
+          return "";
+        };
+        const SETTINGS_OPTF = "custom_fields.gid,custom_fields.name,custom_fields.resource_subtype,custom_fields.display_value,custom_fields.enum_options.gid,custom_fields.enum_options.name,custom_fields.enum_options.enabled,custom_fields.enum_value.gid,custom_fields.multi_enum_values.gid";
+        const usGid = await scanSettings(UNIT_SETTINGS_PROJ);
+        psGid = await scanSettings(PROPERTY_SETTINGS_PROJECT);
+        if (!psGid) psGid = matchPropByAddress(await allPropSettings(), fullAddress)?.gid ?? "";
+        settingsGid = usGid || psGid;
+        if (usGid) cfUnit = ((await asana("GET", `/tasks/${usGid}?opt_fields=${SETTINGS_OPTF}`)).custom_fields ?? []) as typeof cfUnit;
+        if (psGid && psGid !== usGid) cfProp = ((await asana("GET", `/tasks/${psGid}?opt_fields=${SETTINGS_OPTF}`)).custom_fields ?? []) as typeof cfProp;
+        if (settingsGid) {
+          const cfAll = usGid ? cfUnit : cfProp;
+          const cfFall = usGid ? cfProp : [];
+          const g = (re: RegExp) => String(cfAll.find((f) => re.test(f.name))?.display_value ?? "").trim() ||
+            String(cfFall.find((f) => re.test(f.name))?.display_value ?? "").trim();
           settings = {
             laundry: g(/^laundry$/i), parking: g(/^parking$/i), ev: g(/^ev charger$/i),
             cooling: g(/^cooling$/i), heating: g(/^heating type$/i),
@@ -1002,6 +1104,25 @@ app.post("*", async (c) => {
             },
           };
         }
+        // Property-level utility fields: provider names + account numbers live in the
+        // property Utilities field, and Auto Utility Processing Mode is the flat-fee
+        // signal. The unit-level "Utilities - X" fields above are per-unit BILLING
+        // MODES, not providers (Update | Utility Settings doc; Brittany 2026-08-16).
+        try {
+          const plist = await allPropSettings();
+          const mp = { hit: matchPropByAddress(plist, fullAddress) ?? undefined };
+          if (mp.hit && mp.hit.gid !== settingsGid) {
+            const pt2 = await asana("GET", `/tasks/${mp.hit.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+            const cf4 = (pt2.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
+            const gp = (re: RegExp) => String(cf4.find((f) => re.test(f.name))?.display_value ?? "").trim();
+            settings = settings ?? {};
+            (settings as Record<string, unknown>).propUtilities = gp(/^utilities$/i);
+            (settings as Record<string, unknown>).autoMode = gp(/auto utility processing/i);
+          } else if (settings) {
+            const cfSame = settings as Record<string, unknown>;
+            cfSame.propUtilities = cfSame.utilities ?? "";
+          }
+        } catch { /* best-effort */ }
       } catch { /* populate is best-effort */ }
       try {
         const streetNo = (fullAddress.match(/^\d+/) ?? [""])[0];
@@ -1016,9 +1137,123 @@ app.post("*", async (c) => {
           }
         }
       } catch { /* best-effort */ }
+      // Scheduled move out: open task in Leasing | Move-Out matched by Unit ID (Brittany 2026-08-17).
+      let moveOut = "";
+      let moveOutTaskGid = "";
+      try {
+        // Scheduled Move Out comes from the parent "Leasing | {address}" task in
+        // Leasing | Human View (Brittany 2026-08-20). Targeted search by Unit ID:
+        // the old Move-Out-project page scan missed units past the first 500 tasks.
+        const HUMAN_VIEW_PROJECT = "1208297375044026";
+        const MO_DATE_F = "1213182815411738";   // 🙌 Tenant Move-Out Date
+        const found = ((await asana("GET",
+          `/workspaces/${WORKSPACE}/tasks/search?projects.any=${HUMAN_VIEW_PROJECT}&custom_fields.1213183515622826.value=${uid}&completed=false&opt_fields=name,custom_fields.gid,custom_fields.display_value`)) ?? []) as Array<{ gid: string; name: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>;
+        const dateOf = (t?: { custom_fields?: Array<{ gid: string; display_value: string | null }> }) => {
+          const d = String((t?.custom_fields ?? []).find((f) => f.gid === MO_DATE_F)?.display_value ?? "").slice(0, 10);
+          return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : "";
+        };
+        const parentT = found.find((t) => /^leasing\s*\|/i.test(String(t.name)));
+        const moT = found.find((t) => /^move-?out\s*\|/i.test(String(t.name)));
+        moveOutTaskGid = moT?.gid ?? "";
+        moveOut = dateOf(parentT) || dateOf(moT);
+      } catch { /* best-effort */ }
+      // editable Unit Settings panel: field types + real Asana enum options, so the
+      // workbench offers the configured choices instead of free text (Brittany 2026-08-17)
+      let settingsFields: Array<Record<string, unknown>> = [];
+      try {
+        if (settingsGid) {
+          const base = cfUnit.length ? cfUnit : cfProp;
+          const fall = cfUnit.length ? cfProp : [];
+          const WANTED = [/^laundry$/i, /^parking$/i, /^ev charger$/i, /^cooling$/i, /^heating type$/i, /^storage$/i, /^mailbox$/i, /^landscaping maintenance$/i, /^internet provider$/i];
+          const shape = (f: SettingsCF) => ({
+            value: String(f.display_value ?? ""),
+            selected: f.resource_subtype === "enum"
+              ? String(((f.enum_value ?? {}) as Record<string, unknown>).gid ?? "")
+              : f.resource_subtype === "multi_enum"
+                ? ((f.multi_enum_values ?? []) as Array<Record<string, unknown>>).map((v) => String(v.gid ?? ""))
+                : null,
+          });
+          settingsFields = base
+            .filter((f) => WANTED.some((re) => re.test(String(f.name ?? ""))))
+            .map((f) => {
+              const own = shape(f);
+              const fb = fall.find((x) => x.gid === f.gid);
+              const borrowed = !own.value.trim() && fb && String(fb.display_value ?? "").trim() ? shape(fb) : null;
+              return {
+                gid: f.gid,
+                name: String(f.name ?? ""),
+                type: String(f.resource_subtype ?? "text"),
+                value: (borrowed ?? own).value,
+                options: ((f.enum_options ?? []) as Array<Record<string, unknown>>).filter((o) => o.enabled !== false).map((o) => ({ gid: o.gid, name: String(o.name ?? "") })),
+                selected: (borrowed ?? own).selected,
+                fromProperty: !!borrowed,
+              };
+            });
+        }
+      } catch { /* best-effort */ }
+      // Plan Status + open owner Modify requests from the Listing Settings task (by Unit ID)
+      let planStatus = "";
+      let lsPlan: Record<string, string> | null = null;
+      let openRequests: Array<Record<string, unknown>> = [];
+      try {
+        const LSP = "1217446710785429";
+        let lsGid = "";
+        let off9 = "";
+        for (let pg = 0; pg < 5 && !lsGid; pg++) {
+          const r9 = await fetch(`${ASANA}/projects/${LSP}/tasks?limit=100&opt_fields=name,custom_fields.gid,custom_fields.display_value${off9 ? `&offset=${encodeURIComponent(off9)}` : ""}`,
+            { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+          const j9 = await r9.json().catch(() => ({}));
+          for (const t of (j9.data ?? []) as Array<{ gid: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>) {
+            if (String((t.custom_fields ?? []).find((f) => f.gid === "1213183515622826")?.display_value ?? "").trim() === String(uid)) { lsGid = t.gid; break; }
+          }
+          off9 = j9.next_page?.offset ?? "";
+          if (!off9) break;
+        }
+        if (lsGid) {
+          const lst = await asana("GET", `/tasks/${lsGid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
+          const lcf = (lst.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>;
+          const lv = (g: string) => String(lcf.find((f) => f.gid === g)?.display_value ?? "").trim();
+          planStatus = lv("1217569409567702");
+          // current plan hydration (Brittany 2026-08-18): the workbench boots from the
+          // stored decisions so a modification never redoes every step
+          lsPlan = {
+            marketRent: lv("1217530253031654"), targetRent: lv("1217446658749360"),
+            startingRent: lv("1217446589856415"), minRent: lv("1217446710834881"),
+            previousRent: lv("1217446658742575"),
+            targetListDate: lv("1217515135889617").slice(0, 10),
+            priorities: lv("1217535711314799"),
+            petPolicy: lv("1217446589255794"), petRent: lv("1217450345262256"), petDeposit: lv("1217450833264180"),
+            securityDeposit: lv("1217515853935577"), moveInSpecial: lv("1217446589879104"),
+            lastMonthRent: lv("1217446710797252"), specialTerms: lv("1217446589881673"),
+            minCredit: lv("1217446728640049"), minIncome: lv("1217446770195125"),
+            utilDesc: lv("1217515337017428"), ffReport: lv("1217533821059479"), estReport: lv("1217533868879515"),
+            preparedBy: lv("1217516811159332"), inspectUrl: lv("1217515237891095"),
+            adjPlan: lv("1217448328664674"),
+            turnNote: lv("1217509139690271"),
+            turnAuth: lv("1217611635986386"),
+          };
+          const subs9 = await asana("GET", `/tasks/${lsGid}/subtasks?limit=100&opt_fields=name,notes,completed`);
+          openRequests = ((subs9 ?? []) as Array<{ gid: string; name: string; notes?: string; completed?: boolean }>)
+            .filter((s) => !s.completed && /^modify\s/i.test(String(s.name)))
+            .map((s) => ({ gid: s.gid, name: String(s.name).slice(0, 140), text: String(s.notes ?? "").slice(0, 600) }));
+        }
+      } catch { /* best-effort */ }
+      let luOwnerName = "";
+      try {
+        const mLu = matchUnit(await allVacancies(), fullAddress);
+        if (mLu.hit) {
+          const lu = await asana("GET", `/tasks/${mLu.hit.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+          luOwnerName = String(((lu.custom_fields ?? []).find((f: { name: string }) => /owner name/i.test(f.name)) ?? {}).display_value ?? "").trim().slice(0, 120);
+        }
+      } catch { /* greeting falls back to blank */ }
       return j(headers, 200, {
         ok: true,
         unitId: String(uid),
+        ownerName: luOwnerName,
+        planStatus,
+        lsPlan,
+        openRequests,
+        settingsFields,
         matchedAddress: fullAddress,
         address: fullAddress,
         beds: bedBathNum(u.UnitBedrooms),
@@ -1030,10 +1265,171 @@ app.post("*", async (c) => {
         settings,
         settingsGid,
         onboard,
+        moveOut,
+        moveOutTaskGid,
+        unitFeatures,
+        propFeatures,
         marketRent: typeof u.MarketRent === "number" && u.MarketRent > 0 ? u.MarketRent : null,
         description: String(u.Description ?? ""),
         propertyId: u.PropertyId ?? null,
       });
+    }
+
+    // ---------- utilData: utility calculators support (Listing Workbench utility section) ----------
+    // Returns the LU task + Calculate|utility subtask (report upload targets) and the unit's
+    // utility charge lines from Buildium lease transactions (the populate button). Populated
+    // bills are a starting point ONLY: staff cross-reference the actual bills and type over
+    // anything off (Brittany 2026-08-16).
+    if (action === "utilData") {
+      const address = String(body.address ?? "").trim();
+      if (!address) return j(headers, 400, { error: "missing_address" });
+      const out: Record<string, unknown> = { ok: true, luGid: "", calcGid: "", bills: [] };
+      try {
+        let luHit: { gid: string; name?: string } | null = await luByUnitId(String(body.unitId ?? "").trim());
+        if (!luHit) luHit = matchUnit(await allVacancies(true), address).hit ?? null;
+        if (luHit) {
+          out.luGid = luHit.gid;
+          out.luName = luHit.name ?? "";
+          const subs = await asana("GET", `/tasks/${luHit.gid}/subtasks?limit=100&opt_fields=name`);
+          const isCalc = (sx: { name: string }) => /calculat/i.test(sx.name) && /utilit/i.test(sx.name);
+          let calc = ((subs ?? []) as Array<{ gid: string; name: string }>).find(isCalc);
+          if (!calc) {
+            // "Calculate | New utility for listing" lives under the Pre Move-Out task,
+            // a SIBLING of LU/TP/PreLease on the Leasing parent (Brittany 2026-08-20)
+            try {
+              const full = await asana("GET", `/tasks/${luHit.gid}?opt_fields=parent.gid`) as { parent?: { gid: string } | null };
+              const pgid = full?.parent?.gid;
+              if (pgid) {
+                const sibs = ((await asana("GET", `/tasks/${pgid}/subtasks?limit=100&opt_fields=name`)) ?? []) as Array<{ gid: string; name: string }>;
+                const pmo = sibs.find((sx) => /^pre\s*move[\s-]*out\s*\|/i.test(sx.name));
+                if (pmo) {
+                  const psubs = ((await asana("GET", `/tasks/${pmo.gid}/subtasks?limit=100&opt_fields=name`)) ?? []) as Array<{ gid: string; name: string }>;
+                  calc = psubs.find(isCalc);
+                }
+              }
+            } catch { /* calc target stays optional */ }
+          }
+          if (calc) { out.calcGid = calc.gid; out.calcName = calc.name; }
+        }
+      } catch { /* upload targets are optional; client reports what it found */ }
+      const uid = String(body.unitId ?? "").trim();
+      if (uid && BUILDIUM_ID && BUILDIUM_SECRET) {
+        try {
+          const bh = { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET };
+          const ur = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}`, { headers: bh });
+          const u = await ur.json().catch(() => ({} as Record<string, unknown>));
+          const pid = (u as Record<string, unknown>)?.PropertyId;
+          if (pid) {
+            // the queried unit's property address: names the comparable in report disclaimers
+            try {
+              const prr = await fetch(`https://api.buildium.com/v1/rentals/${encodeURIComponent(String(pid))}`, { headers: bh });
+              if (prr.ok) {
+                const prj = await prr.json().catch(() => ({} as Record<string, unknown>));
+                const adr = ((prj as Record<string, unknown>).Address ?? {}) as Record<string, unknown>;
+                out.unitAddress = [String(adr.AddressLine1 ?? ""), String(adr.City ?? "")].filter(Boolean).join(", ").slice(0, 120);
+              }
+            } catch { /* best-effort */ }
+            const lr = await fetch(`https://api.buildium.com/v1/leases?propertyids=${encodeURIComponent(String(pid))}&limit=500`, { headers: bh });
+            const leases = ((await lr.json().catch(() => [])) as Array<Record<string, unknown>>) ?? [];
+            const mine = leases.filter((l) => String(l.UnitId ?? "") === uid)
+              .sort((a, b) => String(b.LeaseFromDate ?? "").localeCompare(String(a.LeaseFromDate ?? ""))).slice(0, 3);
+            const cutoff = Date.now() - 400 * 86400000;
+            const UT = /util|water|sewer|garbage|electric|\bgas\b|wsg|spu|scl|pse\b|recology|republic|waste|city of/i;
+            const bills: Array<{ date: string; memo: string; amount: number }> = [];
+            for (const l of mine) {
+              const tr = await fetch(`https://api.buildium.com/v1/leases/${l.Id}/transactions?limit=200`, { headers: bh });
+              const txs = ((await tr.json().catch(() => [])) as Array<Record<string, unknown>>) ?? [];
+              for (const t of txs) {
+                const d = String(t.Date ?? "").slice(0, 10);
+                if (!d || Date.parse(d) < cutoff) continue;
+                if (!/charge/i.test(String(t.TransactionType ?? ""))) continue;
+                const j0 = (t.Journal ?? {}) as Record<string, unknown>;
+                const memo = String(j0.Memo ?? "");
+                const lines = (j0.Lines ?? []) as Array<Record<string, unknown>>;
+                let pushed = false;
+                for (const ln of lines) {
+                  const gl = String(((ln.GLAccount ?? {}) as Record<string, unknown>).Name ?? "");
+                  const amt = Number(ln.Amount);
+                  if (!isFinite(amt) || amt === 0) continue;
+                  if (UT.test(gl) || UT.test(memo)) { bills.push({ date: d, memo: (memo || gl).slice(0, 120), amount: amt }); pushed = true; }
+                }
+                if (!pushed && !lines.length && UT.test(memo)) {
+                  const amt = Number(t.TotalAmount);
+                  if (isFinite(amt) && amt !== 0) bills.push({ date: d, memo: memo.slice(0, 120), amount: amt });
+                }
+              }
+            }
+            bills.sort((a, b) => b.date.localeCompare(a.date));
+            out.bills = bills.slice(0, 40);
+            // Total property bedrooms (flat fee denominator): every unit's bedroom count,
+            // vacancy ignored (Brittany 2026-08-16: "we don't track vacancies into this equation").
+            try {
+              const unr = await fetch(`https://api.buildium.com/v1/rentals/units?propertyids=${encodeURIComponent(String(pid))}&limit=100`, { headers: bh });
+              const units = ((await unr.json().catch(() => [])) as Array<Record<string, unknown>>) ?? [];
+              const BEDN: Record<string, number> = { Studio: 1, OneBed: 1, TwoBed: 2, ThreeBed: 3, FourBed: 4, FiveBed: 5, SixBed: 6, SevenBed: 7, EightBed: 8, NineBedPlus: 9 };
+              let totBeds = 0;
+              const parts: string[] = [];
+              for (const u2 of units) {
+                const n = BEDN[String(u2.UnitBedrooms ?? "")] ?? 0;
+                if (n > 0) { parts.push(`${String(u2.UnitNumber ?? "?")}: ${String(u2.UnitBedrooms)}`); totBeds += n; }
+              }
+              out.propertyBedrooms = totBeds;
+              out.unitBreakdown = parts.slice(0, 20).join(" | ");
+            } catch { /* bedroom pull is best-effort */ }
+            // Flat fee source: the actual utility BILLS paid on the property (accounts
+            // payable), not resident charges. GL names resolve the line categories.
+            try {
+              const gr = await fetch("https://api.buildium.com/v1/glaccounts?limit=500", { headers: bh });
+              const gls = ((await gr.json().catch(() => [])) as Array<Record<string, unknown>>) ?? [];
+              const glName: Record<string, string> = {};
+              for (const g0 of gls) glName[String(g0.Id)] = String(g0.Name ?? "");
+              let bl: Array<Record<string, unknown>> = [];
+              const dFrom = new Date(Date.now() - 364 * 86400000).toISOString().slice(0, 10);
+              const dTo = new Date().toISOString().slice(0, 10);
+              const dq = `frompaiddate=${dFrom}&topaiddate=${dTo}`;
+              for (const q of [`entitytype=Rental&entityid=${encodeURIComponent(String(pid))}&${dq}`, `propertyids=${encodeURIComponent(String(pid))}&${dq}`]) {
+                const br2 = await fetch(`https://api.buildium.com/v1/bills?${q}&limit=200`, { headers: bh });
+                if (!br2.ok) { out.ffQuery = (out.ffQuery ?? "") + q.split("=")[0] + ":" + br2.status + " "; continue; }
+                const parsed = await br2.json().catch(() => null);
+                if (Array.isArray(parsed)) { bl = parsed; out.ffQuery = q.split("=")[0] + ":ok:" + parsed.length; break; }
+              }
+              const ffBills: Array<{ date: string; memo: string; amount: number }> = [];
+              for (const b0 of bl) {
+                const d = String(b0.Date ?? "").slice(0, 10);
+                if (!d || Date.parse(d) < cutoff) continue;
+                const bmemo = String(b0.Memo ?? "");
+                const lines2 = (b0.Lines ?? []) as Array<Record<string, unknown>>;
+                for (const ln of lines2) {
+                  const glo = (ln.GLAccount ?? {}) as Record<string, unknown>;
+                  const gl = String(glo.Name ?? "") || (glName[String(glo.Id ?? "")] ?? "");
+                  const amt = Number(ln.Amount);
+                  if (!isFinite(amt) || amt === 0) continue;
+                  const lnMemo = String(ln.Memo ?? "");
+                  // Flat fee lines come ONLY from the utility GL subaccounts
+                  // "Gas / Electric" and "Water, Sewer, Garbage" (Brittany 2026-08-16);
+                  // memo matching caught appliance purchases and the like.
+                  const FF_GL = /(gas\s*\/\s*electric)|(water[,\s]+sewer[,\s]+garbage)/i;
+                  if (FF_GL.test(gl)) {
+                    const label = [gl, bmemo, lnMemo].filter((x, ix, arr) => x && arr.indexOf(x) === ix).join(" - ");
+                    ffBills.push({ date: d, memo: (label || "Utility bill").slice(0, 140), amount: amt });
+                  }
+                }
+              }
+              ffBills.sort((a, b) => b.date.localeCompare(a.date));
+              out.ffBills = ffBills.slice(0, 40);
+              // diagnostic: distinct GL names seen in the window, so a zero-match is explainable
+              const seen = new Set<string>();
+              for (const b0 of bl) for (const ln of ((b0.Lines ?? []) as Array<Record<string, unknown>>)) {
+                const glo2 = (ln.GLAccount ?? {}) as Record<string, unknown>;
+                const nm = String(glo2.Name ?? "") || (glName[String(glo2.Id ?? "")] ?? "");
+                if (nm) seen.add(nm);
+              }
+              out.glSeen = Array.from(seen).slice(0, 20);
+            } catch { /* bills pull is best-effort */ }
+          }
+        } catch { /* populate is best-effort */ }
+      }
+      return j(headers, 200, out);
     }
 
     // ---------- lsPush: PreListing Workbench -> Listing Settings task + Leasing URL ----------
@@ -1044,44 +1440,105 @@ app.post("*", async (c) => {
       const address = String(body.address ?? "").trim().slice(0, 200);
       if (address.length < 8) return j(headers, 400, { error: "missing_address" });
       const lsSlug = (a: string) => a.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
-      const slug = lsSlug(address);
-      // find existing by slug
+      let slug = lsSlug(address);
+      // find existing by Unit ID first (the stable key; address formatting varies and
+      // used to spawn duplicate tasks — Brittany 2026-08-17). Slug match is the
+      // fallback for tasks that predate the Unit ID field.
+      const UNIT_F = "1213183515622826";
+      const pushUid = String(body.unitId ?? "").trim();
       let taskGid = "";
+      let matchedName = "";
+      let slugGid = "";
       let off = "";
       for (let page = 0; page < 5 && !taskGid; page++) {
-        const res0 = await fetch(`${ASANA}/projects/${LS_PROJECT}/tasks?limit=100&opt_fields=name${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
+        const res0 = await fetch(`${ASANA}/projects/${LS_PROJECT}/tasks?limit=100&opt_fields=name,custom_fields.gid,custom_fields.display_value${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
           { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
         const json0 = await res0.json().catch(() => ({}));
-        for (const t of (json0.data ?? []) as Array<{ gid: string; name: string }>) {
-          if (lsSlug(String(t.name).replace(/^listing\s*\|/i, "").trim()) === slug) { taskGid = t.gid; break; }
+        for (const t of (json0.data ?? []) as Array<{ gid: string; name: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>) {
+          if (pushUid && String((t.custom_fields ?? []).find((f) => f.gid === UNIT_F)?.display_value ?? "").trim() === pushUid) { taskGid = t.gid; matchedName = t.name; break; }
+          if (!slugGid && lsSlug(String(t.name).replace(/^listing\s*\|/i, "").trim()) === slug) slugGid = t.gid;
         }
         off = json0.next_page?.offset ?? "";
         if (!off) break;
       }
+      if (!taskGid) taskGid = slugGid;
+      // the owner URL slug comes from the TASK NAME, not the pushed address: Buildium's
+      // full address format ("#A, Seattle, WA 98133") slugs differently than the task
+      // name ("#A Seattle") and produced dead preview links (Brittany 2026-08-17)
+      if (taskGid && matchedName) {
+        const nameSlug = lsSlug(String(matchedName).replace(/^listing\s*\|/i, "").trim());
+        if (nameSlug) slug = nameSlug;
+      }
+      // estimatedRent = the workbench's verified rent -> Market Rent (Target Rent is
+      // derived from priorities on the owner page, never pushed as market; Brittany 2026-08-17).
       const F: Record<string, string> = {
         unitId: "1213183515622826", petPolicy: "1217446589255794", startingRent: "1217446589856415",
-        currentRent: "1217446658742575", estimatedRent: "1217446658749360", minRent: "1217446710834881",
+        currentRent: "1217446658742575", estimatedRent: "1217530253031654", minRent: "1217446710834881",
+        targetRent: "1217446658749360", securityDeposit: "1217515853935577",
         moveInSpecial: "1217446589879104", minCredit: "1217446728640049", minIncome: "1217446770195125",
-        lastMonthRent: "1217446710797252", specialTerms: "1217446589881673", draftListing: "1217446710674762",
-        availableUpgrades: "1217446589924476",
+        lastMonthRent: "1217446710797252", specialTerms: "1217446589881673",
         priceAdjustmentPlan: "1217448328664674", photoReview: "1217448327991331",
         petRent: "1217450345262256", petDeposit: "1217450833264180",
+        utilDesc: "1217515337017428", flatFeeReport: "1217533821059479", estReport: "1217533868879515",
+        preparedBy: "1217516811159332", compsData: "1217516812648029",
+        turnProposal: "1217509139690271", inspectUrl: "1217515237891095",
+        turnAuth: "1217611635986386",
       };
-      const DATE_F: Record<string, string> = { targetLeaseStart: "1217450005495014", targetLeaseEnd: "1217450212127139" };
+      const DATE_F: Record<string, string> = { targetLeaseEnd: "1217450212127139", targetListDate: "1217515135889617" };
+      // Client Priorities multi-select: option names -> option gids (field 1217535711314799)
+      const PRI_FIELD = "1217535711314799";
+      const PRI_OPTS: Record<string, string> = {
+        "Listing - Maximize Rent": "1217535711314800", "Listing - Balanced": "1217535711314801",
+        "Listing - Minimize Vacancy": "1217535711314802", "Turn - Essentials Only": "1217535711314803",
+        "Turn - Balanced": "1217535711314804", "Turn - Upgrade": "1217535711314805",
+        "Risk - Selective": "1217535711314806", "Risk - Balanced": "1217535711314807",
+        "Risk - Flexible": "1217535711314808",
+      };
       const cf: Record<string, unknown> = {};
       for (const [k, gid] of Object.entries(F)) {
         const v = body[k];
         if (v == null || v === "") continue;
         const n = Number(v);
-        cf[gid] = ["startingRent", "currentRent", "estimatedRent", "minRent", "petRent", "petDeposit"].includes(k)
+        cf[gid] = ["startingRent", "currentRent", "estimatedRent", "targetRent", "minRent", "petRent", "petDeposit", "securityDeposit", "turnAuth"].includes(k)
           ? (Number.isFinite(n) ? n : undefined)
-          : String(v).slice(0, 6000);
+          : String(v).slice(0, k === "compsData" ? 1024 : 6000);
         if (cf[gid] === undefined) delete cf[gid];
       }
       for (const [k, gid] of Object.entries(DATE_F)) {
         const v = String(body[k] ?? "").slice(0, 10);
         if (/^\d{4}-\d{2}-\d{2}$/.test(v)) cf[gid] = { date: v };
       }
+      // the owner page URL is recorded on the task itself (Leasing Plan URL field,
+      // added by Brittany 2026-08-17) so the team can open it straight from Asana
+      cf["1217557090620385"] = `https://www.sagareus.com/leasing-plan?p=${slug}`;
+      if (Array.isArray(body.clientPriorities)) {
+        const gids = (body.clientPriorities as unknown[])
+          .map((o) => PRI_OPTS[String(o).trim()]).filter(Boolean);
+        if (gids.length) cf[PRI_FIELD] = gids;
+      }
+      // Plan Status lifecycle (Brittany 2026-08-17): first push = Sent; a push against
+      // an approved plan = Revised (the unlock). Open Modify tasks auto-complete below.
+      const PS_F = "1217569409567702";
+      const PS_OPT: Record<string, string> = { Draft: "1217569409567703", Sent: "1217569409567704", Accepted: "1217569409567705", "Team Lead Approved": "1217569409567706", Revised: "1217569409567707" };
+      const RN_F = "1217569237386930";
+      const respToOwner = String(body.responseToOwner ?? "").trim().slice(0, 600);
+      let wasApproved = false;
+      let openModify: Array<{ gid: string; name: string; notes?: string }> = [];
+      if (taskGid) {
+        try {
+          const cur = await asana("GET", `/tasks/${taskGid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
+          const curPs = String(((cur.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>).find((f) => f.gid === PS_F)?.display_value ?? "");
+          wasApproved = curPs === "Accepted" || curPs === "Team Lead Approved";
+          const msubs = await asana("GET", `/tasks/${taskGid}/subtasks?limit=100&opt_fields=name,notes,completed`);
+          openModify = ((msubs ?? []) as Array<{ gid: string; name: string; notes?: string; completed?: boolean }>)
+            .filter((s) => !s.completed && /^modify\s/i.test(String(s.name)));
+        } catch { /* best-effort */ }
+      }
+      cf[PS_F] = wasApproved ? PS_OPT["Revised"] : PS_OPT["Sent"];
+      // revision state field: machine state for the page banner (You asked / What we did);
+      // approvals reset on every push, lsAccept rebuilds them
+      const rnState = { appr: {}, req: openModify.map((m) => ({ s: String(m.name).replace(/^modify\s+/i, "").replace(/\s*\|.*$/, "").slice(0, 40), t: String(m.notes ?? "").split(/\r?\n/).find((l) => l.trim() && !/^section:/i.test(l)) ?? "" })).slice(0, 4), resp: respToOwner, d: new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10) };
+      cf[RN_F] = JSON.stringify(rnState).slice(0, 1020);
       if (!taskGid) {
         const t = await asana("POST", "/tasks", {
           name: `Listing | ${address}`.slice(0, 250),
@@ -1096,11 +1553,66 @@ app.post("*", async (c) => {
           text: "Listing Settings updated from the PreListing Workbench. Done by Claude on behalf of the listing agent.",
         }).catch(() => null);
       }
+      // auto-complete the unit's open Modify tasks, each closed quoting the response (Brittany 2026-08-17)
+      let modifyClosed = 0;
+      for (const m of openModify) {
+        try {
+          await asana("POST", `/tasks/${m.gid}/stories`, {
+            text: `Handled by a workbench push on ${rnState.d}.` + (respToOwner ? `\nResponse to owner: ${respToOwner}` : "") + "\nDone by Claude on behalf of the listing agent.",
+          }).catch(() => null);
+          await asana("PUT", `/tasks/${m.gid}`, { completed: true });
+          modifyClosed++;
+        } catch { /* best-effort */ }
+      }
+      // LU pipeline close-out (Brittany 2026-08-17): the push IS the record. Complete the
+      // Prepare + Email subtasks with the owner email pasted, due today; write the LU
+      // task's Starting Price + Minimum Price fields from the derived (nearest-$5) plan.
+      const luNotes: string[] = [];
+      try {
+        const emailCopy = String(body.emailCopy ?? "").trim().slice(0, 8000);
+        const luHit9 = await luByUnitId(pushUid);
+        if (luHit9) {
+          const today9 = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+          const subs10 = await asana("GET", `/tasks/${luHit9.gid}/subtasks?limit=100&opt_fields=name,completed`);
+          const targets = ((subs10 ?? []) as Array<{ gid: string; name: string; completed?: boolean }>)
+            .filter((s) => /^prepare\s*\|\s*bd\s*listing/i.test(s.name) || /market rent.*prelisting|prelisting/i.test(s.name));
+          for (const s of targets) {
+            try {
+              if (emailCopy) {
+                await asana("POST", `/tasks/${s.gid}/stories`, {
+                  text: `Leasing Plan sent to the owner. Copy of the email:\n\n${emailCopy}\n\nDone by Claude on behalf of the listing agent.`,
+                }).catch(() => null);
+              }
+              await asana("PUT", `/tasks/${s.gid}`, { due_on: today9, completed: true });
+              luNotes.push(`closed: ${s.name}`);
+            } catch { luNotes.push(`failed: ${s.name}`); }
+          }
+          // Starting Price + Minimum Price fields on the LU task, matched by name
+          const startN = Number(body.startingRent);
+          const minN = Number(body.minRent);
+          if (Number.isFinite(startN) || Number.isFinite(minN)) {
+            try {
+              const luT = await asana("GET", `/tasks/${luHit9.gid}?opt_fields=custom_fields.gid,custom_fields.name`);
+              const luCf9 = (luT.custom_fields ?? []) as Array<{ gid: string; name: string }>;
+              const cf9: Record<string, unknown> = {};
+              const sp = luCf9.find((f) => /starting\s*price$/i.test(f.name));
+              const mp = luCf9.find((f) => /minimum\s*price$/i.test(f.name));
+              if (sp && Number.isFinite(startN)) cf9[sp.gid] = startN;
+              if (mp && Number.isFinite(minN)) cf9[mp.gid] = minN;
+              if (Object.keys(cf9).length) { await asana("PUT", `/tasks/${luHit9.gid}`, { custom_fields: cf9 }); luNotes.push("lu prices set"); }
+              else luNotes.push("lu price fields not found");
+            } catch { luNotes.push("lu prices failed"); }
+          }
+        } else luNotes.push("no LU task for unit");
+      } catch { /* best-effort */ }
       return j(headers, 200, {
         ok: true,
         taskGid,
         taskUrl: `https://app.asana.com/0/0/${taskGid}`,
-        leasingUrl: `https://www.sagareus.com/en/listing?p=${slug}`,
+        leasingUrl: `https://www.sagareus.com/leasing-plan?p=${slug}`,
+        planStatus: wasApproved ? "Revised" : "Sent",
+        modifyClosed,
+        luNotes,
       });
     }
 
@@ -1109,10 +1621,11 @@ app.post("*", async (c) => {
     // dues it the same day as move out, and assigns Courtney (Brittany 2026-08-13).
     if (action === "plPhotoFail") {
       const address = String(body.address ?? "").trim();
-      if (!address) return j(headers, 400, { error: "missing_address" });
-      const m = matchUnit(await allVacancies(true), address);
-      if (!m.hit) return j(headers, 404, { error: "lu_not_found", message: "No Lease Up task matches this address, so the photo subtask could not be flagged." });
-      const luGid = m.hit.gid;
+      if (!address && !body.unitId) return j(headers, 400, { error: "missing_address" });
+      let luHit: { gid: string } | null = await luByUnitId(String(body.unitId ?? "").trim());
+      if (!luHit) luHit = matchUnit(await allVacancies(true), address).hit ?? null;
+      if (!luHit) return j(headers, 404, { error: "lu_not_found", message: "No Lease Up task matches this unit, so the photo subtask could not be flagged." });
+      const luGid = luHit.gid;
       const lu = await asana("GET", `/tasks/${luGid}?opt_fields=name,custom_fields.name,custom_fields.display_value`);
       const luCf = (lu.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
       const moRaw = String(luCf.find((f) => /move\s*out/i.test(f.name) && !/completion/i.test(f.name) && f.display_value)?.display_value ??
@@ -1133,10 +1646,11 @@ app.post("*", async (c) => {
     // ---------- plHeatConfirm: Heating Type blank in settings -> confirm-at-move-out subtask ----------
     if (action === "plHeatConfirm") {
       const address = String(body.address ?? "").trim();
-      if (!address) return j(headers, 400, { error: "missing_address" });
-      const m = matchUnit(await allVacancies(true), address);
-      if (!m.hit) return j(headers, 404, { error: "lu_not_found", message: "No Lease Up task matches this address; create the confirm task manually." });
-      const luGid = m.hit.gid;
+      if (!address && !body.unitId) return j(headers, 400, { error: "missing_address" });
+      let luHit: { gid: string } | null = await luByUnitId(String(body.unitId ?? "").trim());
+      if (!luHit) luHit = matchUnit(await allVacancies(true), address).hit ?? null;
+      if (!luHit) return j(headers, 404, { error: "lu_not_found", message: "No Lease Up task matches this unit; create the confirm task manually." });
+      const luGid = luHit.gid;
       const name = `Confirm Heating Type At Move Out | ${address}`.slice(0, 250);
       const subs = await asana("GET", `/tasks/${luGid}/subtasks?limit=100&opt_fields=name,completed`);
       const existing = ((subs ?? []) as Array<{ gid: string; name: string }>).find((s) => /^confirm heating type/i.test(s.name));
@@ -1317,9 +1831,6 @@ app.post("*", async (c) => {
           const ms = await matchSettings(address);
           if (ms.hit) {
             await asana("PUT", `/tasks/${ms.hit.gid}`, { custom_fields: { "1217495572560475": keyboxCode } });
-            await asana("POST", `/tasks/${ms.hit.gid}/stories`, {
-              text: `Keybox code updated from the ${todayStr} Turn Over Prep inspection. Done by Claude on behalf of the inspector.`,
-            }).catch(() => null);
             keyboxSaved = true;
           }
         } catch { /* fail-soft */ }
@@ -1376,9 +1887,6 @@ app.post("*", async (c) => {
             const f = (cur.custom_fields ?? []).find((x: { gid: string }) => x.gid === "1217495572560475");
             if (String(f?.display_value ?? "").trim() !== keyboxCode) {
               await asana("PUT", `/tasks/${ms.hit.gid}`, { custom_fields: { "1217495572560475": keyboxCode } });
-              await asana("POST", `/tasks/${ms.hit.gid}/stories`, {
-                text: `Keybox code updated in real time from the move out inspection (via /wt Inspections, Turn Over Plan). Done by Claude on behalf of the inspector.`,
-              }).catch(() => null);
             }
             keyboxSaved = true;
           }
@@ -1394,6 +1902,43 @@ app.post("*", async (c) => {
       return j(headers, 200, { ok: true, keyboxSaved, videoPosted });
     }
 
+    // ---------- moEmailLog: record the sent owner email on the Turn Over task ----------
+    // The widget calls this after the compose opens: posts the final email text as a
+    // comment on the "Email | Owner - Turn Over Plan" subtask (falls back to the
+    // "Email | Owner - Turn Over Communication" template name), dates it today, and
+    // marks it complete (Brittany 2026-08-20).
+    if (action === "moEmailLog") {
+      const tuGid9 = String(body.taskGid ?? "");
+      const emailCopy = String(body.emailCopy ?? "").slice(0, 20000);
+      const kind9 = body.kind === "vendor" ? "vendor" : "owner";
+      if (!tuGid9 || !emailCopy.trim()) return j(headers, 400, { error: "missing_fields" });
+      const today9 = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+      try {
+        const subs9 = await asana("GET", `/tasks/${tuGid9}/subtasks?limit=100&opt_fields=name,completed`);
+        const list9 = (subs9 ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+        if (kind9 === "vendor") {
+          // vendor dispatch record: comment + TO assignee + due today, left OPEN until sent (Brittany 2026-08-20)
+          const vTask = list9.find((t) => /^email\s*\|\s*vendor.*dispatch\s*rent\s*ready/i.test(t.name)) ??
+                        list9.find((t) => /^email\s*\|\s*vendor/i.test(t.name));
+          if (!vTask) return j(headers, 200, { ok: true, emailLogged: null });
+          await postStory(vTask.gid, emailCopy);
+          const tu9 = await asana("GET", `/tasks/${tuGid9}?opt_fields=assignee.gid`).catch(() => null);
+          const upd9: Record<string, unknown> = { due_on: today9 };
+          if (tu9?.assignee?.gid) upd9.assignee = tu9.assignee.gid;
+          await asana("PUT", `/tasks/${vTask.gid}`, upd9).catch(() => null);
+          return j(headers, 200, { ok: true, emailLogged: vTask.name });
+        }
+        const emailTask = list9.find((t) => /^email\s*\|\s*owner.*turn\s*over\s*plan/i.test(t.name)) ??
+                          list9.find((t) => /^email\s*\|\s*owner.*turn\s*over/i.test(t.name));
+        if (!emailTask) return j(headers, 200, { ok: true, emailLogged: null });
+        await postStory(emailTask.gid, emailCopy);
+        await asana("PUT", `/tasks/${emailTask.gid}`, { due_on: today9, completed: true }).catch(() => null);
+        return j(headers, 200, { ok: true, emailLogged: emailTask.name });
+      } catch {
+        return j(headers, 200, { ok: true, emailLogged: null });
+      }
+    }
+
     // ---------- moSubmit: Turn Over Plan (Propose) submission ----------
     // Posts the report + photos + PDF on the picked TURN OVER task (Brittany
     // 2026-08-14: not the Move-Out conduct subtask, which stays incomplete),
@@ -1406,12 +1951,20 @@ app.post("*", async (c) => {
       if (!taskGid || !address) return j(headers, 400, { error: "missing_fields" });
       // Work-order capture (Brittany 2026-08-14: "Don't go room by room. Just do
       // enough for the work order.") — findings are work-order items, not room issues.
-      type MoFinding = { type: string; note: string; photos: number };
-      const findings: MoFinding[] = (Array.isArray(body.findings) ? body.findings : []).slice(0, 40).map((f: Record<string, unknown>) => ({
+      type MoFinding = { type: string; note: string; photos: number; group: string };
+      const findings: MoFinding[] = (Array.isArray(body.findings) ? body.findings : []).slice(0, 60).map((f: Record<string, unknown>) => ({
         type: String(f.type ?? "").slice(0, 60),
         note: String(f.note ?? "").slice(0, 1000),
         photos: Number(f.photos ?? 0) || 0,
+        group: /^(minor|major)$/i.test(String(f.group ?? "")) ? String(f.group).slice(0, 1).toUpperCase() + String(f.group).slice(1).toLowerCase() : "Required",
       })).filter((f: MoFinding) => f.type);
+      const reqFindings = findings.filter((f) => f.group === "Required");
+      const optFindings = findings.filter((f) => f.group !== "Required");
+      const byType: Array<{ t: string; items: string[] }> = (Array.isArray(body.byType) ? body.byType : []).slice(0, 12)
+        .map((g: Record<string, unknown>) => ({
+          t: String(g.t ?? "").slice(0, 30),
+          items: (Array.isArray(g.items) ? g.items : []).slice(0, 60).map((i: unknown) => String(i).slice(0, 400)),
+        })).filter((g: { t: string; items: string[] }) => g.t && g.items.length);
       const ratings = (body.ratings ?? {}) as Record<string, unknown>;
       const cleanRating = String(ratings.cleanliness ?? "").slice(0, 2);
       const yardRating = String(ratings.yard ?? "").slice(0, 2);
@@ -1435,10 +1988,12 @@ app.post("*", async (c) => {
       const picked = await asana("GET", `/tasks/${taskGid}?opt_fields=parent.gid,parent.name`);
       const parentGid = picked?.parent?.gid ?? null;
       let luGid: string | null = null;
+      let moGid: string | null = null;
       let ownerEmail = "";
       if (parentGid) {
         try {
           const subs = await asana("GET", `/tasks/${parentGid}/subtasks?limit=100&opt_fields=name`);
+          moGid = ((subs ?? []).find((t: { name: string }) => /^move.?out\s*\|/i.test(t.name)) ?? {}).gid ?? null;
           const luTask = (subs ?? []).find((t: { name: string }) => /^(lu|tp|pre.?lease)\s*\|/i.test(t.name));
           if (luTask) {
             luGid = luTask.gid;
@@ -1449,33 +2004,55 @@ app.post("*", async (c) => {
       }
 
       // Flat report comment in the Site Visit style (simplified 2026-08-14)
-      const lines: string[] = [`TURN OVER PROPOSAL -- ${todayStr} -- ${address}`, ""];
-      if (inspector) lines.splice(1, 0, `Inspected by: ${inspector}`);
+      const lines: string[] = [
+        "Move Out Condition Inspection | Repairs / Damages + Optional Upgrades",
+        `${todayStr} -- ${address}`,
+        "",
+      ];
+      if (inspector) lines.splice(2, 0, `Inspected by: ${inspector}`);
       if (videoLink) { lines.push(`Walkthrough video: ${videoLink}`); lines.push(""); }
       // keybox CODE never prints in the report/PDF: it lives ONLY in the Unit Settings
       // Keybox Code field and the owner + vendor access emails (Brittany 2026-08-14)
       if (keyboxCode) { lines.push("Keybox code updated in Unit Settings."); lines.push(""); }
       else if (keyboxLoc) { lines.push(`Keybox location: ${keyboxLoc}`); lines.push(""); }
-      lines.push("RATINGS");
-      lines.push(`Cleanliness: ${cleanRating || "not graded"}${cleanNote ? " -- " + cleanNote : ""}`);
-      lines.push(`Exterior: ${yardRating || "not graded"}${yardNote ? " -- " + yardNote : ""}`);
+      // ratings retired from the Propose widget (Brittany 2026-08-19); print only if sent
+      if (cleanRating || yardRating || cleanNote || yardNote) {
+        lines.push("RATINGS");
+        lines.push(`Cleanliness: ${cleanRating || "not graded"}${cleanNote ? " -- " + cleanNote : ""}`);
+        lines.push(`Exterior: ${yardRating || "not graded"}${yardNote ? " -- " + yardNote : ""}`);
+      }
       if (odor) lines.push(`Odor: ${odor}`);
       if (mold) lines.push(`Mold: ${mold}`);
       if (pests) lines.push(`Pests: ${pests}`);
       lines.push("");
-      lines.push(`WORK ORDER (${findings.length} item${findings.length === 1 ? "" : "s"})`);
-      findings.forEach((f) => lines.push(`- ${f.type}${f.note ? " -- " + f.note : ""}${f.photos ? ` (${f.photos} photo${f.photos > 1 ? "s" : ""})` : ""}`));
-      if (!findings.length) lines.push("None. Everything not listed is assumed OK.");
+      lines.push(`REQUIRED WORK ORDER (${reqFindings.length} item${reqFindings.length === 1 ? "" : "s"}) -- estimate 1, executed up to Authorization`);
+      reqFindings.forEach((f) => lines.push(`- ${f.type}${f.note ? " -- " + f.note : ""}${f.photos ? ` (${f.photos} photo${f.photos > 1 ? "s" : ""})` : ""}`));
+      if (!reqFindings.length) lines.push("None. Everything not listed is assumed OK.");
+      if (optFindings.length) {
+        lines.push("");
+        lines.push(`OPTIONAL UPGRADES (${optFindings.length} item${optFindings.length === 1 ? "" : "s"}) -- estimate 2 separately; owner picks from these`);
+        optFindings.forEach((f) => lines.push(`- ${f.group} - ${f.type}${f.note ? " -- " + f.note : ""}${f.photos ? ` (${f.photos} photo${f.photos > 1 ? "s" : ""})` : ""}`));
+      }
+      if (byType.length) {
+        lines.push("");
+        lines.push("BY TYPE");
+        byType.forEach((g) => {
+          lines.push(`${g.t}:`);
+          g.items.forEach((i) => lines.push(`- ${i}`));
+        });
+      }
       if (generalNote) { lines.push(""); lines.push("Notes:"); lines.push(generalNote); }
       const story = await postStory(tuGid, lines.join("\n").slice(0, 60000));
 
       // The Move-Out inspection subtask is deliberately left incomplete
       // (Brittany 2026-08-14); only the completion-date field below is stamped.
 
-      // Move Out Completion Date on the LU task (date fields need object form)
-      if (luGid) {
-        try { await asana("PUT", `/tasks/${luGid}`, { custom_fields: { "1214521745467158": { date: todayStr } } }); } catch { /* fail-soft */ }
+      // Move Out Completion Date on the MOVE-OUT task (Brittany 2026-08-20; was the LU task),
+      // and Turn Over Dispatched stamped on the Turn Over task itself
+      if (moGid) {
+        try { await asana("PUT", `/tasks/${moGid}`, { custom_fields: { "1214521745467158": { date: todayStr } } }); } catch { /* fail-soft */ }
       }
+      try { await asana("PUT", `/tasks/${tuGid}`, { custom_fields: { "1214522138482281": { date: todayStr } } }); } catch { /* fail-soft */ }
 
       // New keybox code -> the Unit Settings Keybox Code field (its only home besides
       // the owner + vendor access emails)
@@ -1485,9 +2062,6 @@ app.post("*", async (c) => {
           const ms = await matchSettings(address);
           if (ms.hit) {
             await asana("PUT", `/tasks/${ms.hit.gid}`, { custom_fields: { "1217495572560475": keyboxCode.slice(0, 40) } });
-            await asana("POST", `/tasks/${ms.hit.gid}/stories`, {
-              text: `Keybox code updated from the ${todayStr} move out inspection. Done by Claude on behalf of the inspector.`,
-            }).catch(() => null);
             keyboxSaved = true;
           }
         } catch { /* fail-soft: the code still rides the owner email */ }
@@ -1495,15 +2069,16 @@ app.post("*", async (c) => {
 
       // Append findings to this Turn Over task's Approved Scope = initial work order
       let scopeAppended = 0;
-      if (findings.length) {
+      if (reqFindings.length) {
+        // Required items only: Optional Upgrades are owner choices, never pre-approved scope
         try {
           const tuTask = await asana("GET", `/tasks/${tuGid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
           const scopeField = (tuTask.custom_fields ?? []).find((f: { gid: string }) => f.gid === "1216811465429492");
           const existing = String(scopeField?.display_value ?? "").trim();
-          const block = findings.map((f) => `${f.type}${f.note ? ": " + f.note : ""}`).join("\n");
+          const block = reqFindings.map((f) => `${f.type}${f.note ? ": " + f.note : ""}`).join("\n");
           const merged = (existing ? existing + "\n" : "") + block;
           await asana("PUT", `/tasks/${tuGid}`, { custom_fields: { "1216811465429492": merged.slice(0, 4900) } });
-          scopeAppended = findings.length;
+          scopeAppended = reqFindings.length;
         } catch { /* fail-soft; scope can be filled by hand */ }
       }
 
@@ -1527,7 +2102,9 @@ app.post("*", async (c) => {
             off = j0.next_page?.offset ?? "";
             if (!off) break;
           }
-          const proposal = findings.map((f) => `${f.type}${f.note ? ": " + f.note : ""}`).join("\n").slice(0, 6000);
+          const proposal = reqFindings.map((f) => `${f.type}${f.note ? ": " + f.note : ""}`)
+            .concat(optFindings.map((f) => `${f.group} - ${f.type}${f.note ? ": " + f.note : ""}`))
+            .join("\n").slice(0, 6000);
           if (!lsGid) {
             const t = await asana("POST", "/tasks", {
               name: `Listing | ${address}`.slice(0, 250),
@@ -1539,7 +2116,7 @@ app.post("*", async (c) => {
           } else {
             await asana("PUT", `/tasks/${lsGid}`, { custom_fields: { "1217509139690271": proposal } });
             await asana("POST", `/tasks/${lsGid}/stories`, {
-              text: `Turn Proposal updated from the ${todayStr} Turn Over Proposal inspection (via /wt Inspections). Done by Claude on behalf of the inspector.`,
+              text: `Turn Proposal updated from the ${todayStr} Turnover Dispatch (via the /work-bench turnover widget). Done by Claude on behalf of the inspector.`,
             }).catch(() => null);
           }
           turnProposalSaved = !!lsGid;
@@ -1579,6 +2156,11 @@ app.post("*", async (c) => {
       });
       const attJson = await res.json().catch(() => ({}));
       if (!res.ok) return j(headers, 502, { error: "attach_failed" });
+      // opt-in: the utility-report flow marks its Calculate task complete once the
+      // report is attached (Brittany 2026-08-20); other pdf callers are unaffected
+      if (body.completeParent === true) {
+        await asana("PUT", `/tasks/${parent}`, { completed: true }).catch(() => null);
+      }
       const att = attJson.data ?? {};
       const asanaUrl = att.permanent_url || att.view_url ||
         (att.gid ? `https://app.asana.com/app/asana/-/get_asset?asset_id=${att.gid}` : "");
@@ -1871,6 +2453,164 @@ app.post("*", async (c) => {
     // ---------- postListing: push the draft listing text to the Buildium unit record ----------
     // Deliberately updates ONLY the unit Description. Creating/updating the listing itself
     // (rent, deposit, dates) stays with the Go Live step so nothing syndicates by accident.
+    // ---------- listingQueue: workbench step 0 ----------
+    // Two sources (Brittany 2026-08-17): the Listing Adjustments section of Listing
+    // Settings (owner modification requests land there), and Prepare | BD Listing
+    // subtasks (LU task -> Leasing task, Leasing | robot project) due within 30 days.
+    if (action === "listingQueue") {
+      const UNIT_F2 = "1213183515622826";
+      const ADJ_SECTION = "1217553095980495";
+      const uidOf = (cfs: Array<{ gid: string; display_value: string | null }> | undefined) =>
+        String((cfs ?? []).find((f) => f.gid === UNIT_F2)?.display_value ?? "").trim();
+      const adjustments: Array<Record<string, unknown>> = [];
+      const prepare: Array<Record<string, unknown>> = [];
+      try {
+        const ra = await fetch(`${ASANA}/sections/${ADJ_SECTION}/tasks?completed_since=now&limit=50&opt_fields=name,due_on,notes,parent.gid,custom_fields.gid,custom_fields.display_value`,
+          { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+        const ja = await ra.json().catch(() => ({}));
+        for (const t of (ja.data ?? []) as Array<{ gid: string; name: string; due_on?: string | null; notes?: string; parent?: { gid: string } | null; custom_fields?: Array<{ gid: string; display_value: string | null }> }>) {
+          let aUid = uidOf(t.custom_fields);
+          if (!aUid && t.parent?.gid) {
+            // Modify tasks carry no Unit ID; walk up to the parent Listing task (Unit ID only, never addresses)
+            try {
+              const pt9 = await asana("GET", `/tasks/${t.parent.gid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
+              aUid = uidOf(pt9.custom_fields);
+            } catch { /* best-effort */ }
+          }
+          adjustments.push({
+            gid: t.gid,
+            name: String(t.name ?? "").slice(0, 140),
+            due: String(t.due_on ?? ""),
+            unitId: aUid,
+            preview: String(t.notes ?? "").split(/\r?\n/).find((l) => l.trim()) ?? "",
+            url: `https://app.asana.com/0/0/${t.gid}`,
+          });
+        }
+      } catch { /* best-effort */ }
+      try {
+        // week-slice the search window: the text match is fuzzy and capped at 100, so a
+        // single 6-week query lets near-matches crowd out real Prepare tasks.
+        type PrepHit = { gid: string; name: string; due_on?: string | null; parent?: { gid: string; name: string } | null };
+        const preps: PrepHit[] = [];
+        const seenP = new Set<string>();
+        for (let w = -2; w < 5; w++) {
+          const from = new Date(Date.now() + w * 7 * 86400000).toISOString().slice(0, 10);
+          const to = new Date(Date.now() + (w + 1) * 7 * 86400000).toISOString().slice(0, 10);
+          const rs = await fetch(`${ASANA}/workspaces/${WORKSPACE}/tasks/search?text=${encodeURIComponent("Prepare | BD Listing")}&completed=false&due_on.after=${from}&due_on.before=${to}&sort_by=due_date&sort_ascending=true&limit=100&opt_fields=name,due_on,parent.gid,parent.name`,
+            { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+          const js = await rs.json().catch(() => ({}));
+          for (const t of (js.data ?? []) as PrepHit[]) {
+            if (!/^prepare\s*\|\s*bd\s*listing/i.test(String(t.name))) continue;
+            if (/[<>]/.test(String(t.parent?.name ?? ""))) continue;  // template artifacts like "LU | <address>"
+            if (seenP.has(t.gid)) continue;
+            seenP.add(t.gid);
+            preps.push(t);
+          }
+        }
+        for (const t of preps.slice(0, 20)) {
+          const pname = String(t.parent?.name ?? "");
+          const addr2 = (pname.replace(/^[a-z]+\s*\|\s*/i, "").trim() || String(t.name)).slice(0, 120);
+          // Unit ID ONLY, never addresses (Brittany 2026-08-17): walk the task chain
+          // Prepare -> parent LU -> parent Leasing task, which carries the Unit ID field.
+          let unitId = "";
+          if (t.parent?.gid) {
+            try {
+              const pt = await asana("GET", `/tasks/${t.parent.gid}?opt_fields=parent.gid,custom_fields.gid,custom_fields.display_value`);
+              unitId = uidOf(pt.custom_fields);
+              if (!unitId && pt.parent?.gid) {
+                const gt = await asana("GET", `/tasks/${pt.parent.gid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
+                unitId = uidOf(gt.custom_fields);
+              }
+            } catch { /* best-effort */ }
+          }
+          prepare.push({
+            gid: t.gid,
+            address: addr2,
+            due: String(t.due_on ?? ""),
+            unitId,
+            url: `https://app.asana.com/0/0/${t.gid}`,
+          });
+        }
+      } catch { /* best-effort */ }
+      prepare.sort((a, b) => String(a.due).localeCompare(String(b.due)));
+      return j(headers, 200, { ok: true, adjustments, prepare });
+    }
+
+    // ---------- setUnitSettings: write edited facts back to the Unit Settings task ----------
+    if (action === "setUnitSettings") {
+      const sg = String(body.settingsGid ?? "").replace(/\D/g, "");
+      if (!sg) return j(headers, 400, { error: "missing_settings_gid" });
+      const fields = (body.fields ?? {}) as Record<string, { type?: string; value?: unknown }>;
+      const cfU: Record<string, unknown> = {};
+      for (const [gid, spec] of Object.entries(fields)) {
+        if (!/^\d+$/.test(gid)) continue;
+        const ty = String(spec?.type ?? "text");
+        if (ty === "enum") {
+          const og = String(spec?.value ?? "").replace(/\D/g, "");
+          cfU[gid] = og || null;
+        } else if (ty === "multi_enum") {
+          cfU[gid] = (Array.isArray(spec?.value) ? spec.value : []).map((v: unknown) => String(v).replace(/\D/g, "")).filter(Boolean);
+        } else {
+          cfU[gid] = String(spec?.value ?? "").slice(0, 2000);
+        }
+      }
+      if (!Object.keys(cfU).length) return j(headers, 400, { error: "no_fields" });
+      await asana("PUT", `/tasks/${sg}`, { custom_fields: cfU });
+      // no comments on Unit or Property Settings tasks (Brittany 2026-08-17)
+      return j(headers, 200, { ok: true });
+    }
+
+    // ---------- setAmenities: write the UNIT amenity checkboxes back to Buildium ----------
+    // Two-way per Brittany 2026-08-17: the workbench can add missing amenities. Unit
+    // scope only; property-level checkboxes stay read-only.
+    if (action === "setAmenities") {
+      if (!BUILDIUM_ID || !BUILDIUM_SECRET) return j(headers, 500, { error: "buildium_not_configured" });
+      const uid = String(body.unitId ?? "").trim();
+      if (!/^\d+$/.test(uid)) return j(headers, 400, { error: "bad_unit_id" });
+      const feats = (Array.isArray(body.features) ? body.features : [])
+        .map((f: unknown) => String(f).trim())
+        .filter((f: string) => /^[A-Za-z0-9_]{2,60}$/.test(f))
+        .slice(0, 100);
+      const BH = { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET, "Content-Type": "application/json" };
+      const cur = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}/amenities`, { headers: BH });
+      const curJ = cur.ok ? await cur.json().catch(() => ({} as Record<string, unknown>)) : {};
+      const put = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}/amenities`, {
+        method: "PUT", headers: BH,
+        body: JSON.stringify({ Features: feats, IncludedInRent: (curJ as Record<string, unknown>).IncludedInRent ?? [] }),
+      });
+      if (!put.ok) {
+        const msg = await put.text().catch(() => "");
+        return j(headers, 502, { error: "buildium_rejected", message: ("Buildium rejected the update: " + msg).slice(0, 300) });
+      }
+      const after = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}/amenities`, { headers: BH });
+      const aj = after.ok ? await after.json().catch(() => ({} as Record<string, unknown>)) : {};
+      return j(headers, 200, { ok: true, features: Array.isArray((aj as Record<string, unknown>).Features) ? (aj as Record<string, unknown>).Features : feats });
+    }
+
+    // ---------- inspectFiles: newest inspection PDF from the Buildium UNIT file section ----------
+    // Inspection reports live on the unit profile: not the lease, not the property (Brittany 2026-08-17).
+    if (action === "inspectFiles") {
+      if (!BUILDIUM_ID || !BUILDIUM_SECRET) return j(headers, 500, { error: "buildium_not_configured" });
+      const uid = String(body.unitId ?? "").trim();
+      if (!/^\d+$/.test(uid)) return j(headers, 400, { error: "bad_unit_id", message: "Populate from a Unit ID first." });
+      const BH = { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET };
+      const fr = await fetch(`https://api.buildium.com/v1/files?entitytype=RentalUnit&entityid=${encodeURIComponent(uid)}&limit=200`, { headers: BH });
+      if (!fr.ok) return j(headers, 502, { error: "buildium_failed", message: "Buildium didn't answer; paste the link by hand." });
+      const files = await fr.json().catch(() => []);
+      const cand = (Array.isArray(files) ? files : [])
+        .map((f: Record<string, unknown>) => ({
+          id: f.Id,
+          name: String(f.Title ?? f.FileName ?? f.Name ?? ""),
+          uploaded: String(f.UploadedDateTime ?? ""),
+          ct: String(f.ContentType ?? ""),
+        }))
+        .filter((f) => /inspect/i.test(f.name) && (/pdf/i.test(f.ct) || /\.pdf$/i.test(f.name) || !f.ct));
+      cand.sort((a, b) => b.uploaded.localeCompare(a.uploaded));
+      const movein = cand.filter((f) => /move.?in/i.test(f.name));
+      const hit2 = movein[0] ?? cand[0] ?? null;
+      return j(headers, 200, { ok: true, found: !!hit2, file: hit2, count: cand.length });
+    }
+
     if (action === "postListing") {
       if (!BUILDIUM_ID || !BUILDIUM_SECRET) {
         return j(headers, 500, { error: "buildium_not_configured", message: "Buildium keys are not set up yet." });

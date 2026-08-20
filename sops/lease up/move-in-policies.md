@@ -4,10 +4,10 @@ service_line: lease up
 sop_owner: brittany@sagareus.com
 outline_url: https://sagareus.getoutline.com/doc/move-in-policies-aoMfZSfGI4
 status: active
-last_reviewed: 2026-07-16
+last_reviewed: 2026-08-20
 visibility_tier: ic
-version: 1
-tags: [leasing, move-in, policy, payments, credit-score, keys]
+version: 2
+tags: [leasing, move-in, policy, payments, cashiers-check, keys]
 created_but_never_updated: false
 ---
 
@@ -15,30 +15,29 @@ The non-negotiables for move-in day. Part of [Move In](https://sagareus.getoutli
 
 ## Move-In Payments
 
-* Residents must pay with a Cashier's Check or Money Order at move-in.
+* Residents must pay their move-in funds with a Cashier's Check or Money Order at move-in.
 * No Cashier's Check or Money Order = No Keys. No exceptions.
-* The only way around this is pre-approval to pay online (below).
+* There is no online payment option for move-in funds. Credit score does not change this.
 
-**Can This Resident Pay Online?**
+**The online payment exception has been retired.**
 
-Before move-in day, the Leasing Assistant checks whether online payment is allowed. Pull the credit reports for everyone on the lease. They qualify ONLY if every single person has a 700+ credit score. Not an average: each person individually needs 700+.
+Effective August 20, 2026, the 700+ credit score carve-out no longer exists. Do not pull credit reports to decide payment method, and do not pre-approve anyone for portal payment at move-in. This applies to every resident on every lease, regardless of credit.
 
-Examples: scores of 720 and 710 qualify. Scores of 750 and 680 do not. Three residents averaging 715 with one at 680 do not.
+**What this does NOT change**
 
-**If they DON'T qualify (someone under 700):**
+* Prorated first month's rent is still due within 48 hours of lease signing and is still paid through the Resident Portal.
+* Move-in cost payment plans are still accepted and are still legally required. Plan installments after move-in are paid through the portal as normal.
+* Only the balance due on move-in day must be a Cashier's Check or Money Order.
 
-1. Open the Move-In Asana Task and answer "Approved to pay on portal?" with NO.
-2. In Buildium, block their EFT payment (Accounting unblocks it later).
-3. Tell the resident to bring a Cashier's Check or Money Order.
+**Leasing Assistant steps before move-in day:**
 
-**If they DO qualify (everyone 700+):**
+1. Open the Move-In Asana Task and answer "Approved to pay on portal?" with NO. This is always NO.
+2. In Buildium, block their EFT payment after the prorated first month's rent has been received (Accounting unblocks it after move-in funds are deposited).
+3. Confirm the resident knows to bring a Cashier's Check or Money Order.
 
-1. Open the Move-In Asana Task and answer "Approved to pay on portal?" with YES.
-2. Delete the line that says "NO CASHIER CHECK = NO KEYS".
-3. Comment tagging the leasing agent: "All residents have 700+ credit score - approved for online move-in payment".
-4. Check off these 4 subtasks (not needed): Receive Resident funds in Buildium; Deposit Move In Funds to BofA; Confirm Move In Funds received; Add Move In Funds to Dashboard.
+These four subtasks are always required and are never checked off early: Receive Resident funds in Buildium; Deposit Move In Funds to BofA; Confirm Move In Funds received; Add Move In Funds to Dashboard.
 
-Credit score questions go to Mary or Bryan (Leasing Assistants).
+Move-in payment questions go to Mary or Bryan (Leasing Assistants).
 
 ## Who Needs to Be at Move-In?
 
