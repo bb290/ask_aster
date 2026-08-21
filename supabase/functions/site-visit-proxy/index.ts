@@ -330,21 +330,25 @@ async function matchSettings(address: string): Promise<{ hit?: { gid: string; ad
 // the same day). Maintenance coordinators work out of this project, and the
 // address in the task and ticket names tells them which property it belongs to.
 let toCache: { at: number; tasks: Array<{ gid: string; address: string }> } | null = null;
-let toOpenCache: { at: number; tasks: Array<{ gid: string; address: string }> } | null = null;
-async function openTurnOvers(): Promise<Array<{ gid: string; address: string }>> {
+let toOpenCache: { at: number; tasks: Array<{ gid: string; address: string; completed: boolean }> } | null = null;
+// Open turn overs plus those completed in the last 90 days: site-visit issue tasks
+// file under the Turn Over even when it is already complete, and the visit reopens
+// it (Brittany 2026-08-21). Open tasks are preferred when both exist for an address.
+async function turnOverTasks(): Promise<Array<{ gid: string; address: string; completed: boolean }>> {
   if (toOpenCache && Date.now() - toOpenCache.at < 2 * 60 * 1000) return toOpenCache.tasks;
-  const tasks: Array<{ gid: string; address: string }> = [];
+  const since = new Date(Date.now() - 90 * 86400000).toISOString();
+  const tasks: Array<{ gid: string; address: string; completed: boolean }> = [];
   let off = "";
   for (let page = 0; page < 12; page++) {
     const res = await fetch(
-      `${ASANA}/projects/${TURNOVER_PROJECT}/tasks?completed_since=now&limit=100&opt_fields=name${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
+      `${ASANA}/projects/${TURNOVER_PROJECT}/tasks?completed_since=${encodeURIComponent(since)}&limit=100&opt_fields=name,completed${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
       { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
     const json = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(`asana turnover-open page ${page} -> ${res.status}`);
-    for (const t of (json.data ?? []) as Array<{ gid: string; name: string }>) {
+    if (!res.ok) throw new Error(`asana turnover page ${page} -> ${res.status}`);
+    for (const t of (json.data ?? []) as Array<{ gid: string; name: string; completed?: boolean }>) {
       if (!/^turn\s*over\s*\|/i.test(t.name)) continue;
       const address = addressFromTaskName(t.name);
-      if (address && !address.includes("<")) tasks.push({ gid: t.gid, address });
+      if (address && !address.includes("<")) tasks.push({ gid: t.gid, address, completed: Boolean(t.completed) });
     }
     off = json.next_page?.offset ?? "";
     if (!off) break;
@@ -484,11 +488,20 @@ app.post("*", async (c) => {
         if (to?.assignee) toCoordinator = { gid: to.assignee.gid, name: to.assignee.name };
       } catch { /* non-fatal */ }
 
-      // 3b) the open Turn Over task for this address: dated visit tasks nest under it
+      // 3b) the Turn Over task for this address: dated visit tasks nest under it
       //     (Brittany 2026-08-19; previously under the leasing anchor), and it gets the
-      //     duplicate visit comment. No open Turn Over = fall back to the leasing anchor.
+      //     duplicate visit comment. A COMPLETED Turn Over still takes the visit task
+      //     and is reopened when issues are filed (Brittany 2026-08-21); open ones are
+      //     preferred. No Turn Over at all = fall back to the leasing anchor.
       let toTask: { gid: string } | null = null;
-      try { toTask = matchUnit(await openTurnOvers(), address).hit ?? null; } catch { /* non-fatal */ }
+      let toWasCompleted = false;
+      try {
+        const tos = await turnOverTasks();
+        const open = matchUnit(tos.filter((t) => !t.completed), address).hit ?? null;
+        const done = open ? null : matchUnit(tos.filter((t) => t.completed), address).hit ?? null;
+        toTask = open ?? done;
+        toWasCompleted = !open && !!done;
+      } catch { /* non-fatal */ }
 
       // 4) due date: every ticket is due the NEXT DAY (Brittany, 2026-07-22).
       //    Always inside the 72-hour Accountability Rule, however close move-in is.
@@ -518,13 +531,18 @@ app.post("*", async (c) => {
         vLines.push("", "Photos for flagged items are attached here; the full set lives on the site visit subtask.");
         if (assignee === DEFAULT_MAINT) vLines.push("", "Assigned to the default maintenance coordinator; reroute if this property has someone else.");
         if (!assignee) vLines.push("", "No Turn Over task found for this property. Assign to your Turn Over Coordinator.");
-        if (source === "lu" && !toTask) vLines.push("", "No open Turn Over task for this property, so this visit task is filed on the leasing task instead.");
+        if (source === "lu" && !toTask) vLines.push("", "No Turn Over task found for this property (open or recently completed), so this visit task is filed on the leasing task instead.");
+        if (source === "lu" && toTask && toWasCompleted) vLines.push("", "The Turn Over task was already complete; this visit reopened it.");
         visitTask = await asana("POST", `/tasks/${(source === "lu" && toTask) ? toTask.gid : anchorGid}/subtasks`, {
           name: `Site Visit ${todayStr} | ${address}`.slice(0, 250),
           ...(assignee ? { assignee: assignee.gid } : {}),
           due_on: dueOn,
           notes: vLines.join("\n"),
         });
+        // issues filed on a completed Turn Over reopen it (Brittany 2026-08-21)
+        if (source === "lu" && toTask && toWasCompleted) {
+          await asana("PUT", `/tasks/${toTask.gid}`, { completed: false }).catch(() => null);
+        }
       }
       const created: Array<{ gid: string; name: string; url: string }> = [];
 
@@ -977,6 +995,7 @@ app.post("*", async (c) => {
       // Previous lease rent comes from actual lease history, never from the MarketRent field
       // (MarketRent is a hand-typed asking figure and exists even for never-leased units).
       let previousRent: number | null = null;
+      let depositHeld: number | null = null;
       let leaseHistory: boolean | null = null; // null = leases API not accessible (scope not granted)
       try {
         // NOTE: /v1/leases silently ignores unitids/unitid filters; propertyids works. Filter to the unit in code.
@@ -987,15 +1006,16 @@ app.post("*", async (c) => {
           const leases = await lr.json().catch(() => []);
           const rents = (Array.isArray(leases) ? leases : [])
             .filter((l: { UnitId?: number }) => String(l?.UnitId ?? "") === String(uid))
-            .map((l: { LeaseFromDate?: string; AccountDetails?: { Rent?: number | { Amount?: number } } }) => {
+            .map((l: { LeaseFromDate?: string; AccountDetails?: { Rent?: number | { Amount?: number }; SecurityDeposit?: number } }) => {
               const r = l?.AccountDetails?.Rent;
               const amt = typeof r === "number" ? r : (typeof (r as { Amount?: number })?.Amount === "number" ? (r as { Amount: number }).Amount : null);
-              return { from: String(l?.LeaseFromDate ?? ""), rent: amt };
+              const dep = l?.AccountDetails?.SecurityDeposit;
+              return { from: String(l?.LeaseFromDate ?? ""), rent: amt, deposit: typeof dep === "number" ? dep : null };
             })
             .filter((x: { rent: number | null }) => x.rent != null && x.rent > 0)
             .sort((a: { from: string }, b: { from: string }) => b.from.localeCompare(a.from));
           leaseHistory = rents.length > 0;
-          if (rents.length) previousRent = rents[0].rent;
+          if (rents.length) { previousRent = rents[0].rent; depositHeld = rents[0].deposit; }
         }
       } catch { /* leases unavailable; leave nulls */ }
       // full address for the comps lookup: line1 (+ unit #), city, state, zip
@@ -1140,22 +1160,31 @@ app.post("*", async (c) => {
       // Scheduled move out: open task in Leasing | Move-Out matched by Unit ID (Brittany 2026-08-17).
       let moveOut = "";
       let moveOutTaskGid = "";
+      let moveOutSrcGid = "";
+      let targetMoveIn = "";
+      let pipelineListDate = "";
       try {
         // Scheduled Move Out comes from the parent "Leasing | {address}" task in
         // Leasing | Human View (Brittany 2026-08-20). Targeted search by Unit ID:
         // the old Move-Out-project page scan missed units past the first 500 tasks.
         const HUMAN_VIEW_PROJECT = "1208297375044026";
         const MO_DATE_F = "1213182815411738";   // 🙌 Tenant Move-Out Date
+        const MI_DATE_F = "1213183520317831";   // 🙌 Move in Date
+        const LD_DATE_F = "1213182838328964";   // 💁 List Date
         const found = ((await asana("GET",
           `/workspaces/${WORKSPACE}/tasks/search?projects.any=${HUMAN_VIEW_PROJECT}&custom_fields.1213183515622826.value=${uid}&completed=false&opt_fields=name,custom_fields.gid,custom_fields.display_value`)) ?? []) as Array<{ gid: string; name: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>;
-        const dateOf = (t?: { custom_fields?: Array<{ gid: string; display_value: string | null }> }) => {
-          const d = String((t?.custom_fields ?? []).find((f) => f.gid === MO_DATE_F)?.display_value ?? "").slice(0, 10);
+        const dateOf = (t: { custom_fields?: Array<{ gid: string; display_value: string | null }> } | undefined, fld: string) => {
+          const d = String((t?.custom_fields ?? []).find((f) => f.gid === fld)?.display_value ?? "").slice(0, 10);
           return /^\d{4}-\d{2}-\d{2}$/.test(d) ? d : "";
         };
         const parentT = found.find((t) => /^leasing\s*\|/i.test(String(t.name)));
         const moT = found.find((t) => /^move-?out\s*\|/i.test(String(t.name)));
         moveOutTaskGid = moT?.gid ?? "";
-        moveOut = dateOf(parentT) || dateOf(moT);
+        moveOut = dateOf(parentT, MO_DATE_F) || dateOf(moT, MO_DATE_F);
+        moveOutSrcGid = dateOf(parentT, MO_DATE_F) ? (parentT?.gid ?? "") : (moT?.gid ?? "");
+        // target dates for the Vacancy box: Move in Date + List Date off the same tasks
+        targetMoveIn = dateOf(parentT, MI_DATE_F) || dateOf(moT, MI_DATE_F);
+        pipelineListDate = dateOf(parentT, LD_DATE_F) || dateOf(moT, LD_DATE_F);
       } catch { /* best-effort */ }
       // editable Unit Settings panel: field types + real Asana enum options, so the
       // workbench offers the configured choices instead of free text (Brittany 2026-08-17)
@@ -1164,7 +1193,9 @@ app.post("*", async (c) => {
         if (settingsGid) {
           const base = cfUnit.length ? cfUnit : cfProp;
           const fall = cfUnit.length ? cfProp : [];
-          const WANTED = [/^laundry$/i, /^parking$/i, /^ev charger$/i, /^cooling$/i, /^heating type$/i, /^storage$/i, /^mailbox$/i, /^landscaping maintenance$/i, /^internet provider$/i];
+          // Landscaping Maintenance = the operations vendor contact, not a leasing fact;
+          // the leasing answer lives in the widget's own Landscaping select (Brittany 2026-08-21)
+          const WANTED = [/^laundry$/i, /^parking$/i, /^ev charger$/i, /^cooling$/i, /^heating type$/i, /^storage$/i, /^mailbox$/i, /^internet provider$/i];
           const shape = (f: SettingsCF) => ({
             value: String(f.display_value ?? ""),
             selected: f.resource_subtype === "enum"
@@ -1193,11 +1224,12 @@ app.post("*", async (c) => {
       } catch { /* best-effort */ }
       // Plan Status + open owner Modify requests from the Listing Settings task (by Unit ID)
       let planStatus = "";
+      let lsGid = "";
       let lsPlan: Record<string, string> | null = null;
       let openRequests: Array<Record<string, unknown>> = [];
       try {
         const LSP = "1217446710785429";
-        let lsGid = "";
+        lsGid = "";
         let off9 = "";
         for (let pg = 0; pg < 5 && !lsGid; pg++) {
           const r9 = await fetch(`${ASANA}/projects/${LSP}/tasks?limit=100&opt_fields=name,custom_fields.gid,custom_fields.display_value${off9 ? `&offset=${encodeURIComponent(off9)}` : ""}`,
@@ -1228,6 +1260,9 @@ app.post("*", async (c) => {
             minCredit: lv("1217446728640049"), minIncome: lv("1217446770195125"),
             utilDesc: lv("1217515337017428"), ffReport: lv("1217533821059479"), estReport: lv("1217533868879515"),
             preparedBy: lv("1217516811159332"), inspectUrl: lv("1217515237891095"),
+            recentInspectUrl: lv("1217718959198830"), preMoveOutUrl: lv("1217719249318990"),
+            bdRent: lv("1217624971001054"),
+            targetMoveIn: lv("1217740384009759").slice(0, 10),
             adjPlan: lv("1217448328664674"),
             turnNote: lv("1217509139690271"),
             turnAuth: lv("1217611635986386"),
@@ -1260,6 +1295,7 @@ app.post("*", async (c) => {
         baths: bedBathNum(u.UnitBathrooms),
         sqft: u.UnitSize ?? null,
         previousRent,
+        depositHeld,
         leaseHistory,
         rentalSubType,
         settings,
@@ -1267,6 +1303,11 @@ app.post("*", async (c) => {
         onboard,
         moveOut,
         moveOutTaskGid,
+        moveOutSrcGid,
+        targetMoveIn,
+        pipelineListDate,
+        psGid,
+        lsGid,
         unitFeatures,
         propFeatures,
         marketRent: typeof u.MarketRent === "number" && u.MarketRent > 0 ? u.MarketRent : null,
@@ -1482,9 +1523,11 @@ app.post("*", async (c) => {
         utilDesc: "1217515337017428", flatFeeReport: "1217533821059479", estReport: "1217533868879515",
         preparedBy: "1217516811159332", compsData: "1217516812648029",
         turnProposal: "1217509139690271", inspectUrl: "1217515237891095",
+        recentInspectUrl: "1217718959198830", preMoveOutUrl: "1217719249318990",
+        bdRent: "1217624971001054",
         turnAuth: "1217611635986386",
       };
-      const DATE_F: Record<string, string> = { targetLeaseEnd: "1217450212127139", targetListDate: "1217515135889617" };
+      const DATE_F: Record<string, string> = { targetLeaseEnd: "1217450212127139", targetListDate: "1217515135889617", targetMoveIn: "1217740384009759" };
       // Client Priorities multi-select: option names -> option gids (field 1217535711314799)
       const PRI_FIELD = "1217535711314799";
       const PRI_OPTS: Record<string, string> = {
@@ -1499,7 +1542,7 @@ app.post("*", async (c) => {
         const v = body[k];
         if (v == null || v === "") continue;
         const n = Number(v);
-        cf[gid] = ["startingRent", "currentRent", "estimatedRent", "targetRent", "minRent", "petRent", "petDeposit", "securityDeposit", "turnAuth"].includes(k)
+        cf[gid] = ["startingRent", "currentRent", "estimatedRent", "targetRent", "minRent", "petRent", "petDeposit", "securityDeposit", "turnAuth", "bdRent"].includes(k)
           ? (Number.isFinite(n) ? n : undefined)
           : String(v).slice(0, k === "compsData" ? 1024 : 6000);
         if (cf[gid] === undefined) delete cf[gid];
@@ -2606,9 +2649,107 @@ app.post("*", async (c) => {
         }))
         .filter((f) => /inspect/i.test(f.name) && (/pdf/i.test(f.ct) || /\.pdf$/i.test(f.name) || !f.ct));
       cand.sort((a, b) => b.uploaded.localeCompare(a.uploaded));
+      // kind=recent: newest ANNUAL inspection only; anything else (incl. move-in)
+      // never fills this field (Brittany 2026-08-21, after a move-in bled into both).
+      // Default: MOVE-IN inspection only, never the newest of any kind (Brittany 2026-08-21)
+      // preview link: a fresh (expiring) download URL for the found file, so the
+      // agent can eyeball the PDF before pushing (Brittany 2026-08-21)
+      const previewUrl = async (f: { id: unknown } | null): Promise<string> => {
+        if (!f) return "";
+        try {
+          const dl = await fetch(`https://api.buildium.com/v1/files/${encodeURIComponent(String(f.id))}/downloadrequest`, { method: "POST", headers: BH });
+          if (!dl.ok) return "";
+          const dj = await dl.json().catch(() => ({} as Record<string, unknown>));
+          return String((dj as Record<string, unknown>).DownloadUrl ?? (dj as Record<string, unknown>).DownloadURL ?? "");
+        } catch { return ""; }
+      };
+      if (String(body.kind ?? "") === "recent") {
+        const annual = cand.filter((f) => /annual/i.test(f.name));
+        const hitR = annual[0] ?? null;
+        return j(headers, 200, { ok: true, found: !!hitR, file: hitR, count: annual.length, url: await previewUrl(hitR) });
+      }
       const movein = cand.filter((f) => /move.?in/i.test(f.name));
-      const hit2 = movein[0] ?? cand[0] ?? null;
-      return j(headers, 200, { ok: true, found: !!hit2, file: hit2, count: cand.length });
+      const hit2 = movein[0] ?? null;
+      return j(headers, 200, { ok: true, found: !!hit2, file: hit2, count: movein.length, otherInspections: cand.length - movein.length, url: await previewUrl(hit2) });
+    }
+
+    // ---------- utilCompSearch: find comparable properties for the utility calculators
+    // (Brittany 2026-08-21). Comparable = same city (utility providers are municipal,
+    // so city is the provider proxy), has a unit with the same bedroom count, and has
+    // utility bills on file in the last year.
+    if (action === "utilCompSearch") {
+      if (!BUILDIUM_ID || !BUILDIUM_SECRET) return j(headers, 500, { error: "buildium_not_configured" });
+      const uid = String(body.unitId ?? "").trim();
+      if (!/^\d+$/.test(uid)) return j(headers, 400, { error: "bad_unit_id", message: "Populate from a Unit ID first." });
+      const bh = { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET };
+      const ur = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}`, { headers: bh });
+      if (!ur.ok) return j(headers, 502, { error: "buildium_failed" });
+      const u = await ur.json().catch(() => ({} as Record<string, unknown>));
+      const beds = String((u as Record<string, unknown>).UnitBedrooms ?? "");
+      const pid = String((u as Record<string, unknown>).PropertyId ?? "");
+      if (!pid) return j(headers, 404, { error: "no_property" });
+      const pr = await fetch(`https://api.buildium.com/v1/rentals/${encodeURIComponent(pid)}`, { headers: bh });
+      const pj = await pr.json().catch(() => ({} as Record<string, unknown>));
+      const padr = ((pj as Record<string, unknown>).Address ?? {}) as Record<string, unknown>;
+      const city = String(padr.City ?? "").trim().toLowerCase();
+      const zip = String(padr.PostalCode ?? "").slice(0, 5);
+      if (!city) return j(headers, 404, { error: "no_city" });
+      const props: Array<Record<string, unknown>> = [];
+      for (let pg = 0; pg < 6; pg++) {
+        const rr = await fetch(`https://api.buildium.com/v1/rentals?limit=100&offset=${pg * 100}`, { headers: bh });
+        const arr = ((await rr.json().catch(() => [])) as Array<Record<string, unknown>>) ?? [];
+        props.push(...arr);
+        if (arr.length < 100) break;
+      }
+      const cands = props.filter((p0) => {
+        const a0 = (p0.Address ?? {}) as Record<string, unknown>;
+        return String(p0.Id) !== pid && String(a0.City ?? "").trim().toLowerCase() === city;
+      }).sort((a0, b0) => {
+        const az = String(((a0.Address ?? {}) as Record<string, unknown>).PostalCode ?? "").slice(0, 5) === zip ? 1 : 0;
+        const bz = String(((b0.Address ?? {}) as Record<string, unknown>).PostalCode ?? "").slice(0, 5) === zip ? 1 : 0;
+        return bz - az;
+      });
+      const UTS = /util|water|sewer|garbage|electric|\bgas\b|wsg|spu|scl|pse\b|recology|republic|waste|city of/i;
+      let glName: Record<string, string> = {};
+      try {
+        const gr = await fetch("https://api.buildium.com/v1/glaccounts?limit=500", { headers: bh });
+        for (const g0 of ((await gr.json().catch(() => [])) as Array<Record<string, unknown>>) ?? []) glName[String(g0.Id)] = String(g0.Name ?? "");
+      } catch { glName = {}; }
+      const dFrom = new Date(Date.now() - 364 * 86400000).toISOString().slice(0, 10);
+      const dTo = new Date().toISOString().slice(0, 10);
+      const found: Array<Record<string, unknown>> = [];
+      let checked = 0;
+      for (const cp of cands) {
+        if (found.length >= 5 || checked >= 14) break;
+        checked++;
+        const cadr = (cp.Address ?? {}) as Record<string, unknown>;
+        try {
+          const unr = await fetch(`https://api.buildium.com/v1/rentals/units?propertyids=${encodeURIComponent(String(cp.Id))}&limit=100`, { headers: bh });
+          const units2 = ((await unr.json().catch(() => [])) as Array<Record<string, unknown>>) ?? [];
+          const match = units2.find((u2) => String(u2.UnitBedrooms ?? "") === beds);
+          if (!match) continue;
+          const br = await fetch(`https://api.buildium.com/v1/bills?propertyids=${encodeURIComponent(String(cp.Id))}&frompaiddate=${dFrom}&topaiddate=${dTo}&limit=100`, { headers: bh });
+          if (!br.ok) continue;
+          const bl = ((await br.json().catch(() => [])) as Array<Record<string, unknown>>) ?? [];
+          let nBills = 0;
+          for (const b0 of bl) {
+            const memo = String(b0.Memo ?? "");
+            const lines = (b0.Lines ?? []) as Array<Record<string, unknown>>;
+            if (UTS.test(memo) || lines.some((ln) => UTS.test(glName[String(((ln.GLAccount ?? {}) as Record<string, unknown>).Id ?? ln.GlAccountId ?? "")] ?? ""))) nBills++;
+          }
+          if (!nBills) continue;
+          found.push({
+            propertyId: cp.Id,
+            address: [String(cadr.AddressLine1 ?? ""), String(cadr.City ?? "")].filter(Boolean).join(", ").slice(0, 120),
+            unitId: match.Id,
+            unitNumber: String(match.UnitNumber ?? ""),
+            utilityBills: nBills,
+            sameZip: String(cadr.PostalCode ?? "").slice(0, 5) === zip,
+          });
+        } catch { /* skip candidate */ }
+      }
+      found.sort((a0, b0) => Number(b0.utilityBills) - Number(a0.utilityBills));
+      return j(headers, 200, { ok: true, city: String(padr.City ?? ""), beds, checked, candidates: found });
     }
 
     if (action === "postListing") {
