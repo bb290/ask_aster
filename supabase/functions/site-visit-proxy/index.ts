@@ -187,6 +187,16 @@ function matchUnit(units: Array<{ gid: string; address: string }>, typed: string
   return {};
 }
 
+// The weekly inspection subtask, never a dated "Site Visit YYYY-MM-DD | ..." issue
+// task (2026-08-25 bug: a legacy dated task sorted ahead of the real subtask and
+// swallowed the checklist comment, so visits "didn't show up").
+function findInspectionSub<T extends { name: string }>(subs: T[]): T | undefined {
+  const dated = (n: string) => /^site\s*visit\s+\d{4}-\d{2}-\d{2}/i.test(n);
+  return subs.find((s) => /weekly\s*site\s*visit/i.test(s.name)) ??
+         subs.find((s) => /site\s*visit/i.test(s.name) && !dated(s.name)) ??
+         subs.find((s) => /inspect/i.test(s.name) && !dated(s.name));
+}
+
 // Buildium bed/bath enums ("TwoBed", "OnePointFiveBath", "Studio") -> numbers
 function bedBathNum(s: string | null | undefined): number | null {
   if (!s) return null;
@@ -474,8 +484,7 @@ app.post("*", async (c) => {
       let inspection;
       if (source === "lu") {
         const subtasks = await asana("GET", `/tasks/${taskGid}/subtasks?limit=100&opt_fields=name`);
-        inspection = (subtasks ?? []).find((s: { name: string }) => /site\s*visit/i.test(s.name)) ??
-                     (subtasks ?? []).find((s: { name: string }) => /inspect/i.test(s.name));
+        inspection = findInspectionSub((subtasks ?? []) as Array<{ gid: string; name: string }>);
         if (!inspection) {
           inspection = await asana("POST", `/tasks/${taskGid}/subtasks`, {
             name: "Weekly Site Visit / Inspection",
@@ -790,7 +799,7 @@ app.post("*", async (c) => {
       try {
         const subs = await asana("GET", `/tasks/${taskGid}/subtasks?limit=100&opt_fields=name,created_at,assignee.name,due_on`);
         recentSubtasks = (subs ?? []).filter(recentOnly).map(fmtSub());
-        const insp = (subs ?? []).find((s: { name: string }) => /site\s*visit/i.test(s.name));
+        const insp = findInspectionSub((subs ?? []) as Array<{ gid: string; name: string }>);
         if (insp) {
           const stories = await asana("GET", `/tasks/${insp.gid}/stories?limit=100&opt_fields=type,text,created_at`);
           const comments = (stories ?? []).filter((st: { type: string }) => st.type === "comment");
