@@ -16,7 +16,7 @@
 //
 // Secrets: BUILDIUM_SCREENING_CLIENT_ID/_SECRET (dormant actions),
 // SCREENING_KEY (team key), ASANA_PAT, OPENROUTER_API_KEY, PARSE_MODEL
-// (optional override; defaults to anthropic/claude-fable-5).
+// (optional override; defaults to anthropic/claude-sonnet-5, see screen.ts).
 //
 // Plan of record: clients/sagareus/projects/applicant-portal/PLAN.md
 
@@ -252,6 +252,7 @@ function addressFromTaskName(name: string): string {
 // (workspace search caps at 100 recently-modified results and silently drops
 // tasks; see the same warning in site-visit-proxy).
 let luCache: { at: number; tasks: Array<{ gid: string; name: string; address: string }> } | null = null;
+let signqCache: { at: number; data: unknown } | null = null;
 async function openLuTasks(): Promise<Array<{ gid: string; name: string; address: string }>> {
   if (luCache && Date.now() - luCache.at < 2 * 60 * 1000) return luCache.tasks;
   const out: Array<{ gid: string; name: string; address: string }> = [];
@@ -1282,8 +1283,17 @@ ${SIG}`,
       const mgrComment = String((body as { comment?: unknown }).comment ?? "").slice(0, 3000);
       if (!DECISION_OPTIONS[decision]) return j(headers, 400, { error: "bad_decision" });
       if (decision === "insufficient" && !optionsList.length && !option) return j(headers, 400, { error: "bad_option", message: "Check at least one item." });
+      // Validate the option BEFORE the try: buildDecision throws bad_option, and
+      // the old catch dressed that up as "Asana did not accept the update" even
+      // though nothing had been written (Brittany 2026-08-30: reads as the tool
+      // randomly breaking). Multi-select insufficient may send only options[].
+      const effOption = option || (decision === "insufficient" ? (optionsList[0] ?? "") : "");
+      if (!DECISION_OPTIONS[decision].some((o) => o.key === effOption)) {
+        return j(headers, 400, { error: "bad_option", message: "Pick a decision option first. Nothing was changed." });
+      }
 
       const previewOnly = (body as { previewOnly?: unknown }).previewOnly === true;
+      let wrote = false;
       try {
         const task = await asanaCall("GET", `/tasks/${gid}?opt_fields=name,permalink_url,notes,custom_fields.name,custom_fields.number_value`) as { name?: string; permalink_url?: string; notes?: string; custom_fields?: { name?: string; number_value?: number | null }[] };
         // Names/address, best-effort from the task title conventions:
@@ -1303,7 +1313,7 @@ ${SIG}`,
         const firsts = names.split(/[+,/]|\band\b/).map((n) => n.trim().split(/\s+/)[0]).filter(Boolean);
         const applicantFirst = firsts.join(" and ");
 
-        const built = buildDecision({ decision, option, options: optionsList, text, comment: mgrComment, applicantFirst, address });
+        const built = buildDecision({ decision, option: effOption, options: optionsList, text, comment: mgrComment, applicantFirst, address });
 
         // Recipients: Buildium group members via the Applicant ID field,
         // falling back to emails in the task description.
@@ -1338,6 +1348,7 @@ EMAIL DRAFT
 Subject: ${built.email.subject}
 
 ${built.email.body}`;
+        wrote = true;
         await asanaCall("POST", `/tasks/${gid}/stories`, { text: comment });
         await asanaCall("PUT", `/tasks/${gid}`, { assignee: MARY.gid, due_on: dueOn });
         // Move to the matching stage section (addProject moves within the
@@ -1360,8 +1371,125 @@ ${built.email.body}`;
         });
       } catch (e) {
         console.error("decide failed:", e);
+        // Honest phase reporting: before the first Asana write, nothing changed.
+        if (!wrote) return j(headers, 502, { error: "decide_prep_failed", message: "Could not read the application task. Nothing was changed; check the task link and try again." });
         return j(headers, 502, { error: "decide_failed", message: "Asana did not accept the update. Check the task before retrying; the comment may or may not have posted." });
       }
+    }
+
+    // ---------- signQueue: approved applications awaiting lease signature ----------
+    // Rows for the Screen + Sign bench's Sign step: every open task in the
+    // Pending Applications "Approved" section, joined to its LU/TP/PreLease task
+    // by address (openLuTasks + matchLu, typeahead fallback) with the LU's
+    // current Lease Signed / Move in Date values so already-signed units are
+    // visible. Buildium link is best-effort (screening credential may lack the
+    // rentals scope).
+    if (action === "signQueue") {
+      if (signqCache && Date.now() - signqCache.at < 2 * 60 * 1000) return j(headers, 200, signqCache.data);
+      const secTasks = (await asanaCall("GET", `/sections/${SEC_APPROVED}/tasks?limit=100&opt_fields=name,permalink_url,completed,modified_at`)) as Array<{ gid: string; name: string; permalink_url?: string; completed?: boolean; modified_at?: string }>;
+      const open = (secTasks ?? []).filter((t) => !t.completed).slice(0, 40);
+      const luTasks = await openLuTasks().catch(() => [] as Array<{ gid: string; name: string; address: string }>);
+      const rows: Array<Record<string, unknown>> = [];
+      const work = open.map((t) => async () => {
+        // names/address per the application task title conventions (see decide)
+        const raw2 = (t.name ?? "").replace(/^Pending Mgr Review \|\s*/i, "");
+        let names = "", address = "";
+        const slash2 = raw2.match(/Application \/ (.+?) \/ (.+)$/i);
+        const angle2 = raw2.match(/<([^>]+)>?/);
+        if (slash2) { names = slash2[1]; address = slash2[2]; }
+        else if (angle2) {
+          const parts2 = angle2[1].split("//");
+          address = (parts2[0] ?? "").split(" - ")[0].trim();
+          names = (parts2[1] ?? "").trim();
+        }
+        let lu: { gid: string; name: string; address?: string } | null = address ? (matchLu(luTasks, address).hit ?? null) : null;
+        if (!lu && address) lu = await findLuByTypeahead(address).catch(() => null);
+        let leaseSigned = "", moveInDate = "", unitId = "", buildiumUrl = "";
+        if (lu) {
+          try {
+            const luFull = await asanaCall("GET", `/tasks/${lu.gid}?opt_fields=name,custom_fields.gid,custom_fields.name,custom_fields.display_value`) as { custom_fields?: Array<{ gid: string; name?: string; display_value?: string | null }> };
+            const cf = luFull.custom_fields ?? [];
+            const get2 = (re: RegExp) => String(cf.find((f) => re.test(String(f.name ?? "")))?.display_value ?? "").trim();
+            leaseSigned = get2(/lease signed/i);
+            moveInDate = get2(/move in date/i);
+            unitId = get2(/unit id/i);
+            if (unitId) {
+              try {
+                const u2 = await bGet(`/rentals/units/${encodeURIComponent(unitId)}`) as { PropertyId?: number };
+                if (u2?.PropertyId) buildiumUrl = `https://sagareus.managebuilding.com/manager/app/properties/${u2.PropertyId}/units/${unitId}/summary`;
+              } catch { /* rentals scope is optional on the screening credential */ }
+            }
+          } catch { /* LU detail is best-effort; the row still renders */ }
+        }
+        rows.push({
+          gid: t.gid, name: t.name, url: t.permalink_url ?? `https://app.asana.com/0/0/${t.gid}`,
+          names, address, approvedAround: (t.modified_at ?? "").slice(0, 10),
+          luGid: lu?.gid ?? "", luName: lu?.name ?? "", luUrl: lu ? `https://app.asana.com/0/0/${lu.gid}` : "",
+          leaseSigned, moveInDate, unitId, buildiumUrl,
+        });
+      });
+      for (let i = 0; i < work.length; i += 5) await Promise.all(work.slice(i, i + 5).map((fn) => fn()));
+      rows.sort((a, b) => String(a.approvedAround ?? "").localeCompare(String(b.approvedAround ?? "")));
+      const data = { ok: true, rows };
+      signqCache = { at: Date.now(), data };
+      return j(headers, 200, data);
+    }
+
+    // ---------- signUpdate: record the signed lease on the LU + close out the application ----------
+    // Writes only ever SET fields, never clear them (shared with the whole
+    // leasing pipeline: Lease Signed flips the unit to pre-move-in in the
+    // Execute bench, WAR queue, and site-visit logic).
+    if (action === "signUpdate") {
+      const appGid = String((body as { taskGid?: unknown }).taskGid ?? "").trim();
+      const luGid = String((body as { luGid?: unknown }).luGid ?? "").trim();
+      const leaseSigned = String((body as { leaseSigned?: unknown }).leaseSigned ?? "").trim();
+      const moveInDate = String((body as { moveInDate?: unknown }).moveInDate ?? "").trim();
+      const complete = (body as { complete?: unknown }).complete === true;
+      const ISO = /^\d{4}-\d{2}-\d{2}$/;
+      if (!appGid && !luGid) return j(headers, 400, { error: "missing_task" });
+      if ((leaseSigned && !ISO.test(leaseSigned)) || (moveInDate && !ISO.test(moveInDate))) {
+        return j(headers, 400, { error: "bad_date", message: "Dates must be YYYY-MM-DD." });
+      }
+      const notes: string[] = [];
+      const written: string[] = [];
+      if (luGid && (leaseSigned || moveInDate)) {
+        const luFull = await asanaCall("GET", `/tasks/${luGid}?opt_fields=name,custom_fields.gid,custom_fields.name,custom_fields.type`) as { name?: string; custom_fields?: Array<{ gid: string; name?: string; type?: string }> };
+        const cf = luFull.custom_fields ?? [];
+        // per-field PUT writes (site-visit convention: batch writes reject wholesale);
+        // date-type fields take {date}, text fields take the ISO string
+        const writeField = async (re: RegExp, label: string, iso: string) => {
+          const f = cf.find((x) => re.test(String(x.name ?? "")));
+          if (!f) { notes.push(`no ${label} field on the LU task`); return; }
+          const val = f.type === "date" ? { date: iso } : iso;
+          try {
+            await asanaCall("PUT", `/tasks/${luGid}`, { custom_fields: { [f.gid]: val } });
+            written.push(`${label} = ${iso}`);
+          } catch {
+            // date fields on some workspaces accept only the plain string form
+            try {
+              await asanaCall("PUT", `/tasks/${luGid}`, { custom_fields: { [f.gid]: iso } });
+              written.push(`${label} = ${iso}`);
+            } catch { notes.push(`could not write ${label}`); }
+          }
+        };
+        if (leaseSigned) await writeField(/lease signed/i, "Lease Signed", leaseSigned);
+        if (moveInDate) await writeField(/move in date/i, "Move in Date", moveInDate);
+      }
+      let movedToComplete = false;
+      if (appGid && complete) {
+        try {
+          await asanaCall("POST", `/tasks/${appGid}/addProject`, { project: PENDING_APPS_PROJECT, section: SEC_COMPLETE });
+          await asanaCall("PUT", `/tasks/${appGid}`, { completed: true });
+          movedToComplete = true;
+        } catch { notes.push("could not move the application to Complete"); }
+      }
+      const summary = `LEASE SIGNED (Screen + Sign bench)\n${written.length ? written.join("\n") : "No LU fields written."}${movedToComplete ? "\nApplication moved to Complete." : ""}`;
+      if (written.length || movedToComplete) {
+        if (appGid) await asanaCall("POST", `/tasks/${appGid}/stories`, { text: summary }).catch(() => null);
+        if (luGid) await asanaCall("POST", `/tasks/${luGid}/stories`, { text: summary }).catch(() => null);
+      }
+      signqCache = null;
+      return j(headers, 200, { ok: true, written, movedToComplete, notes });
     }
 
     // ---------- submitReport: post the (possibly edited) report + route for review ----------
