@@ -285,6 +285,97 @@ async function allVacancies(includeLeased = false): Promise<Array<{ gid: string;
   return list;
 }
 
+// ---------- Execute & Adapt helpers (Phase 2, 2026-08-26) ----------
+// Weekly reports live as stories on the LU's Weekly Activity Report subtask. Agent
+// reports are prefixed "WEEKLY ACTIVITY REPORT" (plain ASCII, set by the WAR widget);
+// owner email copies are prefixed "OWNER REPORT SENT". The weekly metric series is
+// DERIVED from those stories - the three LU number fields hold only cumulative totals
+// (they are number fields; Brittany wants total + weekly breakdown, 2026-08-26).
+function parseWarMetrics(text: string): { inquiries: number; showings: number; applications: number } | null {
+  const one = (re: RegExp) => { const m = text.match(re); return m ? Number(m[1]) : null; };
+  const iq = one(/(?:^|\n)\s*\[metrics\][^\n]*inquiries=(\d+)/i) ?? one(/(?:^|\n)\s*Inquiries:\s*(\d+)/i);
+  const sh = one(/(?:^|\n)\s*\[metrics\][^\n]*showings=(\d+)/i) ?? one(/(?:^|\n)\s*Showings:\s*(\d+)/i);
+  const ap = one(/(?:^|\n)\s*\[metrics\][^\n]*applications=(\d+)/i) ?? one(/(?:^|\n)\s*Applications:\s*(\d+)/i);
+  if (iq == null && sh == null && ap == null) return null;
+  return { inquiries: iq ?? 0, showings: sh ?? 0, applications: ap ?? 0 };
+}
+async function warReportStories(warGid: string): Promise<Array<{ text: string; createdAt: string }>> {
+  const stories = await asana("GET", `/tasks/${warGid}/stories?limit=100&opt_fields=type,text,created_at`);
+  return ((stories ?? []) as Array<{ type: string; text?: string; created_at?: string }>)
+    .filter((s) => s.type === "comment")
+    .map((s) => ({ text: String(s.text ?? ""), createdAt: String(s.created_at ?? "") }))
+    .filter((s) => /^WEEKLY ACTIVITY REPORT/i.test(s.text.trim()) && !/^OWNER REPORT SENT/i.test(s.text.trim()));
+}
+function warSeriesBuild(reports: Array<{ text: string; createdAt: string }>) {
+  const rows = reports
+    .map((r) => ({ m: parseWarMetrics(r.text), at: r.createdAt }))
+    .filter((r): r is { m: { inquiries: number; showings: number; applications: number }; at: string } => r.m != null)
+    .sort((a, b) => a.at.localeCompare(b.at));
+  const sum = (k: "inquiries" | "showings" | "applications") => rows.reduce((a, r) => a + r.m[k], 0);
+  return {
+    series: {
+      inquiries: rows.map((r) => r.m.inquiries),
+      showings: rows.map((r) => r.m.showings),
+      applications: rows.map((r) => r.m.applications),
+    },
+    totals: { inquiries: sum("inquiries"), showings: sum("showings"), applications: sum("applications") },
+    dates: rows.map((r) => r.at.slice(0, 10)),
+  };
+}
+// Cumulative totals onto the LU's three number fields. Gids resolved off the task by
+// name, one field per PUT, fail-soft - never create or attach a field (standing rule).
+async function writeLuMetrics(taskGid: string, totals: { inquiries: number; showings: number; applications: number }): Promise<string[]> {
+  const t = await asana("GET", `/tasks/${taskGid}?opt_fields=custom_fields.gid,custom_fields.name`);
+  const cf = (t.custom_fields ?? []) as Array<{ gid: string; name: string }>;
+  const findF = (re: RegExp) => cf.find((f) => re.test(String(f.name)))?.gid ?? "";
+  const written: string[] = [];
+  const pairs: Array<[RegExp, "inquiries" | "showings" | "applications"]> = [
+    [/#\s*of\s*inquiries/i, "inquiries"], [/#\s*of\s*showings/i, "showings"], [/#\s*of\s*applications/i, "applications"],
+  ];
+  for (const [re, k] of pairs) {
+    const g = findF(re);
+    if (!g) continue;
+    try { await asana("PUT", `/tasks/${taskGid}`, { custom_fields: { [g]: totals[k] } }); written.push(k); }
+    catch { /* per-field, keep going */ }
+  }
+  return written;
+}
+let execCache: { at: number; payload: unknown } | null = null;
+// Vacancy gate (Brittany 2026-08-27): a unit is on the vacant list only POST move-out,
+// pre move-in. The scheduled move-out date usually lives on the "Leasing |" master,
+// not the LU task, so the queues join against a master index.
+let moIdxCache: { at: number; byUid: Record<string, string>; byAddr: Record<string, string>; uidByAddr: Record<string, string> } | null = null;
+async function moveOutIndex(): Promise<{ byUid: Record<string, string>; byAddr: Record<string, string>; uidByAddr: Record<string, string> }> {
+  if (moIdxCache && Date.now() - moIdxCache.at < 2 * 60 * 1000) return moIdxCache;
+  const byUid: Record<string, string> = {};
+  const byAddr: Record<string, string> = {};
+  // Unit ID lives on the Leasing MASTER, never the subtasks (Brittany 2026-08-28):
+  // every consumer resolves it by walking up via this map
+  const uidByAddr: Record<string, string> = {};
+  let off = "";
+  for (let pg = 0; pg < 12; pg++) {
+    const r0 = await fetch(`${ASANA}/projects/1213171758682884/tasks?completed_since=now&limit=100&opt_fields=name,custom_fields.gid,custom_fields.display_value${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
+      { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+    const j0 = await r0.json().catch(() => ({}));
+    for (const t of (j0.data ?? []) as Array<{ gid: string; name: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>) {
+      if (!/^leasing\s*\|/i.test(t.name)) continue;
+      const cf = t.custom_fields ?? [];
+      const mo = String(cf.find((f) => f.gid === "1213182815411738")?.display_value ?? "").slice(0, 10);
+      const uid = String(cf.find((f) => f.gid === "1213183515622826")?.display_value ?? "").trim();
+      const addr = addressFromTaskName(t.name.replace(/^leasing\s*\|\s*/i, "Leasing | "));
+      if (uid && addr) uidByAddr[normAddr(addr)] = uid;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(mo)) continue;
+      if (uid) byUid[uid] = mo;
+      if (addr) byAddr[normAddr(addr)] = mo;
+    }
+    off = j0.next_page?.offset ?? "";
+    if (!off) break;
+  }
+  moIdxCache = { at: Date.now(), byUid, byAddr, uidByAddr };
+  return moIdxCache;
+}
+let warqCache: { at: number; payload: unknown } | null = null;
+
 // The unit list barely changes; cache it in the warm instance so the picker loads fast.
 let unitCache: { at: number; units: Array<{ gid: string; address: string }> } | null = null;
 let propCache: { at: number; units: Array<{ gid: string; address: string }> } | null = null;
@@ -635,7 +726,33 @@ app.post("*", async (c) => {
         await asana("PUT", `/tasks/${inspection.gid}`, { due_on: inspectionDueOn });
       } catch { inspectionDueOn = null; /* non-fatal */ }
 
+      // A logged site visit IS the weekly report for turnover / pre-move-in units
+      // ONLY (Brittany 2026-08-28): live listings owe BOTH the site visit and the
+      // weekly activity report, so the roll skips leasing-state units.
+      let warRolled: string | null = null;
+      try {
+        const tSV = await asana("GET", `/tasks/${taskGid}?opt_fields=custom_fields.gid,custom_fields.name,custom_fields.display_value`);
+        const cfSV = (tSV.custom_fields ?? []) as Array<{ gid: string; name: string; display_value: string | null }>;
+        const ldSV = String(cfSV.find((f) => f.gid === "1213182838328964")?.display_value ?? "").slice(0, 10);
+        const lsSV = String(cfSV.find((f) => /lease signed/i.test(String(f.name)))?.display_value ?? "").trim();
+        const todaySV = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+        const isLiveListing = !lsSV && /^\d{4}-\d{2}-\d{2}$/.test(ldSV) && ldSV <= todaySV;
+        if (isLiveListing) throw new Error("live listing: WAR still owed separately");
+        const subsSV = ((await asana("GET", `/tasks/${taskGid}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+        const wSV = subsSV.find((x) => !x.completed && /weekly activity report/i.test(x.name)) ?? subsSV.find((x) => /weekly activity report/i.test(x.name));
+        if (wSV) {
+          const lT = new Date(Date.now() - 7 * 3600 * 1000);
+          let addT = (2 - lT.getUTCDay() + 7) % 7;
+          if (addT === 0) addT = 7;
+          lT.setUTCDate(lT.getUTCDate() + addT);
+          warRolled = lT.toISOString().slice(0, 10);
+          await asana("PUT", `/tasks/${wSV.gid}`, { due_on: warRolled });
+          execCache = null; warqCache = null;
+        }
+      } catch { warRolled = null; /* non-fatal */ }
+
       return j(headers, 200, {
+        warRolled,
         ok: true,
         inspectionGid: inspection.gid,
         inspectionUrl: `https://app.asana.com/0/0/${inspection.gid}`,
@@ -870,7 +987,13 @@ app.post("*", async (c) => {
           notes: "Recurring: one owner update per week, move-out to move-in. SOP: https://sagareus.getoutline.com/doc/email-owner-weekly-activity-report-VDE6GnaYef",
         });
       }
-      const story = await postStory(war.gid, text.slice(0, 60000));
+      // structured numbers (Execute & Adapt, 2026-08-26): a plain machine-readable
+      // trailer makes the weekly series parse bulletproof even if the template changes
+      const hasNums = body.inquiries != null || body.showings != null || body.applications != null;
+      const numsLine = hasNums
+        ? `\n\n[metrics] inquiries=${Math.max(0, Math.round(Number(body.inquiries) || 0))} showings=${Math.max(0, Math.round(Number(body.showings) || 0))} applications=${Math.max(0, Math.round(Number(body.applications) || 0))}`
+        : "";
+      const story = await postStory(war.gid, text.slice(0, 60000) + numsLine);
       // roll due date to next Tuesday (Seattle-ish day boundary)
       const local = new Date(Date.now() - 7 * 3600 * 1000);
       let add = (2 - local.getUTCDay() + 7) % 7;
@@ -878,13 +1001,458 @@ app.post("*", async (c) => {
       local.setUTCDate(local.getUTCDate() + add);
       const dueOn = local.toISOString().slice(0, 10);
       try { await asana("PUT", `/tasks/${war.gid}`, { due_on: dueOn }); } catch { /* non-fatal */ }
+      execCache = null; // the WAR heartbeat moved: next execQueue must re-read
+      warqCache = null;
+      // weekly series + cumulative totals, recomputed from ALL report stories (self
+      // healing: no increment drift, resubmits just re-derive); totals go to the LU's
+      // three number fields, which the owner page displays
+      let series = null, totals = null, dates = null;
+      let fieldsWritten: string[] = [];
+      try {
+        const reps = await warReportStories(war.gid);
+        if (reps.length) {
+          const sr = warSeriesBuild(reps);
+          series = sr.series; totals = sr.totals; dates = sr.dates;
+          fieldsWritten = await writeLuMetrics(taskGid, sr.totals);
+        }
+      } catch { /* metrics are best-effort; the report post already succeeded */ }
       return j(headers, 200, {
         ok: true,
         warGid: war.gid,
         warUrl: `https://app.asana.com/0/0/${war.gid}`,
         storyGid: story?.gid ?? null,
         dueOn,
+        series, totals, dates, fieldsWritten,
       });
+    }
+
+    // ---------- execQueue: Review Queue for the Execute & Adapt bench (2026-08-26) ----------
+    // Active listings = open LU/TP/PreLease with a List Date on or before today and no
+    // Lease Signed. Team lead joins from Listing Settings by Unit ID; the WAR subtask's
+    // due date is the weekly heartbeat (overdue or missing = red pill on the bench).
+    if (action === "execQueue") {
+      if (execCache && Date.now() - execCache.at < 2 * 60 * 1000) return j(headers, 200, execCache.payload as Record<string, unknown>);
+      const todayQ = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+      const LD_F = "1213182838328964";  // 💁 List Date
+      const UID_F = "1213183515622826"; // Unit ID
+      const moIdx = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string> }));
+      type QRow = { gid: string; url: string; address: string; unitId: string; teamLead: string; lsGid: string; listDate: string; state: string; doNotList: string; dom: number | null; moveOut: string | null; modDate: string | null; modOverdue: boolean; firstWeek: boolean; warGid: string; warDue: string | null; warMissing: boolean | null };
+      const rows: QRow[] = [];
+      let offQ = "";
+      for (let pg = 0; pg < 12; pg++) {
+        const r0 = await fetch(`${ASANA}/projects/${LEASING_LU_PROJECT}/tasks?completed_since=now&limit=100&opt_fields=name,custom_fields.gid,custom_fields.name,custom_fields.display_value${offQ ? `&offset=${encodeURIComponent(offQ)}` : ""}`,
+          { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+        const j0 = await r0.json().catch(() => ({}));
+        for (const t of (j0.data ?? []) as Array<{ gid: string; name: string; custom_fields?: Array<{ gid: string; name: string; display_value: string | null }> }>) {
+          if (!/^(LU|TP|PreLease)\s*\|/i.test(t.name)) continue;
+          const address = addressFromTaskName(t.name);
+          if (!address || address.includes("<")) continue;
+          const cfQ = t.custom_fields ?? [];
+          // EVERY VACANT unit gets a weekly report (Brittany 2026-08-27), and vacant
+          // means POST move-out, pre move-in. Notice-to-vacate units still occupied
+          // (move-out date missing or in the future) stay off the list - even when
+          // pre-listed. Not yet listed = Turnover In Progress; lease signed = Move In
+          // Pending; listed = Active Listing.
+          const listDate = String(cfQ.find((f) => f.gid === LD_F)?.display_value ?? "").slice(0, 10);
+          const leaseSigned = String(cfQ.find((f) => /lease signed/i.test(String(f.name)))?.display_value ?? "").trim();
+          const moOwn = String(cfQ.find((f) => f.gid === "1213182815411738")?.display_value ?? "").slice(0, 10);
+          const moDone = String(cfQ.find((f) => f.gid === "1214521745467158")?.display_value ?? "").slice(0, 10);
+          const unitIdQ = String(cfQ.find((f) => f.gid === UID_F)?.display_value ?? "").trim() || (moIdx.uidByAddr[normAddr(address)] ?? "");
+          const moSched = /^\d{4}-\d{2}-\d{2}$/.test(moOwn) ? moOwn : (moIdx.byUid[unitIdQ] ?? moIdx.byAddr[normAddr(address)] ?? "");
+          const vacant = /^\d{4}-\d{2}-\d{2}$/.test(moDone) || (/^\d{4}-\d{2}-\d{2}$/.test(moSched) && moSched <= todayQ);
+          if (!vacant) continue;
+          // Do Not List (Brittany 2026-08-27): owner selling / self-listing / moving
+          // back in / other. Stays visible at the bottom of the queue for awareness,
+          // but owes no weekly update.
+          const doNotList = String(cfQ.find((f) => f.gid === "1214787859185273")?.display_value ?? "").trim();
+          const listed = /^\d{4}-\d{2}-\d{2}$/.test(listDate) && listDate <= todayQ;
+          const state = leaseSigned ? "premovein" : (listed ? "leasing" : "turnover");
+          const unitId = unitIdQ;
+          const dom = listed ? Math.max(0, Math.floor((Date.parse(todayQ + "T12:00:00Z") - Date.parse(listDate + "T12:00:00Z")) / 86400000)) : null;
+          // MOD pill: lastReview stamped by execDecision into Price History; fallback
+          // to the newest event date so pre-bench price drops still count
+          let modDate: string | null = null;
+          try {
+            const phRaw = String(cfQ.find((f) => /price history/i.test(String(f.name)))?.display_value ?? "");
+            if (phRaw) {
+              const p0 = JSON.parse(phRaw);
+              const ph0 = (p0 && typeof p0 === "object" && !Array.isArray(p0)) ? p0 : { events: p0 };
+              if (/^\d{4}-\d{2}-\d{2}/.test(String(ph0.lastReview ?? ""))) modDate = String(ph0.lastReview).slice(0, 10);
+              else {
+                const ds = (Array.isArray(ph0.events) ? ph0.events : [])
+                  .map((e: Record<string, unknown>) => String(e?.date ?? e?.on ?? "").slice(0, 10))
+                  .filter((d0: string) => /^\d{4}-\d{2}-\d{2}$/.test(d0)).sort();
+                if (ds.length) modDate = ds[ds.length - 1];
+              }
+            }
+          } catch { /* unparseable history: pill shows never */ }
+          // the first week on market owes nothing yet (Brittany 2026-08-26): no WAR,
+          // no MOD until 7+ DOM. MOD only applies to live listings at all.
+          const modOverdue = doNotList || state !== "leasing" || (dom != null && dom <= 6) ? false
+            : (!modDate || Math.floor((Date.parse(todayQ + "T12:00:00Z") - Date.parse(modDate + "T12:00:00Z")) / 86400000) >= 7);
+          rows.push({ gid: t.gid, url: `https://app.asana.com/0/0/${t.gid}`, address, unitId, teamLead: "", lsGid: "", listDate, state, doNotList, dom, moveOut: /^\d{4}-\d{2}-\d{2}$/.test(moSched) ? moSched : (moDone || null), modDate: state === "leasing" ? modDate : null, modOverdue, firstWeek: state === "leasing" && dom != null && dom <= 6, warGid: "", warDue: null, warMissing: null });
+        }
+        offQ = j0.next_page?.offset ?? "";
+        if (!offQ) break;
+      }
+      // longest on market first; unlisted vacancies (no DOM) sort below listed
+      rows.sort((a, b) => (b.dom ?? -1) - (a.dom ?? -1));
+      // heartbeat BEFORE the cap: a missing-WAR listing at low DOM must not be cut
+      // (Brittany 2026-08-26: missing reports sort to the top of the queue)
+      const queue = rows.slice(0, 150);
+      // team lead from Listing Settings: Unit ID join first, normalized-address
+      // fallback for fresh-cycle LU tasks that have no Unit ID yet (2026-08-27,
+      // 1151 N 94th #31)
+      try {
+        const lsIdx: Record<string, { teamLead: string; lsGid: string }> = {};
+        const lsAddrIdx: Record<string, { teamLead: string; lsGid: string }> = {};
+        let offL = "";
+        for (let pg = 0; pg < 15; pg++) {
+          const r1 = await fetch(`${ASANA}/projects/1217446710785429/tasks?limit=100&opt_fields=name,custom_fields.gid,custom_fields.display_value${offL ? `&offset=${encodeURIComponent(offL)}` : ""}`,
+            { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+          const j1 = await r1.json().catch(() => ({}));
+          for (const t of (j1.data ?? []) as Array<{ gid: string; name: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>) {
+            const cfL = t.custom_fields ?? [];
+            const entry = {
+              teamLead: String(cfL.find((f) => f.gid === "1217446711292696")?.display_value ?? "").trim(),
+              lsGid: t.gid,
+            };
+            const uidL = String(cfL.find((f) => f.gid === "1213183515622826")?.display_value ?? "").trim();
+            if (uidL) lsIdx[uidL] = entry;
+            const addrL = String(t.name).replace(/^listing\s*\|\s*/i, "").trim();
+            if (addrL) lsAddrIdx[normAddr(addrL)] = entry;
+          }
+          offL = j1.next_page?.offset ?? "";
+          if (!offL) break;
+        }
+        queue.forEach((q) => {
+          const hitL = (q.unitId && lsIdx[q.unitId]) || lsAddrIdx[normAddr(q.address)];
+          if (hitL) { q.teamLead = hitL.teamLead; q.lsGid = hitL.lsGid; }
+        });
+      } catch { /* team lead column stays blank */ }
+      // WAR subtask per listing, concurrency 5, fail-soft
+      for (let i = 0; i < queue.length; i += 5) {
+        await Promise.all(queue.slice(i, i + 5).map(async (q) => {
+          try {
+            const subs = await asana("GET", `/tasks/${q.gid}/subtasks?limit=100&opt_fields=name,due_on,completed`);
+            const w = ((subs ?? []) as Array<{ gid: string; name: string; due_on?: string | null; completed?: boolean }>)
+              .find((s) => !s.completed && /weekly activity report/i.test(s.name)) ??
+              ((subs ?? []) as Array<{ gid: string; name: string; due_on?: string | null }>).find((s) => /weekly activity report/i.test(s.name));
+            if (w) {
+              q.warGid = w.gid;
+              q.warDue = w.due_on ?? null;
+              q.warMissing = (q.firstWeek || q.doNotList) ? false : (!w.due_on || String(w.due_on) < todayQ);
+            } else q.warMissing = (q.firstWeek || q.doNotList) ? false : true; // no subtask: nothing is being reported
+          } catch { q.warMissing = null; }
+        }));
+      }
+      // days on market first; WAR overdue breaks ties, MOD overdue third (Brittany 2026-08-26)
+      queue.sort((a, b) => {
+        const adn = a.doNotList ? 1 : 0, bdn = b.doNotList ? 1 : 0;
+        if (adn !== bdn) return adn - bdn;
+        const ad = a.dom ?? -1, bd = b.dom ?? -1;
+        if (bd !== ad) return bd - ad;
+        const am = a.warMissing === true ? 0 : 1, bm = b.warMissing === true ? 0 : 1;
+        if (am !== bm) return am - bm;
+        return (a.modOverdue ? 0 : 1) - (b.modOverdue ? 0 : 1);
+      });
+      const payloadQ = { ok: true, listings: queue, total: rows.length };
+      execCache = { at: Date.now(), payload: payloadQ };
+      return j(headers, 200, payloadQ);
+    }
+
+    // ---------- warQueue: per-agent report list for the field WAR tool (2026-08-26) ----------
+    // Every OPEN LU/TP/PreLease (any state - turnover reports are weekly too), with the
+    // assignee and the WAR subtask due date, so an agent picks their name and works
+    // their overdue reports one by one from the road.
+    if (action === "warQueue") {
+      return j(headers, 200, await buildWarQueue() as unknown as Record<string, unknown>);
+    }
+
+    if (action === "execLateWars") {
+      // one accountability task listing every late WAR, grouped by agent, in
+      // Aster's Audits - the write-up starting point (Brittany 2026-08-27)
+      const wq = await buildWarQueue();
+      const late = (wq.rows as Array<{ address: string; agent: string; state: string; dom: number | null; warDue: string | null; warMissing: boolean | null }>).filter((r) => r.warMissing === true);
+      const todayL = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+      if (!late.length) return j(headers, 200, { ok: true, created: false, count: 0, agents: 0, message: "No late weekly activity reports right now." });
+      const AUD = "1214497250193277"; // Aster's Audits
+      const nameL = `Late WARs | ${todayL} | ${late.length} report${late.length > 1 ? "s" : ""}`;
+      try {
+        const ex = ((await asana("GET", `/projects/${AUD}/tasks?completed_since=now&limit=100&opt_fields=name`)) ?? []) as Array<{ gid: string; name: string }>;
+        const hitE = ex.find((t) => t.name === nameL);
+        if (hitE) return j(headers, 200, { ok: true, created: false, count: late.length, agents: 0, url: `https://app.asana.com/0/0/${hitE.gid}`, message: "Already recorded today." });
+      } catch { /* create anyway */ }
+      const by: Record<string, typeof late> = {};
+      late.forEach((r) => { const k = r.agent || "No assignee"; (by[k] = by[k] || []).push(r); });
+      const stLbl = (st0: string) => st0 === "premovein" ? "Move In Pending" : st0 === "turnover" ? "Turnover In Progress" : "Active Listing";
+      const L: string[] = [`Late Weekly Activity Reports | ${todayL}`, ""];
+      Object.keys(by).sort().forEach((k) => {
+        L.push(`${k} (${by[k].length}):`);
+        by[k].forEach((r) => L.push(`\u2022 ${r.address} - ${r.warDue ? "was due " + r.warDue : "never submitted"} (${stLbl(r.state)}${r.dom != null ? ", " + r.dom + " DOM" : ""})`));
+        L.push("");
+      });
+      L.push("One write-up per agent above.");
+      L.push("Generated from the Execute & Adapt bench. Done by Claude on behalf of the team lead.");
+      const tL = await asana("POST", "/tasks", {
+        name: nameL,
+        projects: [AUD],
+        assignee: "1203784854198936",
+        due_on: todayL,
+        notes: L.join("\n"),
+      });
+      return j(headers, 200, { ok: true, created: true, count: late.length, agents: Object.keys(by).length, url: `https://app.asana.com/0/0/${tL.gid}` });
+    }
+
+    // deduped builder shared by warQueue + execLateWars (hoisted; cached 2 min)
+    async function buildWarQueue(): Promise<{ ok: boolean; agents: string[]; rows: unknown[] }> {
+      if (warqCache && Date.now() - warqCache.at < 2 * 60 * 1000) return warqCache.payload as { ok: boolean; agents: string[]; rows: unknown[] };
+      const todayW = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+      const LDW = "1213182838328964";
+      const moIdxW = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string> }));
+      type WRow = { gid: string; address: string; agent: string; agentGid: string; state: string; dom: number | null; warDue: string | null; warMissing: boolean | null };
+      const rowsW: WRow[] = [];
+      let offW = "";
+      for (let pg = 0; pg < 12; pg++) {
+        const r0 = await fetch(`${ASANA}/projects/${LEASING_LU_PROJECT}/tasks?completed_since=now&limit=100&opt_fields=name,assignee.gid,assignee.name,custom_fields.gid,custom_fields.name,custom_fields.display_value${offW ? `&offset=${encodeURIComponent(offW)}` : ""}`,
+          { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+        const j0 = await r0.json().catch(() => ({}));
+        for (const t of (j0.data ?? []) as Array<{ gid: string; name: string; assignee?: { gid: string; name: string } | null; custom_fields?: Array<{ gid: string; name: string; display_value: string | null }> }>) {
+          if (!/^(LU|TP|PreLease)\s*\|/i.test(t.name)) continue;
+          const address = addressFromTaskName(t.name);
+          if (!address || address.includes("<")) continue;
+          const cfW = t.custom_fields ?? [];
+          const listDate = String(cfW.find((f) => f.gid === LDW)?.display_value ?? "").slice(0, 10);
+          const leaseSigned = String(cfW.find((f) => /lease signed/i.test(String(f.name)))?.display_value ?? "").trim();
+          // vacant only (Brittany 2026-08-27): agents owe weekly reports post move-out
+          const moOwnW = String(cfW.find((f) => f.gid === "1213182815411738")?.display_value ?? "").slice(0, 10);
+          const moDoneW = String(cfW.find((f) => f.gid === "1214521745467158")?.display_value ?? "").slice(0, 10);
+          const uidW = String(cfW.find((f) => f.gid === "1213183515622826")?.display_value ?? "").trim() || (moIdxW.uidByAddr[normAddr(address)] ?? "");
+          const moSchedW = /^\d{4}-\d{2}-\d{2}$/.test(moOwnW) ? moOwnW : (moIdxW.byUid[uidW] ?? moIdxW.byAddr[normAddr(address)] ?? "");
+          if (!(/^\d{4}-\d{2}-\d{2}$/.test(moDoneW) || (/^\d{4}-\d{2}-\d{2}$/.test(moSchedW) && moSchedW <= todayW))) continue;
+          if (String(cfW.find((f) => f.gid === "1214787859185273")?.display_value ?? "").trim()) continue; // Do Not List: no weekly report owed
+          const listed = /^\d{4}-\d{2}-\d{2}$/.test(listDate) && listDate <= todayW;
+          const state = leaseSigned ? "premovein" : (listed ? "leasing" : "turnover");
+          const dom = listed ? Math.max(0, Math.floor((Date.parse(todayW + "T12:00:00Z") - Date.parse(listDate + "T12:00:00Z")) / 86400000)) : null;
+          rowsW.push({ gid: t.gid, address, agent: String(t.assignee?.name ?? ""), agentGid: String(t.assignee?.gid ?? ""), state, dom, warDue: null, warMissing: null });
+        }
+        offW = j0.next_page?.offset ?? "";
+        if (!offW) break;
+      }
+      for (let i = 0; i < rowsW.length; i += 5) {
+        await Promise.all(rowsW.slice(i, i + 5).map(async (q) => {
+          try {
+            const subs = await asana("GET", `/tasks/${q.gid}/subtasks?limit=100&opt_fields=name,due_on,completed`);
+            const w = ((subs ?? []) as Array<{ gid: string; name: string; due_on?: string | null; completed?: boolean }>)
+              .find((s0) => !s0.completed && /weekly activity report/i.test(s0.name)) ??
+              ((subs ?? []) as Array<{ gid: string; name: string; due_on?: string | null }>).find((s0) => /weekly activity report/i.test(s0.name));
+            if (w) {
+              q.warDue = w.due_on ?? null;
+              q.warMissing = !w.due_on || String(w.due_on) < todayW;
+            } else q.warMissing = true;
+            // first-week grace for listed units, same rule as the bench queue
+            if (q.state === "leasing" && q.dom != null && q.dom <= 6 && q.warDue == null) q.warMissing = false;
+          } catch { q.warMissing = null; }
+        }));
+      }
+      const agents = Array.from(new Set(rowsW.map((r0) => r0.agent).filter(Boolean))).sort();
+      const payloadW = { ok: true, agents, rows: rowsW };
+      warqCache = { at: Date.now(), payload: payloadW };
+      return payloadW;
+    }
+
+    // ---------- execTurnComments: latest human updates off the Turn Over task ----------
+    // Feeds the owner report's THIS WEEK'S UPDATE for Turnover In Progress units
+    // (Brittany 2026-08-27): the two most recent comments, minus pinned plan blocks
+    // and tool signatures.
+    if (action === "execTurnComments") {
+      const addrT = String(body.address ?? "").trim();
+      if (!addrT) return j(headers, 400, { error: "missing_address" });
+      let toGid = "";
+      try {
+        const streetNoT = (addrT.match(/^\d+/) ?? [""])[0];
+        const hitsT = await asana("GET", `/workspaces/${WORKSPACE}/typeahead?resource_type=task&query=${encodeURIComponent("Turn Over | " + addrT.slice(0, 40))}&count=8&opt_fields=name,completed`);
+        const toT = (hitsT ?? []).find((x: { name: string; completed?: boolean }) => !x.completed && /^turn\s*over\s*\|/i.test(x.name) && (!streetNoT || x.name.includes(streetNoT))) ??
+          (hitsT ?? []).find((x: { name: string }) => /^turn\s*over\s*\|/i.test(x.name) && (!streetNoT || x.name.includes(streetNoT)));
+        toGid = toT?.gid ?? "";
+      } catch { /* none found */ }
+      if (!toGid) return j(headers, 200, { ok: true, comments: [], toGid: "", dispatched: "" });
+      let dispatched = "";
+      try {
+        const tT = await asana("GET", `/tasks/${toGid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
+        dispatched = String(((tT.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>).find((f) => String(f.gid) === "1214522138482281")?.display_value ?? "").slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dispatched)) dispatched = "";
+      } catch { /* header shows TBD */ }
+      const stT = ((await asana("GET", `/tasks/${toGid}/stories?limit=100&opt_fields=type,text,html_text,created_at,created_by.name`)) ?? []) as Array<{ type: string; text?: string; html_text?: string; created_at?: string; created_by?: { name?: string } | null }>;
+      // @mentions: plain text carries only a profile URL whose gid the bot cannot
+      // resolve (403), but html_text embeds the display name inside the mention
+      // anchor - so derive the text from html_text when present (Brittany 2026-08-27)
+      const fromHtml = (h: string) => h
+        .replace(/<a[^>]*>([\s\S]*?)<\/a>/gi, "$1")
+        .replace(/<br\s*\/?\s*>/gi, "\n")
+        .replace(/<[^>]+>/g, "")
+        .replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+      const uMap: Record<string, string> = {};
+      try { (await workspaceUsers()).forEach((u) => { uMap[u.gid] = u.name; }); } catch { /* names stay as links */ }
+      const comments = stT
+        .filter((x) => x.type === "comment" && String(x.text ?? "").trim() && !/^---\s/.test(String(x.text).trim()))
+        .map((x) => {
+          let txt = (x.html_text ? fromHtml(String(x.html_text)) : String(x.text ?? ""))
+            .replace(/https:\/\/app\.asana\.com\/(?:0|1\/\d+)\/profile\/(\d+)\/?/g, (_m0, g1: string) => uMap[g1] ? "@" + uMap[g1] : "@team member")
+            .replace(/\s*\(via [^)]*\)/gi, "")
+            .split(/\r?\n/).filter((l) => !/^done by claude/i.test(l.trim())).join("\n")
+            .replace(/\n{3,}/g, "\n\n").trim();
+          txt = txt.slice(0, 450);
+          const d = String(x.created_at ?? "");
+          const m = d.match(/\d{4}-(\d{2})-(\d{2})/);
+          return { text: txt, date: m ? (+m[1]) + "/" + (+m[2]) : "", author: String(x.created_by?.name ?? "").split(" ")[0] };
+        })
+        .filter((c) => c.text);
+      return j(headers, 200, { ok: true, toGid, toUrl: `https://app.asana.com/0/0/${toGid}`, dispatched, comments: comments.slice(-5).reverse() });
+    }
+
+    // ---------- execPlan: the approved plan off Listing Settings for one unit ----------
+    if (action === "execPlan") {
+      const uidP = String(body.unitId ?? "").replace(/\D/g, "");
+      let lsGidP = String(body.lsGid ?? "").replace(/\D/g, "");
+      if (!uidP && !lsGidP) return j(headers, 400, { error: "missing_unit" });
+      if (!lsGidP && uidP) {
+        try {
+          const sHits = ((await asana("GET",
+            `/workspaces/${WORKSPACE}/tasks/search?projects.any=1217446710785429&custom_fields.1213183515622826.value=${uidP}&opt_fields=name`)) ?? []) as Array<{ gid: string }>;
+          lsGidP = sHits[0]?.gid ?? "";
+        } catch { /* fall through */ }
+      }
+      if (!lsGidP) return j(headers, 404, { error: "no_listing_settings", message: "No Listing Settings task for this unit. Run the Plan + Propose bench first." });
+      const tP = await asana("GET", `/tasks/${lsGidP}?opt_fields=name,custom_fields.gid,custom_fields.display_value`);
+      const cfP = (tP.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>;
+      const gv = (g0: string) => String(cfP.find((f) => String(f.gid) === g0)?.display_value ?? "").trim();
+      const gn = (g0: string) => { const n = Number(String(gv(g0)).replace(/[^0-9.]/g, "")); return Number.isFinite(n) && n > 0 ? n : null; };
+      return j(headers, 200, {
+        ok: true,
+        lsGid: lsGidP,
+        lsUrl: `https://app.asana.com/0/0/${lsGidP}`,
+        adjPlan: gv("1217448328664674"),
+        targetRent: gn("1217446658749360"),
+        startingRent: gn("1217446589856415"),
+        minRent: gn("1217446710834881"),
+        marketRent: gn("1217530253031654"),
+        leasingPlanUrl: gv("1217557090620385"),
+        teamLead: gv("1217446711292696"),
+      });
+    }
+
+    // ---------- execActivity: the agent's weekly reports off the WAR subtask ----------
+    if (action === "execActivity") {
+      let warGidA = String(body.warGid ?? "").replace(/\D/g, "");
+      const luGidA = String(body.taskGid ?? "").replace(/\D/g, "");
+      if (!warGidA && luGidA) {
+        try {
+          const subs = await asana("GET", `/tasks/${luGidA}/subtasks?limit=100&opt_fields=name`);
+          warGidA = String(((subs ?? []) as Array<{ gid: string; name: string }>).find((s) => /weekly activity report/i.test(s.name))?.gid ?? "");
+        } catch { /* below */ }
+      }
+      if (!warGidA) return j(headers, 404, { error: "no_war_subtask", message: "No Weekly Activity Report subtask on this LU task." });
+      const reps = await warReportStories(warGidA);
+      const sr = warSeriesBuild(reps);
+      const newest = reps.length ? reps.reduce((a, b) => (a.createdAt > b.createdAt ? a : b)) : null;
+      return j(headers, 200, {
+        ok: true,
+        warGid: warGidA,
+        warUrl: `https://app.asana.com/0/0/${warGidA}`,
+        report: newest ? { text: newest.text.slice(0, 20000), createdAt: newest.createdAt } : null,
+        reportCount: reps.length,
+        series: sr.series,
+        totals: sr.totals,
+        dates: sr.dates,
+      });
+    }
+
+    // ---------- execVerify: Zillow / Redfin pass-fail; a fail spawns a troubleshoot subtask ----------
+    if (action === "execVerify") {
+      const luGidV = String(body.taskGid ?? "").replace(/\D/g, "");
+      const resultsV = Array.isArray(body.results) ? (body.results as Array<{ site?: unknown; pass?: unknown; note?: unknown }>).slice(0, 4) : [];
+      if (!luGidV || !resultsV.length) return j(headers, 400, { error: "missing_fields" });
+      const todayV = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+      const subsV = ((await asana("GET", `/tasks/${luGidV}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+      const created: Array<{ site: string; gid: string; url: string }> = [];
+      const lines: string[] = [];
+      for (const rV of resultsV) {
+        const site = String(rV.site ?? "").toLowerCase() === "redfin" ? "Redfin" : "Zillow";
+        const pass = rV.pass === true;
+        lines.push(`${site}: ${pass ? "PASS" : "FAIL"}`);
+        if (pass) continue;
+        const nm = `Troubleshoot | ${site} listing`;
+        const existing = subsV.find((s) => !s.completed && s.name.toLowerCase() === nm.toLowerCase());
+        if (existing) { created.push({ site, gid: existing.gid, url: `https://app.asana.com/0/0/${existing.gid}` }); continue; }
+        try {
+          const sub = await asana("POST", `/tasks/${luGidV}/subtasks`, {
+            name: nm,
+            due_on: todayV,
+            notes: `The ${site} listing failed verification on the Execute & Adapt bench.` +
+              (String(rV.note ?? "").trim() ? `\nNote from the team lead: ${String(rV.note).trim().slice(0, 500)}` : "") +
+              `\n\nZillow escalation: priorityrentalshelp@zillowgroup.com\nSOP: https://sagareus.getoutline.com/doc/zillow-troubleshooting-AZPJKBA9A7` +
+              `\n\nCreated from the Execute & Adapt bench. Done by Claude on behalf of the team lead.`,
+          });
+          created.push({ site, gid: sub.gid, url: `https://app.asana.com/0/0/${sub.gid}` });
+        } catch { lines.push(`${site}: subtask creation FAILED - create it by hand`); }
+      }
+      await postStory(luGidV, `Listing verification (Execute & Adapt bench): ${lines.join(" | ")}.` +
+        (created.length ? " Troubleshoot subtask ready." : "")).catch(() => null);
+      return j(headers, 200, { ok: true, created, summary: lines.join(" | ") });
+    }
+
+    // ---------- execDecision: the team lead's weekly hold-or-adjust record on the LU ----------
+    // Rent changes go to Buildium via the existing listingPush BEFORE this call; this
+    // records the decision against the plan so the paper trail lives on the LU task.
+    if (action === "execDecision") {
+      const luGidD = String(body.taskGid ?? "").replace(/\D/g, "");
+      const decision = String(body.decision ?? "").toLowerCase() === "adjust" ? "ADJUST" : "HOLD";
+      if (!luGidD) return j(headers, 400, { error: "missing_task" });
+      const mD = (body.metrics ?? {}) as Record<string, unknown>;
+      const nD = (k: string) => Math.max(0, Math.round(Number(mD[k]) || 0));
+      const criteriaMet = nD("inquiries") >= 10 || nD("showings") >= 5 || nD("applications") >= 1;
+      const domD = Number(body.dom);
+      const acts = Array.isArray(body.actionsTaken) ? (body.actionsTaken as unknown[]).map((a) => String(a).slice(0, 200)).slice(0, 12) : [];
+      const mods = Array.isArray(body.mods) ? (body.mods as unknown[]).map((a) => String(a).slice(0, 200)).slice(0, 12) : [];
+      const modDate = /^\d{4}-\d{2}-\d{2}$/.test(String(body.modifiedDate ?? "")) ? String(body.modifiedDate)
+        : new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+      const L: string[] = [];
+      L.push("LISTING DECISION (Execute & Adapt bench)");
+      L.push(`Modified Date: ${modDate}`);
+      if (Number.isFinite(domD)) L.push(`Days on market: ${Math.max(0, Math.round(domD))}`);
+      L.push(`This week: ${nD("inquiries")} inquiries / ${nD("showings")} showings / ${nD("applications")} applications`);
+      L.push(`Hold criteria (10 inquiries OR 5 showings OR 1 application): ${criteriaMet ? "MET" : "NOT MET"}`);
+      if (String(body.planLine ?? "").trim()) L.push(`Plan line invoked: ${String(body.planLine).trim().slice(0, 300)}`);
+      L.push(`Decision: ${decision}`);
+      if (mods.length) L.push("Modifications:\n- " + mods.join("\n- "));
+      if (acts.length) L.push("Actions taken:\n- " + acts.join("\n- "));
+      if (body.newRent != null && Number.isFinite(Number(body.newRent))) L.push(`New listed rent: $${Math.round(Number(body.newRent)).toLocaleString("en-US")} (Buildium updated)`);
+      L.push("\nDone by Claude on behalf of the team lead.");
+      const storyD = await postStory(luGidD, L.join("\n"));
+      execCache = null; // MOD date changed: next execQueue must re-read
+      // Stamp the review into the LU's Price History field (existing text field, JSON):
+      // lastReview powers the queue's MOD pill; ADJUSTED events keep the price trail
+      // the WAR and owner tools already read. Gid resolved off the task, never created.
+      let stamped = false;
+      try {
+        const tD = await asana("GET", `/tasks/${luGidD}?opt_fields=custom_fields.gid,custom_fields.name,custom_fields.display_value`);
+        const cfD = (tD.custom_fields ?? []) as Array<{ gid: string; name: string; display_value: string | null }>;
+        const phF = cfD.find((f) => /price history/i.test(String(f.name)));
+        if (phF) {
+          let ph: Record<string, unknown> = {};
+          try { const p0 = JSON.parse(String(phF.display_value ?? "") || "{}"); ph = (p0 && typeof p0 === "object" && !Array.isArray(p0)) ? p0 : { events: p0 }; } catch { ph = {}; }
+          const evs = Array.isArray(ph.events) ? ph.events as unknown[] : [];
+          if (decision === "ADJUST" && body.newRent != null && Number.isFinite(Number(body.newRent))) {
+            evs.push({ type: "ADJUSTED", date: modDate, price: Math.round(Number(body.newRent)) });
+          }
+          ph.events = evs.slice(-40);
+          ph.lastReview = modDate;
+          await asana("PUT", `/tasks/${luGidD}`, { custom_fields: { [phF.gid]: JSON.stringify(ph).slice(0, 6000) } });
+          stamped = true;
+        }
+      } catch { /* the story already carries the record */ }
+      return j(headers, 200, { ok: true, storyGid: storyD?.gid ?? null, criteriaMet, modDate, stamped });
     }
 
     // ---------- warFeedback: staff feedback on the WAR tool -> subtask on the WAR dev task ----------
@@ -1220,6 +1788,24 @@ app.post("*", async (c) => {
         moveOutTaskGid = moT?.gid ?? "";
         moveOut = dateOf(parentT, MO_DATE_F) || dateOf(moT, MO_DATE_F);
         moveOutSrcGid = dateOf(parentT, MO_DATE_F) ? (parentT?.gid ?? "") : (moT?.gid ?? "");
+        // The date often lives ONLY on the "Move-Out |" subtask, which usually has no
+        // Unit ID, so the search above cannot see it - walk the master's subtasks and
+        // read the field there, else the Move-Out task's own due date (the template
+        // dues it on move out day) (Brittany 2026-08-25).
+        if (!moveOut) {
+          let mo2: { gid: string; name: string } | undefined = moT;
+          if (!mo2 && parentT) {
+            const kids = ((await asana("GET", `/tasks/${parentT.gid}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+            mo2 = kids.find((k) => !k.completed && /^move-?out\s*\|/i.test(String(k.name))) ??
+              kids.find((k) => /^move-?out\s*\|/i.test(String(k.name)));
+          }
+          if (mo2) {
+            const mt = await asana("GET", `/tasks/${mo2.gid}?opt_fields=due_on,custom_fields.gid,custom_fields.display_value`);
+            moveOut = dateOf(mt as { custom_fields?: Array<{ gid: string; display_value: string | null }> }, MO_DATE_F) ||
+              (/^\d{4}-\d{2}-\d{2}$/.test(String(mt?.due_on ?? "")) ? String(mt.due_on) : "");
+            if (moveOut) { moveOutSrcGid = mo2.gid; moveOutTaskGid = mo2.gid; }
+          }
+        }
         // target dates for the Vacancy box: Move in Date + List Date off the same tasks
         targetMoveIn = dateOf(parentT, MI_DATE_F) || dateOf(moT, MI_DATE_F);
         pipelineListDate = dateOf(parentT, LD_DATE_F) || dateOf(moT, LD_DATE_F);
@@ -1271,8 +1857,14 @@ app.post("*", async (c) => {
       try {
         const LSP = "1217446710785429";
         lsGid = "";
+        // Unit-ID search first; page scan (raised to 15 pages / 1,500 tasks) as fallback
+        try {
+          const sH = ((await asana("GET",
+            `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LSP}&custom_fields.1213183515622826.value=${uid}&opt_fields=name`)) ?? []) as Array<{ gid: string }>;
+          if (sH[0]) lsGid = sH[0].gid;
+        } catch { /* scan below */ }
         let off9 = "";
-        for (let pg = 0; pg < 5 && !lsGid; pg++) {
+        for (let pg = 0; pg < 15 && !lsGid; pg++) {
           const r9 = await fetch(`${ASANA}/projects/${LSP}/tasks?limit=100&opt_fields=name,custom_fields.gid,custom_fields.display_value${off9 ? `&offset=${encodeURIComponent(off9)}` : ""}`,
             { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
           const j9 = await r9.json().catch(() => ({}));
@@ -1302,6 +1894,7 @@ app.post("*", async (c) => {
             lastMonthRent: lv("1217446710797252"), specialTerms: lv("1217446589881673"),
             minCredit: lv("1217446728640049"), minIncome: lv("1217446770195125"),
             utilDesc: lv("1217515337017428"), ffReport: lv("1217533821059479"), estReport: lv("1217533868879515"),
+            utilProviders: lv("1217921018573269"),
             preparedBy: lv("1217516811159332"), inspectUrl: lv("1217515237891095"),
             recentInspectUrl: lv("1217718959198830"), preMoveOutUrl: lv("1217719249318990"),
             bdRent: lv("1217624971001054"),
@@ -1547,7 +2140,8 @@ app.post("*", async (c) => {
                 const parsed = await br2.json().catch(() => null);
                 if (Array.isArray(parsed)) { bl = parsed; out.ffQuery = q.split("=")[0] + ":ok:" + parsed.length; break; }
               }
-              const ffBills: Array<{ date: string; memo: string; amount: number }> = [];
+              const ffBills: Array<{ date: string; memo: string; amount: number; vendor?: string }> = [];
+              const ffVids: string[] = [];
               for (const b0 of bl) {
                 const d = String(b0.Date ?? "").slice(0, 10);
                 if (!d || Date.parse(d) < cutoff) continue;
@@ -1566,9 +2160,25 @@ app.post("*", async (c) => {
                   if (FF_GL.test(gl)) {
                     const label = [gl, bmemo, lnMemo].filter((x, ix, arr) => x && arr.indexOf(x) === ix).join(" - ");
                     ffBills.push({ date: d, memo: (label || "Utility bill").slice(0, 140), amount: amt });
+                    ffVids.push(String(b0.VendorId ?? ""));
                   }
                 }
               }
+              // Vendor names on the bills: accounting's flat-fee method groups bills
+              // by PROVIDER, each on its own billing cycle, so the workbench needs
+              // the vendor to group by (Cooper's Flat Fee Utility Cost Analysis).
+              const vids = Array.from(new Set(ffVids.filter(Boolean))).slice(0, 8);
+              const vmap: Record<string, string> = {};
+              for (const vid of vids) {
+                try {
+                  const vr = await fetch(`https://api.buildium.com/v1/vendors/${encodeURIComponent(vid)}`, { headers: bh });
+                  if (!vr.ok) continue;
+                  const v0 = (await vr.json().catch(() => null)) as Record<string, unknown> | null;
+                  const nm = v0 ? (String(v0.CompanyName ?? "").trim() || `${String(v0.FirstName ?? "")} ${String(v0.LastName ?? "")}`.trim()) : "";
+                  if (nm) vmap[vid] = nm;
+                } catch { /* vendor name is best-effort */ }
+              }
+              ffBills.forEach((b, i) => { const nm = vmap[ffVids[i]]; if (nm) b.vendor = nm; });
               ffBills.sort((a, b) => b.date.localeCompare(a.date));
               out.ffBills = ffBills.slice(0, 40);
               // diagnostic: distinct GL names seen in the window, so a zero-match is explainable
@@ -1604,7 +2214,17 @@ app.post("*", async (c) => {
       let matchedName = "";
       let slugGid = "";
       let off = "";
-      for (let page = 0; page < 5 && !taskGid; page++) {
+      // Unit-ID search first: the page scan below caps at 500 tasks and would silently
+      // CREATE A DUPLICATE Listing task past that (2026-08-25 audit; the Move-Out
+      // project hit this exact cap earlier). Scan stays as the no-Unit-ID fallback.
+      if (/^\d+$/.test(pushUid)) {
+        try {
+          const sHits = ((await asana("GET",
+            `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LS_PROJECT}&custom_fields.${UNIT_F}.value=${pushUid}&opt_fields=name`)) ?? []) as Array<{ gid: string; name: string }>;
+          if (sHits[0]) { taskGid = sHits[0].gid; matchedName = sHits[0].name; }
+        } catch { /* fall through to the page scan */ }
+      }
+      for (let page = 0; page < 15 && !taskGid; page++) {
         const res0 = await fetch(`${ASANA}/projects/${LS_PROJECT}/tasks?limit=100&opt_fields=name,custom_fields.gid,custom_fields.display_value${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
           { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
         const json0 = await res0.json().catch(() => ({}));
@@ -1634,6 +2254,7 @@ app.post("*", async (c) => {
         priceAdjustmentPlan: "1217448328664674", photoReview: "1217448327991331",
         petRent: "1217450345262256", petDeposit: "1217450833264180",
         utilDesc: "1217515337017428", flatFeeReport: "1217533821059479", estReport: "1217533868879515",
+        utilProviders: "1217921018573269",
         preparedBy: "1217516811159332", compsData: "1217516812648029",
         turnProposal: "1217509139690271", inspectUrl: "1217515237891095",
         securitySystem: "1217535226939178", hoaMoveIn: "1217622037538954",
@@ -1667,7 +2288,7 @@ app.post("*", async (c) => {
         const n = Number(v);
         cf[gid] = ["startingRent", "currentRent", "estimatedRent", "targetRent", "minRent", "petRent", "petDeposit", "securityDeposit", "turnAuth", "bdRent", "depositHeld", "targetDaysVacant"].includes(k)
           ? (Number.isFinite(n) ? n : undefined)
-          : String(v).slice(0, k === "compsData" ? 1024 : 6000);
+          : String(v).slice(0, k === "compsData" ? 4000 : 6000);
         if (cf[gid] === undefined) delete cf[gid];
       }
       for (const [k, gid] of Object.entries(DATE_F)) {
@@ -1708,16 +2329,29 @@ app.post("*", async (c) => {
       // approvals reset on every push, lsAccept rebuilds them
       const rnState = { appr: {}, req: openModify.map((m) => ({ s: String(m.name).replace(/^modify\s+/i, "").replace(/\s*\|.*$/, "").slice(0, 40), t: String(m.notes ?? "").split(/\r?\n/).find((l) => l.trim() && !/^section:/i.test(l)) ?? "" })).slice(0, 4), resp: respToOwner, d: new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10) };
       if (!isDraft) cf[RN_F] = JSON.stringify(rnState).slice(0, 1020);
+      // One bad field rejects an entire batched write ("Custom field is not on given
+      // object"), silently losing every other field. Batch first for speed; on failure
+      // retry field-by-field and report exactly which gids Asana refused (2026-08-25).
+      const fieldErrors: string[] = [];
+      const writeCf = async (gid9: string, fields: Record<string, unknown>) => {
+        if (!Object.keys(fields).length) return;
+        try { await asana("PUT", `/tasks/${gid9}`, { custom_fields: fields }); return; }
+        catch { /* batch refused: isolate the offender(s) */ }
+        for (const [fg, fv] of Object.entries(fields)) {
+          try { await asana("PUT", `/tasks/${gid9}`, { custom_fields: { [fg]: fv } }); }
+          catch { fieldErrors.push(fg); }
+        }
+      };
       if (!taskGid) {
         const t = await asana("POST", "/tasks", {
           name: `Listing | ${address}`.slice(0, 250),
           projects: [LS_PROJECT],
           notes: "Source of truth for this property's Leasing URL. Edit fields here; the page updates live.\n\nCreated from the PreListing Workbench. Done by Claude on behalf of the listing agent.",
-          ...(Object.keys(cf).length ? { custom_fields: cf } : {}),
         });
         taskGid = t.gid;
+        await writeCf(taskGid, cf);
       } else if (Object.keys(cf).length) {
-        await asana("PUT", `/tasks/${taskGid}`, { custom_fields: cf });
+        await writeCf(taskGid, cf);
         if (!isDraft) await asana("POST", `/tasks/${taskGid}/stories`, {
           text: "Listing Settings updated from the PreListing Workbench. Done by Claude on behalf of the listing agent.",
         }).catch(() => null);
@@ -1756,18 +2390,22 @@ app.post("*", async (c) => {
               luNotes.push(`closed: ${s.name}`);
             } catch { luNotes.push(`failed: ${s.name}`); }
           }
-          // Starting Price + Minimum Price fields on the LU task, matched by name
+          // Starting Price + Minimum Price + Utility Flat Fee on the LU task, by name
           const startN = Number(body.startingRent);
           const minN = Number(body.minRent);
-          if (Number.isFinite(startN) || Number.isFinite(minN)) {
+          const feeN = Number(body.utilFlatFee);
+          if (Number.isFinite(startN) || Number.isFinite(minN) || (Number.isFinite(feeN) && feeN > 0)) {
             try {
               const luT = await asana("GET", `/tasks/${luHit9.gid}?opt_fields=custom_fields.gid,custom_fields.name`);
               const luCf9 = (luT.custom_fields ?? []) as Array<{ gid: string; name: string }>;
               const cf9: Record<string, unknown> = {};
               const sp = luCf9.find((f) => /starting\s*price$/i.test(f.name));
               const mp = luCf9.find((f) => /minimum\s*price$/i.test(f.name));
+              const uf = luCf9.find((f) => /utility\s*flat\s*fee/i.test(f.name));
               if (sp && Number.isFinite(startN)) cf9[sp.gid] = startN;
               if (mp && Number.isFinite(minN)) cf9[mp.gid] = minN;
+              if (uf && Number.isFinite(feeN) && feeN > 0) cf9[uf.gid] = feeN;
+              else if (!uf && Number.isFinite(feeN) && feeN > 0) luNotes.push("no Utility Flat Fee field on the LU task");
               if (Object.keys(cf9).length) { await asana("PUT", `/tasks/${luHit9.gid}`, { custom_fields: cf9 }); luNotes.push("lu prices set"); }
               else luNotes.push("lu price fields not found");
             } catch { luNotes.push("lu prices failed"); }
@@ -1803,6 +2441,7 @@ app.post("*", async (c) => {
         planStatus: wasApproved ? "Revised" : "Sent",
         modifyClosed,
         luNotes,
+        fieldErrors,
       });
     }
 
@@ -1831,6 +2470,34 @@ app.post("*", async (c) => {
         text: `Photo review FAILED on the PreListing Workbench: current photos do not meet the listing standard. Re-shoot needed, due same day as move out (${dueOn}). Done by Claude on behalf of the listing agent (via /wt PreListing Workbench).`,
       }).catch(() => null);
       return j(headers, 200, { ok: true, subtaskGid: ph.gid, name: newName, dueOn, url: `https://app.asana.com/0/0/${ph.gid}` });
+    }
+
+    // ---------- plPhotoPass: photo review passed -> close the schedule-photo decision ----------
+    // Photos that meet the standard answer "Decide | Schedule photo? (y/n)" with a no,
+    // so the subtask completes (Brittany 2026-08-25). undo:true reopens it, for the case
+    // where the reviewer flips the verdict to a fail afterwards.
+    if (action === "plPhotoPass") {
+      const addressP = String(body.address ?? "").trim();
+      if (!addressP && !body.unitId) return j(headers, 400, { error: "missing_address" });
+      let luHitP: { gid: string } | null = await luByUnitId(String(body.unitId ?? "").trim());
+      if (!luHitP) luHitP = matchUnit(await allVacancies(true), addressP).hit ?? null;
+      if (!luHitP) return j(headers, 404, { error: "lu_not_found", message: "No Lease Up task matches this unit, so the photo decision could not be closed." });
+      const undoP = body.undo === true;
+      const subsP = ((await asana("GET", `/tasks/${luHitP.gid}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+      // the decision subtask specifically, not any subtask with "photo" in the name
+      const dec = subsP.find((s) => /^decide\s*\|/i.test(s.name) && /schedule\s*photo/i.test(s.name)) ??
+        subsP.find((s) => /schedule\s*photo/i.test(s.name));
+      if (!dec) return j(headers, 404, { error: "no_photo_decision", message: "No 'Decide | Schedule photo?' subtask under the Lease Up task; close it manually." });
+      if (Boolean(dec.completed) === !undoP) {
+        return j(headers, 200, { ok: true, gid: dec.gid, name: dec.name, alreadySet: true, url: `https://app.asana.com/0/0/${dec.gid}` });
+      }
+      await asana("PUT", `/tasks/${dec.gid}`, { completed: !undoP });
+      await asana("POST", `/tasks/${dec.gid}/stories`, {
+        text: undoP
+          ? "Reopened: the photo review verdict on the PreListing Workbench changed to a fail, so a shoot needs scheduling after all. Done by Claude on behalf of the listing agent."
+          : "Photo review PASSED on the PreListing Workbench: the current Buildium photos meet the listing standard, so no shoot needs scheduling. Done by Claude on behalf of the listing agent.",
+      }).catch(() => null);
+      return j(headers, 200, { ok: true, gid: dec.gid, name: dec.name, completed: !undoP, url: `https://app.asana.com/0/0/${dec.gid}` });
     }
 
     // ---------- plHeatConfirm: Heating Type blank in settings -> confirm-at-move-out subtask ----------
@@ -2282,7 +2949,7 @@ app.post("*", async (c) => {
           const slug = lsSlug(address);
           let lsGid = "";
           let off = "";
-          for (let page = 0; page < 5 && !lsGid; page++) {
+          for (let page = 0; page < 15 && !lsGid; page++) {
             const r0 = await fetch(`${ASANA}/projects/${LS_PROJECT}/tasks?limit=100&opt_fields=name${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
               { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
             const j0 = await r0.json().catch(() => ({}));
@@ -2439,7 +3106,13 @@ app.post("*", async (c) => {
           const jr = await r.json().catch(() => ({}));
           const text = jr?.choices?.[0]?.message?.content;
           if (r.ok && text) {
-            const raw = String(text).replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\*\*/g, "").trim();
+            // house style: no em or en dashes in customer-facing copy, ever. The prompt
+            // bans them but models leak them; scrub mechanically (Brittany 2026-08-27).
+            // Numeric ranges become "to"; everything else becomes a comma.
+            const noDash = (t0: string) => t0
+              .replace(/(\d)\s*[\u2014\u2013]\s*(\d)/g, "$1 to $2")
+              .replace(/\s*[\u2014\u2013]\s*/g, ", ");
+            const raw = noDash(String(text)).replace(/\[([^\]]*)\]\([^)]*\)/g, "$1").replace(/\*\*/g, "").trim();
             // Split the delimited output: anything before LISTING: (model preamble) and
             // everything after NOTE: goes to the agent-facing note, never the listing.
             let copy = raw;
@@ -2499,9 +3172,45 @@ app.post("*", async (c) => {
           listingDate: L.ListingDate ?? null,
         };
       }
+      // sticky-header extras (Brittany 2026-08-26): previous lease rent from real
+      // lease history (same rule as the listing action: never MarketRent), pending
+      // application tasks from Asana, and the Buildium manager link parts
+      let previousRent: number | null = null;
+      try {
+        const lr2 = await fetch(`https://api.buildium.com/v1/leases?propertyids=${encodeURIComponent(String(u.PropertyId ?? ""))}&limit=500`, { headers: BH });
+        if (lr2.ok) {
+          const leases2 = await lr2.json().catch(() => []);
+          const rents2 = (Array.isArray(leases2) ? leases2 : [])
+            .filter((l: { UnitId?: number }) => String(l?.UnitId ?? "") === String(uid))
+            .map((l: { LeaseFromDate?: string; AccountDetails?: { Rent?: number | { Amount?: number } } }) => {
+              const r0 = l?.AccountDetails?.Rent;
+              const amt = typeof r0 === "number" ? r0 : (typeof (r0 as { Amount?: number })?.Amount === "number" ? (r0 as { Amount: number }).Amount : null);
+              return { from: String(l?.LeaseFromDate ?? ""), rent: amt };
+            })
+            .filter((x: { rent: number | null }) => x.rent != null && x.rent > 0)
+            .sort((a0: { from: string }, b0: { from: string }) => b0.from.localeCompare(a0.from));
+          if (rents2.length) previousRent = rents2[0].rent;
+        }
+      } catch { /* leases unavailable */ }
+      const pendingApps: Array<{ gid: string; name: string; url: string }> = [];
+      try {
+        const streetNo2 = (address.match(/^\d+/) ?? [""])[0];
+        if (streetNo2) {
+          const hits2 = await asana("GET", `/workspaces/${WORKSPACE}/typeahead?resource_type=task&query=${encodeURIComponent("PENDING")}&count=20&opt_fields=name,completed`);
+          (hits2 ?? []).forEach((t2: { gid: string; name: string; completed?: boolean }) => {
+            if (!t2.completed && /^PENDING/i.test(t2.name) && /app/i.test(t2.name) && t2.name.includes(streetNo2)) {
+              pendingApps.push({ gid: t2.gid, name: String(t2.name).slice(0, 160), url: `https://app.asana.com/0/0/${t2.gid}` });
+            }
+          });
+        }
+      } catch { /* header just omits the pill */ }
       return j(headers, 200, {
         ok: true,
         unitId: uid,
+        propertyId: u.PropertyId ?? null,
+        buildiumUrl: u.PropertyId ? `https://sagareus.managebuilding.com/manager/app/properties/${u.PropertyId}/units/${uid}/summary` : null,
+        previousRent,
+        pendingApps,
         beds: bedBathNum(u.UnitBedrooms),
         baths: bedBathNum(u.UnitBathrooms),
         sqft: u.UnitSize ?? null,
@@ -2518,12 +3227,14 @@ app.post("*", async (c) => {
       if (!/^\d+$/.test(uid)) return j(headers, 400, { error: "bad_unit_id" });
       const desc = body.description == null ? null : String(body.description).trim();
       const rent = body.rent == null ? null : Number(body.rent);
+      const deposit = body.deposit == null ? null : Number(body.deposit);
       const availableDate = body.availableDate == null ? null : String(body.availableDate).trim();
       if (rent != null && (!Number.isFinite(rent) || rent < 100 || rent > 50000)) return j(headers, 400, { error: "bad_rent" });
+      if (deposit != null && (!Number.isFinite(deposit) || deposit < 0 || deposit > 100000)) return j(headers, 400, { error: "bad_deposit" });
       if (availableDate != null && !/^\d{4}-\d{2}-\d{2}$/.test(availableDate)) return j(headers, 400, { error: "bad_date" });
       if (desc != null && desc.length > 60000) return j(headers, 400, { error: "desc_too_long" });
       const BH = { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET };
-      const updated: Record<string, boolean> = { description: false, rent: false, availableDate: false };
+      const updated: Record<string, boolean> = { description: false, rent: false, deposit: false, availableDate: false };
       const warnings: string[] = [];
       if (desc != null && desc.length >= 40) {
         const r0 = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}`, { headers: BH });
@@ -2543,17 +3254,19 @@ app.post("*", async (c) => {
         }
         updated.description = true;
       }
-      if (rent != null || availableDate != null) {
+      if (rent != null || availableDate != null || deposit != null) {
         const rl = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}/listing`, { headers: BH });
         if (rl.status === 404) {
-          warnings.push("No active Buildium listing on this unit; rent and availability were not changed.");
+          warnings.push("No active Buildium listing on this unit; rent, deposit, and availability were not changed.");
         } else if (!rl.ok) {
-          warnings.push("Could not read the current listing; rent and availability were not changed.");
+          warnings.push("Could not read the current listing; rent, deposit, and availability were not changed.");
         } else {
           const L = await rl.json();
           const putBody: Record<string, unknown> = {
             Rent: rent != null ? rent : L.Rent,
-            Deposit: L.Deposit,
+            // deposit follows a rent change (Brittany 2026-08-26): the caller sends
+            // the recomputed deposit alongside the new rent
+            Deposit: deposit != null ? deposit : L.Deposit,
             AvailableDate: availableDate != null ? availableDate : L.AvailableDate,
             LeaseTerms: L.LeaseTerms,
           };
@@ -2568,6 +3281,7 @@ app.post("*", async (c) => {
             return j(headers, 502, { error: "listing_failed", message: `Buildium rejected the listing update (${r2.status}). ${et.slice(0, 200)}`, updated, warnings });
           }
           if (rent != null) updated.rent = true;
+          if (deposit != null) updated.deposit = true;
           if (availableDate != null) updated.availableDate = true;
         }
       }
@@ -2634,7 +3348,13 @@ app.post("*", async (c) => {
           });
           const jr = await r.json().catch(() => ({}));
           const text = jr?.choices?.[0]?.message?.content;
-          if (r.ok && text) return j(headers, 200, { comments: String(text).replace(/\*\*/g, "").trim(), model });
+          if (r.ok && text) {
+            // same no-dash house rule as draftCopy: this text reaches owners
+            const cNoDash = String(text)
+              .replace(/(\d)\s*[\u2014\u2013]\s*(\d)/g, "$1 to $2")
+              .replace(/\s*[\u2014\u2013]\s*/g, ", ");
+            return j(headers, 200, { comments: cNoDash.replace(/\*\*/g, "").trim(), model });
+          }
         } catch { /* try next model */ }
       }
       return j(headers, 502, { error: "llm_failed", message: "Polishing is unavailable right now. Your comment is fine to send as written." });
@@ -2686,7 +3406,10 @@ app.post("*", async (c) => {
         for (let w = -2; w < 5; w++) {
           const from = new Date(Date.now() + w * 7 * 86400000).toISOString().slice(0, 10);
           const to = new Date(Date.now() + (w + 1) * 7 * 86400000).toISOString().slice(0, 10);
-          const rs = await fetch(`${ASANA}/workspaces/${WORKSPACE}/tasks/search?text=${encodeURIComponent("Prepare | BD Listing")}&completed=false&due_on.after=${from}&due_on.before=${to}&sort_by=due_date&sort_ascending=true&limit=100&opt_fields=name,due_on,parent.gid,parent.name`,
+          // projects.any scopes the fuzzy text match to leasing (subtasks inherit the
+          // parent's project in search) - without it the workspace-wide noise fills
+          // the 100-hit cap and real Prepare tasks get crowded out (472496, 2026-08-28)
+          const rs = await fetch(`${ASANA}/workspaces/${WORKSPACE}/tasks/search?projects.any=${LEASING_LU_PROJECT}&text=${encodeURIComponent("Prepare | BD Listing")}&completed=false&due_on.after=${from}&due_on.before=${to}&sort_by=due_date&sort_ascending=true&limit=100&opt_fields=name,due_on,parent.gid,parent.name`,
             { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
           const js = await rs.json().catch(() => ({}));
           for (const t of (js.data ?? []) as PrepHit[]) {
@@ -2723,7 +3446,38 @@ app.post("*", async (c) => {
         }
       } catch { /* best-effort */ }
       prepare.sort((a, b) => String(a.due).localeCompare(String(b.due)));
-      return j(headers, 200, { ok: true, adjustments, prepare });
+      // Sent, awaiting approval (Brittany 2026-08-28): plans pushed to owners with
+      // Plan Status still Sent/Revised. Sent date = the rnState 'd' the push stamped.
+      const sentPlans: Array<Record<string, unknown>> = [];
+      try {
+        const PS_F2 = "1217569409567702", RN_F2 = "1217569237386930";
+        let offS = "";
+        for (let pg = 0; pg < 15; pg++) {
+          const rS = await fetch(`${ASANA}/projects/1217446710785429/tasks?limit=100&opt_fields=name,custom_fields.gid,custom_fields.display_value${offS ? `&offset=${encodeURIComponent(offS)}` : ""}`,
+            { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+          const jS = await rS.json().catch(() => ({}));
+          for (const t of (jS.data ?? []) as Array<{ gid: string; name: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>) {
+            const cfS = t.custom_fields ?? [];
+            const ps = String(cfS.find((f) => f.gid === PS_F2)?.display_value ?? "").trim();
+            if (ps !== "Sent" && ps !== "Revised") continue;
+            let sentOn = "";
+            try { sentOn = String(JSON.parse(String(cfS.find((f) => f.gid === RN_F2)?.display_value ?? "") || "{}")?.d ?? ""); } catch { /* undated */ }
+            sentPlans.push({
+              gid: t.gid,
+              url: `https://app.asana.com/0/0/${t.gid}`,
+              address: String(t.name).replace(/^listing\s*\|\s*/i, "").trim(),
+              unitId: uidOf(cfS),
+              status: ps,
+              sentOn: /^\d{4}-\d{2}-\d{2}$/.test(sentOn) ? sentOn : null,
+            });
+          }
+          offS = jS.next_page?.offset ?? "";
+          if (!offS) break;
+        }
+        // oldest first: the most-ignored plan tops the list
+        sentPlans.sort((a, b) => String(a.sentOn ?? "0000").localeCompare(String(b.sentOn ?? "0000")));
+      } catch { /* section renders empty */ }
+      return j(headers, 200, { ok: true, adjustments, prepare, sentPlans });
     }
 
     // ---------- setUnitSettings: write edited facts back to the Unit Settings task ----------
@@ -2878,6 +3632,49 @@ app.post("*", async (c) => {
       }
       if (!okRoles.length) return j(headers, 502, { error: "assign_failed", message: "Asana rejected every assignment write. Set them on the task by hand." });
       return j(headers, 200, { ok: true, saved: okRoles, failed: failRoles });
+    }
+
+    // ---------- ownerSave: write Owner Name / Owner Email back to the open
+    // LU / TP / PreLease task (Brittany 2026-08-25). Those two fields power other
+    // leasing tools, so the workbench fills them when they come back blank.
+    // Field GIDs are resolved off the task itself: never create or attach a field,
+    // report it as blocked instead.
+    if (action === "ownerSave") {
+      const luGidO = String(body.ownerSrcGid ?? "").replace(/\D/g, "");
+      if (!luGidO) {
+        return j(headers, 400, {
+          error: "no_lu_task",
+          message: "No open LU / TP / PreLease task for this unit, so there is nowhere to save the owner. Populate from a Unit ID first.",
+        });
+      }
+      const tO = await asana("GET", `/tasks/${luGidO}?opt_fields=name,custom_fields.gid,custom_fields.name`);
+      const cfO = ((tO.custom_fields ?? []) as Array<{ gid: string; name: string }>);
+      const findF = (re: RegExp) => String(cfO.find((f) => re.test(String(f.name)))?.gid ?? "");
+      const savedO: string[] = [];
+      const blockedO: string[] = [];
+      const writeOne = async (label: string, gidF: string, val: string) => {
+        if (!gidF) { blockedO.push(label + " (field not on the task)"); return; }
+        // one field per request: a field missing from the project rejects the whole
+        // batch, which would silently lose the other one
+        try {
+          await asana("PUT", `/tasks/${luGidO}`, { custom_fields: { [gidF]: val } });
+          savedO.push(label);
+        } catch { blockedO.push(label + " (Asana rejected the write)"); }
+      };
+      if (body.ownerName !== undefined) {
+        await writeOne("Owner Name", findF(/owner name/i), String(body.ownerName ?? "").trim().slice(0, 160));
+      }
+      if (body.ownerEmail !== undefined) {
+        await writeOne("Owner Email", findF(/owner e-?mail/i), String(body.ownerEmail ?? "").trim().slice(0, 240));
+      }
+      if (!savedO.length) {
+        return j(headers, 502, {
+          error: "owner_save_failed",
+          message: "Nothing saved: " + (blockedO.join("; ") || "no fields sent") + ". Set them on the task by hand.",
+          blocked: blockedO,
+        });
+      }
+      return j(headers, 200, { ok: true, saved: savedO, blocked: blockedO, taskName: String(tO.name ?? "") });
     }
 
     if (action === "utilCompSearch") {

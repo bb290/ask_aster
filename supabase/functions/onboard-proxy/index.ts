@@ -470,16 +470,49 @@ async function obTaskByUnitId(projectGid: string, uid: string): Promise<{ gid: s
   try {
     const list = ((await asana("GET",
       `/workspaces/${OB_WORKSPACE}/tasks/search?projects.any=${projectGid}&custom_fields.${OB_UNIT_F}.value=${uid}&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
-    return list.find((t) => !t.completed) ?? list[0] ?? null;
+    return list.find((t) => !t.completed) ?? list[0] ?? null;   // caller checks .completed
   } catch { return null; }
 }
 async function obLuByUnitId(uid: string): Promise<{ gid: string; name: string } | null> {
+  return await obLeasingSubByUnitId(uid, /^(LU|TP|PreLease)\s*\|/i);
+}
+// Pipeline subtasks (LU / Turn Over / ...) often carry no Unit ID of their own — only the
+// "Leasing | ..." master task does (found on unit 374402, 2026-08-19). Search direct first,
+// then walk the master's subtasks by name. Unit ID only, never addresses.
+// The OPEN "Leasing | ..." master for this cycle. Same completed-task trap as
+// obLeasingSubByUnitId: on a re-lease the prior cycle's master still carries the Unit ID.
+async function obLeasingMasterByUnitId(uid: string): Promise<{ gid: string; name: string } | null> {
   if (!/^\d+$/.test(uid)) return null;
   try {
     const list = ((await asana("GET",
       `/workspaces/${OB_WORKSPACE}/tasks/search?projects.any=1213171758682884&custom_fields.${OB_UNIT_F}.value=${uid}&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
-    const lus = list.filter((t) => /^(LU|TP|PreLease)\s*\|/i.test(t.name));
-    return lus.find((t) => !t.completed) ?? lus[0] ?? null;
+    const masters = list.filter((t) => /^leasing\s*\|/i.test(t.name));
+    return masters.find((t) => !t.completed) ?? masters[0] ?? null;
+  } catch { return null; }
+}
+
+async function obLeasingSubByUnitId(uid: string, re: RegExp): Promise<{ gid: string; name: string } | null> {
+  if (!/^\d+$/.test(uid)) return null;
+  try {
+    const list = ((await asana("GET",
+      `/workspaces/${OB_WORKSPACE}/tasks/search?projects.any=1213171758682884&custom_fields.${OB_UNIT_F}.value=${uid}&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+    // An OPEN direct hit wins. A completed one does NOT: on a re-lease the prior
+    // cycle's LU / Turn Over still carry the Unit ID while the CURRENT cycle's
+    // subtasks carry none, so taking the completed hit fanned plans out to last
+    // year's tasks (Brittany 2026-08-22, units 344444 + 426448).
+    const direct = list.filter((t) => re.test(t.name));
+    const openDirect = direct.find((t) => !t.completed);
+    if (openDirect) return openDirect;
+    // walk the OPEN "Leasing | ..." master for this cycle's subtask
+    const leasingOpen = list.filter((t) => /^leasing\s*\|/i.test(t.name)).find((t) => !t.completed)
+      ?? list.find((t) => /^leasing\s*\|/i.test(t.name));
+    if (leasingOpen) {
+      const subs = ((await asana("GET", `/tasks/${leasingOpen.gid}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+      const sl = subs.filter((s) => re.test(String(s.name)));
+      const openSub = sl.find((s) => !s.completed);
+      if (openSub) return openSub;
+    }
+    return direct[0] ?? null;   // nothing open anywhere: last resort
   } catch { return null; }
 }
 // approver check: any owner email on file for the unit (field may hold several,
@@ -487,7 +520,14 @@ async function obLuByUnitId(uid: string): Promise<{ gid: string; name: string } 
 async function obValidApprover(email: string, unitId: string): Promise<{ ok: boolean; isTeam: boolean }> {
   const e = String(email ?? "").trim().toLowerCase();
   if (!/^[\w.+-]+@[\w-]+\.[\w.-]+$/.test(e)) return { ok: false, isTeam: false };
-  if (e === "listing@sagareus.com" || e === "listings@sagareus.com") return { ok: true, isTeam: true };
+  // named staff approvers (Brittany 2026-08-27): each approval records the actual
+  // email, so approving under a personal address shows exactly who signed off
+  const TEAM_APPROVERS = [
+    "listing@sagareus.com", "listings@sagareus.com",
+    "bb@sagareus.com", "vincent@sagareus.com", "courtney@sagareus.com",
+    "brittany@sagareus.com", "jessica@sagareus.com", "portia@sagareus.com",
+  ];
+  if (TEAM_APPROVERS.includes(e)) return { ok: true, isTeam: true };
   const lu = await obLuByUnitId(unitId);
   if (!lu) return { ok: false, isTeam: false };
   try {
@@ -513,6 +553,20 @@ function obBlockMerge(notes: string, tag: string, block: string): string {
 
 function obDuePT(days: number): string {
   return new Date(Date.now() + days * 86400000).toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+}
+
+// Asana date custom fields come back as "2026-09-23T00:00:00.000Z"; the intended date
+// is the literal one, so slice rather than parse through a timezone.
+function obDateOnly(v: unknown): string {
+  const m = String(v ?? "").match(/^\d{4}-\d{2}-\d{2}/);
+  return m ? m[0] : "";
+}
+// Shift a YYYY-MM-DD by n days without letting the local timezone move it.
+function obShiftDate(iso: string, n: number): string {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(iso)) return "";
+  const d = new Date(iso + "T12:00:00Z");
+  d.setUTCDate(d.getUTCDate() + n);
+  return d.toISOString().slice(0, 10);
 }
 
 // ---------- proposal deal locator (shared by propTerms / propAccept) ----------
@@ -1364,7 +1418,9 @@ app.post("/onboard-proxy", async (c) => {
       if (!slugIn) return j(headers, 400, { error: "missing_slug" });
       let hit: { gid: string; address: string } | null = null;
       let off = "";
-      for (let page = 0; page < 5 && !hit; page++) {
+      // 15 pages = 1,500 tasks, matching the growth target; the loop breaks early on
+      // the last page so small projects pay nothing (2026-08-25 audit)
+      for (let page = 0; page < 15 && !hit; page++) {
         const res0 = await fetch(`${ASANA}/projects/${LS_PROJECT}/tasks?limit=100&opt_fields=name${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
           { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
         const json0 = await res0.json().catch(() => ({}));
@@ -1402,24 +1458,36 @@ app.post("/onboard-proxy", async (c) => {
         // (the Listing Settings Move-Out Date field was removed 2026-08-17; move out
         // is tracked in the Leasing pipeline and read live here).
         try {
-          const MO_PROJECT2 = "1213171760534561";
+          // Targeted search on Leasing | Human View by Unit ID (the old Move-Out
+          // project page scan missed units past the first 500 tasks); the parent
+          // Leasing task's date wins, Move-Out task as fallback (2026-08-22).
+          const HUMAN_VIEW2 = "1208297375044026";
           const MO_DATE_F2 = "1213182815411738";
           const UNIT_F3 = "1213183515622826";
           const uidMO = String((t.custom_fields ?? []).find((f: { gid: string; display_value: string | null }) => String(f.gid) === UNIT_F3)?.display_value ?? "").trim();
           if (/^\d+$/.test(uidMO)) {
-            let offM = "";
-            for (let pg = 0; pg < 5 && !dates.moveOut; pg++) {
-              const rM = await fetch(`${ASANA}/projects/${MO_PROJECT2}/tasks?completed_since=now&limit=100&opt_fields=custom_fields.gid,custom_fields.display_value${offM ? `&offset=${encodeURIComponent(offM)}` : ""}`,
-                { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
-              const jM = await rM.json().catch(() => ({}));
-              for (const tk of (jM.data ?? []) as Array<{ gid: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>) {
-                const cfm = tk.custom_fields ?? [];
-                if (String(cfm.find((f) => f.gid === UNIT_F3)?.display_value ?? "").trim() !== uidMO) continue;
-                const dM = String(cfm.find((f) => f.gid === MO_DATE_F2)?.display_value ?? "").slice(0, 10);
-                if (/^\d{4}-\d{2}-\d{2}$/.test(dM)) { dates.moveOut = dM; break; }
+            const foundM = ((await asana("GET",
+              `/workspaces/${FEED_WS}/tasks/search?projects.any=${HUMAN_VIEW2}&custom_fields.${UNIT_F3}.value=${uidMO}&completed=false&opt_fields=name,custom_fields.gid,custom_fields.display_value`)) ?? []) as Array<{ gid: string; name: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>;
+            const dOf = (tk?: { custom_fields?: Array<{ gid: string; display_value: string | null }> }) => {
+              const dM = String((tk?.custom_fields ?? []).find((f) => f.gid === MO_DATE_F2)?.display_value ?? "").slice(0, 10);
+              return /^\d{4}-\d{2}-\d{2}$/.test(dM) ? dM : "";
+            };
+            const parM = foundM.find((tk) => /^leasing\s*\|/i.test(String(tk.name)));
+            const moM = foundM.find((tk) => /^move-?out\s*\|/i.test(String(tk.name)));
+            const dGot = dOf(parM) || dOf(moM);
+            if (dGot) dates.moveOut = dGot;
+            // the date often lives ONLY on the "Move-Out |" subtask, which usually has
+            // no Unit ID so the search cannot see it - walk the master's subtasks, then
+            // fall back to that task's own due date (Brittany 2026-08-25)
+            if (!dates.moveOut && parM) {
+              const kidsM = ((await asana("GET", `/tasks/${parM.gid}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+              const mo3 = kidsM.find((k) => !k.completed && /^move-?out\s*\|/i.test(String(k.name))) ??
+                kidsM.find((k) => /^move-?out\s*\|/i.test(String(k.name)));
+              if (mo3) {
+                const mt3 = await asana("GET", `/tasks/${mo3.gid}?opt_fields=due_on,custom_fields.gid,custom_fields.display_value`);
+                dates.moveOut = dOf(mt3 as { custom_fields?: Array<{ gid: string; display_value: string | null }> }) ||
+                  (/^\d{4}-\d{2}-\d{2}$/.test(String(mt3?.due_on ?? "")) ? String(mt3.due_on) : "");
               }
-              offM = jM.next_page?.offset ?? "";
-              if (!offM) break;
             }
           }
         } catch { /* best-effort */ }
@@ -1432,7 +1500,9 @@ app.post("/onboard-proxy", async (c) => {
             const cfs = (lt.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
             const g = (re: RegExp) => String(cfs.find((f) => re.test(f.name) && f.display_value)?.display_value ?? "").slice(0, 10);
             const gn = (re: RegExp) => String(cfs.find((f) => re.test(f.name) && f.display_value)?.display_value ?? "").trim().slice(0, 12);
-            if (!dates.moveOut) dates.moveOut = g(/move\s*out/i);
+            // "completion" excluded: LU tasks also carry Move Out Completion-style
+            // fields, and grabbing one shows the wrong date to the owner
+            if (!dates.moveOut) dates.moveOut = String(cfs.find((f) => /move\s*out/i.test(f.name) && !/completion/i.test(f.name) && f.display_value)?.display_value ?? "").slice(0, 10);
             dates.listDate = g(/list date/i);
             dates.moveIn = g(/move\s*in date/i);
             dates.leaseSigned = g(/lease signed/i);
@@ -1445,7 +1515,7 @@ app.post("/onboard-proxy", async (c) => {
             const tt = await asana("GET", `/tasks/${to.gid}?opt_fields=custom_fields.gid,custom_fields.name,custom_fields.display_value`);
             const tcf = (tt.custom_fields ?? []) as Array<{ gid: string; name: string; display_value: string | null }>;
             dates.turnOverDispatched = String(tcf.find((f) => String(f.gid) === "1214522138482281")?.display_value ?? "").slice(0, 10);
-            if (!dates.moveOut) dates.moveOut = String(tcf.find((f) => /move\s*out/i.test(String(f.name)) && f.display_value)?.display_value ?? "").slice(0, 10);
+            if (!dates.moveOut) dates.moveOut = String(tcf.find((f) => /move\s*out/i.test(String(f.name)) && !/completion/i.test(String(f.name)) && f.display_value)?.display_value ?? "").slice(0, 10);
           }
           // days vacant: move out -> move in (or today while still vacant)
           if (/^\d{4}-\d{2}-\d{2}/.test(dates.moveOut ?? "")) {
@@ -1465,16 +1535,22 @@ app.post("/onboard-proxy", async (c) => {
           const uidLS = String((t.custom_fields ?? []).find((f: { gid: string; display_value: string | null }) => String(f.gid) === UNIT_ID_F)?.display_value ?? "").trim();
           let stGid = "";
           if (/^\d+$/.test(uidLS)) {
-            let offU = "";
-            for (let pg = 0; pg < 5 && !stGid; pg++) {
-              const ru = await fetch(`${ASANA}/projects/${UNIT_SETTINGS_PROJECT}/tasks?limit=100&opt_fields=custom_fields.gid,custom_fields.display_value${offU ? `&offset=${encodeURIComponent(offU)}` : ""}`,
-                { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
-              const ju = await ru.json().catch(() => ({}));
-              for (const tk of (ju.data ?? []) as Array<{ gid: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>) {
-                if (String((tk.custom_fields ?? []).find((f) => String(f.gid) === UNIT_ID_F)?.display_value ?? "").trim() === uidLS) { stGid = tk.gid; break; }
+            // Unit Settings first (multifamily); single-family / townhouse / condo units
+            // have no Unit Settings task, so fall back to Property Settings, which
+            // carries the same Unit ID field (Brittany 2026-08-20).
+            for (const settingsProj of [UNIT_SETTINGS_PROJECT, PROPERTY_SETTINGS_PROJECT]) {
+              if (stGid) break;
+              let offU = "";
+              for (let pg = 0; pg < 5 && !stGid; pg++) {
+                const ru = await fetch(`${ASANA}/projects/${settingsProj}/tasks?limit=100&opt_fields=custom_fields.gid,custom_fields.display_value${offU ? `&offset=${encodeURIComponent(offU)}` : ""}`,
+                  { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+                const ju = await ru.json().catch(() => ({}));
+                for (const tk of (ju.data ?? []) as Array<{ gid: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>) {
+                  if (String((tk.custom_fields ?? []).find((f) => String(f.gid) === UNIT_ID_F)?.display_value ?? "").trim() === uidLS) { stGid = tk.gid; break; }
+                }
+                offU = ju.next_page?.offset ?? "";
+                if (!offU) break;
               }
-              offU = ju.next_page?.offset ?? "";
-              if (!offU) break;
             }
           }
           if (!stGid) {
@@ -1537,7 +1613,14 @@ app.post("/onboard-proxy", async (c) => {
         const rnV = obRnParse(rnRaw);
         const apprOut: Record<string, string> = {};
         for (const [k, v] of Object.entries(rnV.appr)) apprOut[k] = String((v as { d: string }).d ?? "");
-        return j(headers, 200, { ok: true, address: hit.address, fields, team, approval, dates, metrics, unitSettings, turn, turnNote: turnRaw.slice(0, 2000), planStatus: psVal, approvals: apprOut, revision: { req: rnV.req, resp: rnV.resp, d: rnV.d }, lastUpdated: String(t.modified_at ?? "").slice(0, 10), createdAt: String(t.created_at ?? "").slice(0, 10) });
+        // Listing Plan note rides inside the (agent-hidden) Comps Data JSON; surface
+        // just the note to the page, like turnNote (Brittany 2026-08-27)
+        let planNote = "";
+        try {
+          const cdRaw = String(((t.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>).find((f) => /comps data/i.test(String(f.name)))?.display_value ?? "");
+          if (cdRaw) { const cdj = JSON.parse(cdRaw); planNote = scrub(String(cdj?.planNote ?? "")).slice(0, 800); }
+        } catch { /* no note */ }
+        return j(headers, 200, { ok: true, address: hit.address, fields, team, approval, dates, metrics, unitSettings, turn, turnNote: turnRaw.slice(0, 2000), planNote, planStatus: psVal, approvals: apprOut, revision: { req: rnV.req, resp: rnV.resp, d: rnV.d }, lastUpdated: String(t.modified_at ?? "").slice(0, 10), createdAt: String(t.created_at ?? "").slice(0, 10) });
       }
 
       // lsDraft: the Draft Listing section — photos, listing description, and the
@@ -1566,9 +1649,12 @@ app.post("/onboard-proxy", async (c) => {
           }))
           .filter((f) => /inspect/i.test(f.name) && (/pdf/i.test(f.ct) || /\.pdf$/i.test(f.name) || !f.ct));
         cand3.sort((a, b) => b.uploaded.localeCompare(a.uploaded));
-        const mi3 = cand3.filter((f) => /move.?in/i.test(f.name));
-        const pick = mi3[0] ?? cand3[0] ?? null;
-        if (!pick) return j(headers, 404, { error: "no_inspection", message: "No inspection report is on file for this unit yet." });
+        // kind=recent: newest ANNUAL inspection only (Brittany 2026-08-21).
+        // Default: MOVE-IN inspection only, never the newest of any kind (Brittany 2026-08-21)
+        const wantRecent = String(body.kind ?? "") === "recent";
+        const mi3 = wantRecent ? cand3.filter((f) => /annual/i.test(f.name)) : cand3.filter((f) => /move.?in/i.test(f.name));
+        const pick = mi3[0] ?? null;
+        if (!pick) return j(headers, 404, { error: "no_inspection", message: wantRecent ? "No annual inspection report is on file for this unit yet." : "No move in inspection report is on file for this unit yet." });
         const dl = await fetch(`https://api.buildium.com/v1/files/${encodeURIComponent(String(pick.id))}/downloadrequest`, { method: "POST", headers: BH3 });
         if (!dl.ok) return j(headers, 502, { error: "buildium_failed" });
         const dj = await dl.json().catch(() => ({} as Record<string, unknown>));
@@ -1750,8 +1836,8 @@ app.post("/onboard-proxy", async (c) => {
         const STEP_NAMES: Record<string, string> = { ud: "Unit Details", pr: "Client Priorities", lp: "Listing Plan", to: "Turn Over Plan", dl: "Draft Listing" };
         const step = String(body.step ?? "").trim().toLowerCase();
         if (!STEP_NAMES[step]) return j(headers, 400, { error: "bad_step" });
-        const t5 = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
-        const cf5 = (t5.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>;
+        const t5 = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.gid,custom_fields.display_value,custom_fields.people_value.gid`);
+        const cf5 = (t5.custom_fields ?? []) as Array<{ gid: string; display_value: string | null; people_value?: Array<{ gid: string }> }>;
         const accUid = String(cf5.find((f) => String(f.gid) === OB_UNIT_F)?.display_value ?? "").trim();
         const vr2 = await obValidApprover(String(body.email ?? ""), accUid);
         if (!vr2.ok) return j(headers, 403, { error: "email_mismatch", message: "That email does not match our records for this property. Use the email we have on file, or contact listings@sagareus.com." });
@@ -1769,28 +1855,53 @@ app.post("/onboard-proxy", async (c) => {
         const nums = (snap.nums ?? {}) as Record<string, unknown>;
         const sched = (Array.isArray(snap.sched) ? snap.sched : []) as Array<[number, number]>;
         const schedLines = sched.map((s) => `Week ${s[0]}: ${fm(s[1])}`);
+        // Adjustment Plan field (pushed from the workbench) = what the team executes
+        const adjPlanRaw = String(cf5.find((f) => String(f.gid) === "1217448328664674")?.display_value ?? "").trim();
         const url5 = `https://www.sagareus.com/leasing-plan?p=${slugIn}`;
+        // target dates drive the LU schedule below, so they read the Listing Settings
+        // fields rather than the page snapshot (Brittany 2026-08-25)
+        const tgtList = obDateOnly(cf5.find((f) => String(f.gid) === "1217515135889617")?.display_value);
+        const tgtMoveIn = obDateOnly(cf5.find((f) => String(f.gid) === "1217740384009759")?.display_value);
+        // team lead notes ride into the fan-out (Brittany 2026-08-27): turn note from
+        // the Turn Proposal field (only when it is a note, not decision markers), plan
+        // note from the Comps Data JSON
+        const noteTurn = (() => {
+          const raw0 = String(cf5.find((f) => String(f.gid) === LS_TURN)?.display_value ?? "").trim();
+          return raw0 && !/^\[/.test(raw0) ? raw0.replace(/\s*\n+\s*/g, " ").slice(0, 400) : "";
+        })();
+        const notePlan = (() => {
+          try {
+            const cd0 = JSON.parse(String(cf5.find((f) => String(f.gid) === "1217516812648029")?.display_value ?? "") || "{}");
+            return String(cd0?.planNote ?? "").replace(/\s*\n+\s*/g, " ").slice(0, 400);
+          } catch { return ""; }
+        })();
+        // reader-friendly blocks (format set by Brittany 2026-08-27): bulleted lines
+        // with breathing room, note first, priorities at the end
         let summary = "";
         if (step === "lp") {
-          summary = "LISTING PLAN\n" +
-            `Starting Rent: ${fm(nums.start)} | Target Rent: ${fm(nums.target)} | Minimum Rent: ${fm(nums.min)}\n` +
-            `Security Deposit: ${fm(nums.deposit)}\n\n` +
+          summary = "LISTING PLAN\n\n" +
+            (notePlan ? `* Note from Team Lead: ${notePlan}\n\n` : "") +
+            `* Starting Rent: ${fm(nums.start)} | Target Rent: ${fm(nums.target)} | Minimum Rent: ${fm(nums.min)}\n\n` +
+            `* Target List Date: ${tgtList || "TBD"} | Target Move In Date: ${tgtMoveIn || "TBD"}\n\n` +
             "WEEKLY ADJUSTMENT SCHEDULE\n" +
-            `Hold criteria, checked weekly: 10 inquiries OR 5 showings OR 1 application.\nCriteria met = hold price that week. Criteria missed = adjust down ${String(nums.pct ?? "3")}%:\n` +
-            schedLines.join("\n") +
+            `Hold criteria, checked weekly: 10 inquiries OR 5 showings OR 1 application.\nCriteria met = hold price that week. Criteria missed = take the action below:\n` +
+            // the team's real plan is the Adjustment Plan field the workbench pushed;
+            // the generic price ladder is only a fallback (Brittany 2026-08-22)
+            (adjPlanRaw ? adjPlanRaw : schedLines.join("\n")) +
             `\nNever below Minimum Rent (${fm(nums.min)}). Below-minimum action requires owner contact.`;
         } else if (step === "to") {
-          summary = "TURN OVER PLAN\n" +
-            "Standard: Rent Ready + Cleaning (minimum standard)\n" +
-            (Number(snap.budget) > 0 ? `Turn budget AUTHORIZED by the owner: ${fm(snap.budget)} (estimates approved by priority up to this total)\n` : "") +
-            (snap.depositHeld != null && snap.depositHeld !== "" ? `Deposit Balance held: ${fm(snap.depositHeld)}\n` : "") +
-            "Repairs over the authorized amount, appliances, flooring, and cabinet or counter replacement require owner approval";
+          summary = "TURN OVER PLAN\n\n" +
+            (noteTurn ? `* Note from Team Lead: ${noteTurn}\n\n` : "") +
+            "* Standard: Rent Ready + Cleaning (minimum standard)\n\n" +
+            (Number(snap.budget) > 0 ? `* Turn budget authorized by the owner: ${fm(snap.budget)} (estimates approved by priority up to this total)\n\n` : "") +
+            (snap.depositHeld != null && snap.depositHeld !== "" ? `* Deposit Balance held: ${fm(snap.depositHeld)}\n\n` : "");
+          summary = summary.trimEnd();
         }
         // comment on the Listing task = the human record
         const head5 = `${STEP_NAMES[step]} approved by ${accEmail} on ${day5}` + (vr2.isTeam ? " (team lead approval)" : "");
-        const prioBlock = prioLines.length ? "CLIENT PRIORITIES\n" + prioLines.join("\n") + "\n\n" : "";
+        const prioBlock = prioLines.length ? "CLIENT PRIORITIES\n" + prioLines.join("\n-\n") : "";
         await asana("POST", `/tasks/${hit.gid}/stories`, {
-          text: head5 + (summary ? `\n\n${prioBlock}${summary}` : "") + "\n\nApproved on the Leasing Plan page. Done by Claude on behalf of the owner's click.",
+          text: head5 + (summary ? `\n\n${summary}` : "") + (prioBlock ? `\n\n${prioBlock}` : "") + "\n\nApproved on the Leasing Plan page. Done by Claude on behalf of the owner's click.",
         }).catch(() => null);
         // state update: section approvals live in the revision-note field
         const rnRaw5 = String(cf5.find((f) => String(f.gid) === OB_RN_F)?.display_value ?? "");
@@ -1823,20 +1934,106 @@ app.post("/onboard-proxy", async (c) => {
         const fanNotes: string[] = [];
         try {
           if (step === "to" && /^\d+$/.test(accUid)) {
-            const toTask = await obTaskByUnitId("1213171760535170", accUid);
+            // prefer an OPEN Turn Over task; the project search can only see the prior
+            // cycle's (completed) one, so fall through to the master walk (2026-08-22)
+            const toDirect = await obTaskByUnitId("1213171760535170", accUid) as { gid: string; name: string; completed?: boolean } | null;
+            const toTask = (toDirect && !toDirect.completed) ? toDirect
+              : ((await obLeasingSubByUnitId(accUid, /^turn\s*over\s*\|/i)) ?? toDirect);
+            // TOC + move out date resolve regardless of the Turn Over task: Process
+            // Deposit below still schedules when the turn task is missing (2026-08-25)
+            const tocGid = String(cf5.find((f) => String(f.gid) === "1217446729380923")?.people_value?.[0]?.gid ?? "");
+            if (!tocGid) fanNotes.push("no Turn Over Coordinator on Listing Settings, turn over left unassigned");
+            const masterT = await obLeasingMasterByUnitId(accUid);
+            let moDateT = "";
+            if (masterT) {
+              const mCfT = ((await asana("GET", `/tasks/${masterT.gid}?opt_fields=custom_fields.gid,custom_fields.display_value`))?.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>;
+              moDateT = obDateOnly(mCfT.find((f) => String(f.gid) === "1213182815411738")?.display_value);
+            }
+            if (!moDateT) fanNotes.push("no Tenant Move-Out Date, turn over due date skipped");
             if (toTask) {
-              const block = `--- Turn Over Plan (approved ${day5}${vr2.isTeam ? " by team lead" : ""}) ---\n` + prioBlock + summary + `\nLeasing Plan: ${url5}`;
-              const cur = await asana("GET", `/tasks/${toTask.gid}?opt_fields=notes`);
-              await asana("PUT", `/tasks/${toTask.gid}`, { notes: obBlockMerge(String(cur.notes ?? ""), "Turn Over Plan", block) });
-              fanNotes.push("turnover description updated");
+              // pinned comment, not a description block (Brittany 2026-08-19) — same shape as the LU one
+              const block = `--- Turn Over Plan (approved ${day5}${vr2.isTeam ? " by team lead" : ""}) ---\n` + summary + `\n\nLeasing Plan: ${url5}` + (prioBlock ? `\n${prioBlock}` : "");
+              const toStory = await asana("POST", `/tasks/${toTask.gid}/stories`, { text: block });
+              if (toStory?.gid) { await asana("PUT", `/stories/${toStory.gid}`, { is_pinned: true }).catch(() => null); fanNotes.push("turnover comment pinned"); }
+
+              // Turn Over Plan approval hands the turn to its coordinator (Brittany
+              // 2026-08-25): TOC from Listing Settings, due at move out, and the human
+              // board moves to Pending Turn Over.
+              const pT: Record<string, unknown> = {};
+              if (tocGid) pT.assignee = tocGid;
+              if (moDateT) pT.due_on = moDateT;
+              if (Object.keys(pT).length) {
+                try { await asana("PUT", `/tasks/${toTask.gid}`, pT); fanNotes.push(`turn over${tocGid ? " assigned to coordinator" : ""}${moDateT ? ` due ${moDateT}` : ""}`); }
+                catch { fanNotes.push("turn over assign/due failed"); }
+              }
+              // the TOC also owns the turn's subtasks (same assignee, same clock);
+              // dividers and completed items stay untouched
+              if (tocGid) {
+                try {
+                  const toSubs = ((await asana("GET", `/tasks/${toTask.gid}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+                  let nSub = 0;
+                  for (const s of toSubs) {
+                    if (s.completed || /^==/.test(String(s.name).trim())) continue;
+                    try { await asana("PUT", `/tasks/${s.gid}`, { assignee: tocGid }); nSub++; } catch { /* per-subtask, keep going */ }
+                  }
+                  if (nSub) fanNotes.push(`${nSub} turn over subtasks assigned to coordinator`);
+                } catch { fanNotes.push("turn over subtask assignment failed"); }
+              }
+              // the TURN OVER task goes into Pending Turn Over on the human board;
+              // the Leasing master stays in the Untitled section (Brittany 2026-08-25)
+              try {
+                await asana("POST", "/sections/1209370106064141/addTask", { task: toTask.gid });
+                fanNotes.push("turn over task moved to Pending Turn Over");
+              } catch { fanNotes.push("Pending Turn Over section move failed"); }
             } else fanNotes.push("no turn over task");
+            {
+              // Process Deposit is the coordinator's too (Brittany 2026-08-25): task and
+              // subtasks due two weeks after move out, and the task goes into Security
+              // Deposits on the human board.
+              try {
+                if (!masterT) fanNotes.push("no open Leasing master, process deposit skipped");
+                else {
+                  const pdSubs = ((await asana("GET", `/tasks/${masterT.gid}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+                  const pdTask = pdSubs.find((s) => !s.completed && /^process\s*deposit\s*\|/i.test(s.name));
+                  if (!pdTask) fanNotes.push("no open Process Deposit subtask");
+                  else {
+                    const pdDue = moDateT ? obShiftDate(moDateT, 14) : "";
+                    const pPD: Record<string, unknown> = {};
+                    if (tocGid) pPD.assignee = tocGid;
+                    if (pdDue) pPD.due_on = pdDue;
+                    if (Object.keys(pPD).length) {
+                      try { await asana("PUT", `/tasks/${pdTask.gid}`, pPD); fanNotes.push(`process deposit${tocGid ? " assigned to coordinator" : ""}${pdDue ? ` due ${pdDue}` : ""}`); }
+                      catch { fanNotes.push("process deposit assign/due failed"); }
+                    }
+                    try {
+                      const pdKids = ((await asana("GET", `/tasks/${pdTask.gid}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+                      let nPD = 0;
+                      for (const s of pdKids) {
+                        if (s.completed || /^==/.test(String(s.name).trim())) continue;
+                        const pK: Record<string, unknown> = {};
+                        if (tocGid) pK.assignee = tocGid;
+                        if (pdDue) pK.due_on = pdDue;
+                        if (!Object.keys(pK).length) break;
+                        try { await asana("PUT", `/tasks/${s.gid}`, pK); nPD++; } catch { /* per-subtask, keep going */ }
+                      }
+                      if (nPD) fanNotes.push(`${nPD} process deposit subtasks scheduled`);
+                    } catch { fanNotes.push("process deposit subtask scheduling failed"); }
+                    try {
+                      await asana("POST", "/sections/1209321278531017/addTask", { task: pdTask.gid });
+                      fanNotes.push("process deposit moved to Security Deposits");
+                    } catch { fanNotes.push("Security Deposits section move failed"); }
+                  }
+                }
+              } catch { fanNotes.push("process deposit error"); }
+            }
           }
           if (step === "lp" && /^\d+$/.test(accUid)) {
             const lu5 = await obLuByUnitId(accUid);
             if (lu5) {
-              const block = `--- Leasing Plan (approved ${day5}${vr2.isTeam ? " by team lead" : ""}) ---\n` + prioBlock + summary + `\nLeasing Plan: ${url5}`;
-              const subs5 = await asana("GET", `/tasks/${lu5.gid}/subtasks?limit=100&opt_fields=name`);
-              const war = ((subs5 ?? []) as Array<{ gid: string; name: string }>).find((s) => /weekly activity report/i.test(s.name));
+              const block = `--- Leasing Plan (approved ${day5}${vr2.isTeam ? " by team lead" : ""}) ---\n` + summary + `\n\nLeasing Plan: ${url5}` + (prioBlock ? `\n${prioBlock}` : "");
+              const subs5 = await asana("GET", `/tasks/${lu5.gid}/subtasks?limit=100&opt_fields=name,completed`);
+              const subList = ((subs5 ?? []) as Array<{ gid: string; name: string; completed?: boolean }>);
+              const war = subList.find((s) => /weekly activity report/i.test(s.name));
               if (war) {
                 const curW = await asana("GET", `/tasks/${war.gid}?opt_fields=notes`);
                 await asana("PUT", `/tasks/${war.gid}`, { notes: obBlockMerge(String(curW.notes ?? ""), "Leasing Plan", block) });
@@ -1844,6 +2041,92 @@ app.post("/onboard-proxy", async (c) => {
               } else fanNotes.push("no weekly activity report subtask");
               const story = await asana("POST", `/tasks/${lu5.gid}/stories`, { text: block });
               if (story?.gid) { await asana("PUT", `/stories/${story.gid}`, { is_pinned: true }).catch(() => null); fanNotes.push("lu comment pinned"); }
+
+              // Approval starts the listing clock (Brittany 2026-08-25): the LU task goes
+              // to the Team Lead due two days before we intend to list, and the two
+              // go-live subtasks land on the target list date itself.
+              const leadGid5 = String(cf5.find((f) => String(f.gid) === "1217446711292696")?.people_value?.[0]?.gid ?? "");
+              const luDue = tgtList ? obShiftDate(tgtList, -2) : "";
+              const luPatch: Record<string, unknown> = {};
+              if (leadGid5) luPatch.assignee = leadGid5;
+              if (luDue) luPatch.due_on = luDue;
+              if (Object.keys(luPatch).length) {
+                try {
+                  await asana("PUT", `/tasks/${lu5.gid}`, luPatch);
+                  fanNotes.push(`LU${leadGid5 ? " assigned to team lead" : ""}${luDue ? ` due ${luDue}` : ""}`);
+                } catch { fanNotes.push("LU assign/due failed"); }
+              }
+              if (!leadGid5) fanNotes.push("no Team Lead on Listing Settings, LU left unassigned");
+              if (!tgtList) fanNotes.push("no Target List Date, due dates skipped");
+              else {
+                // Go Live is Mary's standing job; the owner notification goes out the same day
+                const MARY = "1203402971273034";
+                const goLive = subList.find((s) => !s.completed && /^go live\s*\|/i.test(s.name) && /buildium/i.test(s.name));
+                if (goLive) {
+                  try {
+                    await asana("PUT", `/tasks/${goLive.gid}`, { assignee: MARY, due_on: tgtList });
+                    fanNotes.push(`go live assigned to Mary, due ${tgtList}`);
+                  } catch { fanNotes.push("go live update failed"); }
+                } else fanNotes.push("no open Go Live subtask");
+                const listedNote = subList.find((s) => !s.completed && /^email\s*\|/i.test(s.name) && /property listed/i.test(s.name));
+                if (listedNote) {
+                  try {
+                    await asana("PUT", `/tasks/${listedNote.gid}`, { due_on: tgtList });
+                    fanNotes.push(`property listed notification due ${tgtList}`);
+                  } catch { fanNotes.push("property listed notification update failed"); }
+                } else fanNotes.push("no open Property Listed subtask");
+              }
+
+              // Move out side of the same approval: the Leasing Agent owns the move out
+              // and its two lead-time subtasks, and the property moves into Move Out
+              // Pending on the human board (Brittany 2026-08-25).
+              try {
+                const master = await obLeasingMasterByUnitId(accUid);
+                if (!master) fanNotes.push("no open Leasing master, move out schedule skipped");
+                else {
+                  const agentGid = String(cf5.find((f) => String(f.gid) === "1217446729380828")?.people_value?.[0]?.gid ?? "");
+                  if (!agentGid) fanNotes.push("no Leasing Agent on Listing Settings, move out subtasks left unassigned");
+                  const mSubs = ((await asana("GET", `/tasks/${master.gid}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+                  // "^move out |" excludes the sibling "Pre Move-Out | ..." task
+                  const moTask = mSubs.find((s) => !s.completed && /^move[-\s]*out\s*\|/i.test(s.name));
+                  // move out date lives on the Leasing master, not on Listing Settings
+                  const mCf = ((await asana("GET", `/tasks/${master.gid}?opt_fields=custom_fields.gid,custom_fields.display_value`))?.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>;
+                  const moDate = obDateOnly(mCf.find((f) => String(f.gid) === "1213182815411738")?.display_value);
+                  if (!moDate) fanNotes.push("no Tenant Move-Out Date, move out due dates skipped");
+                  if (moTask) {
+                    const p: Record<string, unknown> = {};
+                    if (agentGid) p.assignee = agentGid;
+                    if (moDate) p.due_on = moDate;
+                    if (Object.keys(p).length) {
+                      try { await asana("PUT", `/tasks/${moTask.gid}`, p); fanNotes.push(`move out${agentGid ? " assigned to agent" : ""}${moDate ? ` due ${moDate}` : ""}`); }
+                      catch { fanNotes.push("move out update failed"); }
+                    }
+                    // lead-time subtasks hang off the Move-Out task, not the master
+                    const moSubs = ((await asana("GET", `/tasks/${moTask.gid}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+                    const LEAD: Array<[RegExp, number, string]> = [
+                      [/^text\s*\|.*schedule\s*move\s*out/i, -14, "text tenant"],
+                      [/^install\s*\|.*key\s*box/i, -7, "install keybox"],
+                    ];
+                    for (const [re2, off, label] of LEAD) {
+                      const sub = moSubs.find((s) => !s.completed && re2.test(s.name));
+                      if (!sub) { fanNotes.push(`no open ${label} subtask`); continue; }
+                      const due2 = moDate ? obShiftDate(moDate, off) : "";
+                      const p2: Record<string, unknown> = {};
+                      if (agentGid) p2.assignee = agentGid;
+                      if (due2) p2.due_on = due2;
+                      if (!Object.keys(p2).length) continue;
+                      try { await asana("PUT", `/tasks/${sub.gid}`, p2); fanNotes.push(`${label}${due2 ? ` due ${due2}` : ""}`); }
+                      catch { fanNotes.push(`${label} update failed`); }
+                    }
+                    // the MOVE-OUT task goes into Move Out Pending on the human board;
+                    // the Leasing master stays in the Untitled section (Brittany 2026-08-25)
+                    try {
+                      await asana("POST", "/sections/1209043324530975/addTask", { task: moTask.gid });
+                      fanNotes.push("move out task moved to Move Out Pending");
+                    } catch { fanNotes.push("Move Out Pending section move failed"); }
+                  } else fanNotes.push("no open Move-Out subtask");
+                }
+              } catch { fanNotes.push("move out schedule error"); }
             } else fanNotes.push("no LU task");
           }
         } catch { fanNotes.push("fanout error"); }
