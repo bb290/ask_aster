@@ -453,6 +453,17 @@ const OB_PS_F = "1217569409567702";
 const OB_PS_OPT: Record<string, string> = { Draft: "1217569409567703", Sent: "1217569409567704", Accepted: "1217569409567705", "Team Lead Approved": "1217569409567706", Revised: "1217569409567707" };
 const OB_RN_F = "1217569237386930";
 const OB_ADJ_SECTION = "1217553095980495";
+// Open owner change requests on a Listing task: the incomplete "Modify {Section} | ..."
+// subtasks lsRequest creates. While any is open, Modify and Approve are mutually
+// exclusive (Brittany 2026-09-02): the plan on screen is not the plan the owner
+// wants, so approvals pause until the team makes the change and re-sends.
+async function obOpenMods(gid: string): Promise<string[]> {
+  const subs = await asana("GET", `/tasks/${gid}/subtasks?limit=100&opt_fields=name,completed`);
+  return ((subs ?? []) as Array<{ name: string; completed?: boolean }>)
+    .filter((s) => !s.completed && /^modify\s/i.test(String(s.name)))
+    .map((s) => String(s.name).replace(/\s*\|.*$/, "").replace(/^modify\s*/i, "").trim() || "Plan")
+    .slice(0, 6);
+}
 // field-staff priority definitions (locked with Brittany 2026-08-17)
 const OB_PRIO_DEF: Record<string, string> = {
   "Listing:Maximize Rent": "price above market and hold; slower adjustments; owner accepts longer vacancy to chase top rent",
@@ -464,6 +475,12 @@ const OB_PRIO_DEF: Record<string, string> = {
   "Risk:Selective": "hold the line on terms: full deposit, no move in specials or rent credits, standard pet policy only; strict screening at the criteria line",
   "Risk:Balanced": "standard deposit and screening; a modest concession (move in special or rent credit) or a small pet allowance stretch may be used if activity stalls",
   "Risk:Flexible": "use the levers to fill the unit: reduced deposit, move in special or rent credit, and expanded pet allowances (number, type, and/or weight); terms priced to compensate",
+  "Listing:Lean Maximize Rent": "leans toward top rent: price a step above market, adjust patiently; owner accepts some extra vacancy",
+  "Listing:Lean Minimize Vacancy": "leans toward a faster lease: price a step sharper than market and adjust a little earlier than standard",
+  "Turn:Lean Essentials": "essentials first; add only the low-cost fixes that clearly help the unit show",
+  "Turn:Lean Upgrade": "balanced scope plus estimates for targeted upgrades where they raise rent or cut future maintenance",
+  "Risk:Lean Selective": "mostly hold the line on terms; one modest concession may be used if activity stalls, screening stays at the criteria line",
+  "Risk:Lean Flexible": "open the common levers a little earlier (modest concession, small pet stretch); deposit and criteria stay standard",
 };
 async function obTaskByUnitId(projectGid: string, uid: string): Promise<{ gid: string; name: string } | null> {
   if (!/^\d+$/.test(uid)) return null;
@@ -1620,7 +1637,11 @@ app.post("/onboard-proxy", async (c) => {
           const cdRaw = String(((t.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>).find((f) => /comps data/i.test(String(f.name)))?.display_value ?? "");
           if (cdRaw) { const cdj = JSON.parse(cdRaw); planNote = scrub(String(cdj?.planNote ?? "")).slice(0, 800); }
         } catch { /* no note */ }
-        return j(headers, 200, { ok: true, address: hit.address, fields, team, approval, dates, metrics, unitSettings, turn, turnNote: turnRaw.slice(0, 2000), planNote, planStatus: psVal, approvals: apprOut, revision: { req: rnV.req, resp: rnV.resp, d: rnV.d }, lastUpdated: String(t.modified_at ?? "").slice(0, 10), createdAt: String(t.created_at ?? "").slice(0, 10) });
+        // open change requests pause the approve buttons on the page; best-effort
+        // here because lsAccept/lsApprove enforce the same gate server-side
+        let pendingMods: string[] = [];
+        try { pendingMods = await obOpenMods(hit.gid); } catch { /* view stays usable */ }
+        return j(headers, 200, { ok: true, address: hit.address, fields, team, approval, dates, metrics, unitSettings, turn, turnNote: turnRaw.slice(0, 2000), planNote, planStatus: psVal, approvals: apprOut, revision: { req: rnV.req, resp: rnV.resp, d: rnV.d }, pendingMods, lastUpdated: String(t.modified_at ?? "").slice(0, 10), createdAt: String(t.created_at ?? "").slice(0, 10) });
       }
 
       // lsDraft: the Draft Listing section — photos, listing description, and the
@@ -1777,6 +1798,12 @@ app.post("/onboard-proxy", async (c) => {
       if (!who && action !== "lsRequest" && action !== "lsAccept") return j(headers, 400, { error: "missing_name", message: "Add your name first." });
 
       if (action === "lsApprove") {
+        try {
+          const openMods0 = await obOpenMods(hit.gid);
+          if (openMods0.length) {
+            return j(headers, 409, { error: "mods_pending", message: "You have a change request in progress (" + openMods0.join(", ") + "). Approvals are paused while we update the plan; we will email you when the updated plan is ready to approve." });
+          }
+        } catch (e) { console.error("pending-mod check failed (lsApprove):", e); }
         const today = obDuePT(0);
         try { await asana("PUT", `/tasks/${hit.gid}`, { custom_fields: { [LS_APPROVAL]: { date: today } } }); } catch { /* field may be blocked; the comment still lands */ }
         await asana("POST", `/tasks/${hit.gid}/stories`, {
@@ -1841,6 +1868,14 @@ app.post("/onboard-proxy", async (c) => {
         const accUid = String(cf5.find((f) => String(f.gid) === OB_UNIT_F)?.display_value ?? "").trim();
         const vr2 = await obValidApprover(String(body.email ?? ""), accUid);
         if (!vr2.ok) return j(headers, 403, { error: "email_mismatch", message: "That email does not match our records for this property. Use the email we have on file, or contact listings@sagareus.com." });
+        // Modify blocks Approve until the team makes the change and re-sends
+        // (fail-open on an Asana blip; the page lock still guards the main path)
+        try {
+          const openMods = await obOpenMods(hit.gid);
+          if (openMods.length) {
+            return j(headers, 409, { error: "mods_pending", message: "You have a change request in progress (" + openMods.join(", ") + "). Approvals are paused while we update the plan; we will email you when the updated plan is ready to approve." });
+          }
+        } catch (e) { console.error("pending-mod check failed (lsAccept):", e); }
         const accEmail = String(body.email ?? "").trim().toLowerCase().slice(0, 120);
         const day5 = obDuePT(0);
         const snap = (body.snapshot ?? {}) as Record<string, unknown>;
@@ -1914,10 +1949,14 @@ app.post("/onboard-proxy", async (c) => {
         if ((step === "pr" || step === "lp") && prio.length) {
           const PRI_F = "1217535711314799";
           const PRI_O: Record<string, string> = {
-            "Listing - Maximize Rent": "1217535711314800", "Listing - Balanced": "1217535711314801",
-            "Listing - Minimize Vacancy": "1217535711314802", "Turn - Essentials Only": "1217535711314803",
-            "Turn - Balanced": "1217535711314804", "Turn - Upgrade": "1217535711314805",
-            "Risk - Selective": "1217535711314806", "Risk - Balanced": "1217535711314807",
+            "Listing - Maximize Rent": "1217535711314800", "Listing - Lean Maximize Rent": "1218113013664327",
+            "Listing - Balanced": "1217535711314801", "Listing - Lean Minimize Vacancy": "1218113013692703",
+            "Listing - Minimize Vacancy": "1217535711314802",
+            "Turn - Essentials Only": "1217535711314803", "Turn - Lean Essentials": "1218112988657402",
+            "Turn - Balanced": "1217535711314804", "Turn - Lean Upgrade": "1218112988504655",
+            "Turn - Upgrade": "1217535711314805",
+            "Risk - Selective": "1217535711314806", "Risk - Lean Selective": "1218122442685208",
+            "Risk - Balanced": "1217535711314807", "Risk - Lean Flexible": "1218112988504657",
             "Risk - Flexible": "1217535711314808",
           };
           const pg = prio.map((p) => PRI_O[`${String(p.k ?? "")} - ${String(p.name ?? "")}`]).filter(Boolean);
@@ -1966,19 +2005,9 @@ app.post("/onboard-proxy", async (c) => {
                 try { await asana("PUT", `/tasks/${toTask.gid}`, pT); fanNotes.push(`turn over${tocGid ? " assigned to coordinator" : ""}${moDateT ? ` due ${moDateT}` : ""}`); }
                 catch { fanNotes.push("turn over assign/due failed"); }
               }
-              // the TOC also owns the turn's subtasks (same assignee, same clock);
-              // dividers and completed items stay untouched
-              if (tocGid) {
-                try {
-                  const toSubs = ((await asana("GET", `/tasks/${toTask.gid}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
-                  let nSub = 0;
-                  for (const s of toSubs) {
-                    if (s.completed || /^==/.test(String(s.name).trim())) continue;
-                    try { await asana("PUT", `/tasks/${s.gid}`, { assignee: tocGid }); nSub++; } catch { /* per-subtask, keep going */ }
-                  }
-                  if (nSub) fanNotes.push(`${nSub} turn over subtasks assigned to coordinator`);
-                } catch { fanNotes.push("turn over subtask assignment failed"); }
-              }
+              // ONLY the main Turn Over task is assigned to the coordinator; its
+              // subtasks stay unassigned so the TOC dispatches them deliberately
+              // (Brittany 2026-09-03, reversing the 2026-08-25 blanket assignment)
               // the TURN OVER task goes into Pending Turn Over on the human board;
               // the Leasing master stays in the Untitled section (Brittany 2026-08-25)
               try {

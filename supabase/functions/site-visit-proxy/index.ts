@@ -2148,6 +2148,12 @@ app.post("*", async (c) => {
                 const bmemo = String(b0.Memo ?? "");
                 const lines2 = (b0.Lines ?? []) as Array<Record<string, unknown>>;
                 for (const ln of lines2) {
+                  // Batch vendor bills carry lines for MANY properties, and the bills
+                  // query returns any bill with a line touching this property. Only
+                  // this property's lines belong in its flat fee (bitten 2026-09-02:
+                  // unit 462300 pulled City of Auburn lines from an 8/2025 batch).
+                  const ae0 = (ln.AccountingEntity ?? {}) as Record<string, unknown>;
+                  if (ae0.Id != null && String(ae0.Id) !== String(pid)) continue;
                   const glo = (ln.GLAccount ?? {}) as Record<string, unknown>;
                   const gl = String(glo.Name ?? "") || (glName[String(glo.Id ?? "")] ?? "");
                   const amt = Number(ln.Amount);
@@ -2267,11 +2273,15 @@ app.post("*", async (c) => {
       // Client Priorities multi-select: option names -> option gids (field 1217535711314799)
       const PRI_FIELD = "1217535711314799";
       const PRI_OPTS: Record<string, string> = {
-        "Listing - Maximize Rent": "1217535711314800", "Listing - Balanced": "1217535711314801",
-        "Listing - Minimize Vacancy": "1217535711314802", "Turn - Essentials Only": "1217535711314803",
-        "Turn - Balanced": "1217535711314804", "Turn - Upgrade": "1217535711314805",
-        "Risk - Selective": "1217535711314806", "Risk - Balanced": "1217535711314807",
-        "Risk - Flexible": "1217535711314808",
+    "Listing - Maximize Rent": "1217535711314800", "Listing - Lean Maximize Rent": "1218113013664327",
+    "Listing - Balanced": "1217535711314801", "Listing - Lean Minimize Vacancy": "1218113013692703",
+    "Listing - Minimize Vacancy": "1217535711314802",
+    "Turn - Essentials Only": "1217535711314803", "Turn - Lean Essentials": "1218112988657402",
+    "Turn - Balanced": "1217535711314804", "Turn - Lean Upgrade": "1218112988504655",
+    "Turn - Upgrade": "1217535711314805",
+    "Risk - Selective": "1217535711314806", "Risk - Lean Selective": "1218122442685208",
+    "Risk - Balanced": "1217535711314807", "Risk - Lean Flexible": "1218112988504657",
+    "Risk - Flexible": "1217535711314808",
       };
       const cf: Record<string, unknown> = {};
       for (const [k, gidF] of [["assignLead", "1217446711292696"], ["assignAgent", "1217446729380828"], ["assignToc", "1217446729380923"]] as const) {
@@ -3728,14 +3738,26 @@ app.post("*", async (c) => {
           const units2 = ((await unr.json().catch(() => [])) as Array<Record<string, unknown>>) ?? [];
           const match = units2.find((u2) => String(u2.UnitBedrooms ?? "") === beds);
           if (!match) continue;
-          const br = await fetch(`https://api.buildium.com/v1/bills?propertyids=${encodeURIComponent(String(cp.Id))}&frompaiddate=${dFrom}&topaiddate=${dTo}&limit=100`, { headers: bh });
+          // entitytype/entityid is the property scope that actually works on /v1/bills
+          // (utilData proved it; propertyids returns an unscoped list)
+          const br = await fetch(`https://api.buildium.com/v1/bills?entitytype=Rental&entityid=${encodeURIComponent(String(cp.Id))}&frompaiddate=${dFrom}&topaiddate=${dTo}&limit=100`, { headers: bh });
           if (!br.ok) continue;
           const bl = ((await br.json().catch(() => [])) as Array<Record<string, unknown>>) ?? [];
+          // Count exactly what a comparable pull would load: this property's own
+          // lines on the two utility GL subaccounts. Counting any utility-ish line
+          // on multi-property batch bills advertised comparables whose real pull
+          // is empty or full of other properties' cities (462300, 2026-09-02).
           let nBills = 0;
+          const FF_GL2 = /(gas\s*\/\s*electric)|(water[,\s]+sewer[,\s]+garbage)/i;
           for (const b0 of bl) {
-            const memo = String(b0.Memo ?? "");
             const lines = (b0.Lines ?? []) as Array<Record<string, unknown>>;
-            if (UTS.test(memo) || lines.some((ln) => UTS.test(glName[String(((ln.GLAccount ?? {}) as Record<string, unknown>).Id ?? ln.GlAccountId ?? "")] ?? ""))) nBills++;
+            if (lines.some((ln) => {
+              const ae1 = (ln.AccountingEntity ?? {}) as Record<string, unknown>;
+              if (ae1.Id != null && String(ae1.Id) !== String(cp.Id)) return false;
+              const glo1 = (ln.GLAccount ?? {}) as Record<string, unknown>;
+              const gl1 = String(glo1.Name ?? "") || (glName[String(glo1.Id ?? ln.GlAccountId ?? "")] ?? "");
+              return FF_GL2.test(gl1);
+            })) nBills++;
           }
           if (!nBills) continue;
           found.push({
