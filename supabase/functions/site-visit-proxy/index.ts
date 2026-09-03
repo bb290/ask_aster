@@ -1452,7 +1452,36 @@ app.post("*", async (c) => {
           stamped = true;
         }
       } catch { /* the story already carries the record */ }
-      return j(headers, 200, { ok: true, storyGid: storyD?.gid ?? null, criteriaMet, modDate, stamped });
+      // Listing Settings mirrors the live listing after a weekly modification
+      // (Brittany 2026-09-03): changed values write to their LS fields so the
+      // settings match what is actually listed. Starting Rent stays the plan's
+      // start; Current Listed Rent (field created 2026-09-03 on Brittany's
+      // instruction) tracks the live price.
+      const lsSync: string[] = [];
+      const uidD = String(body.unitId ?? "").replace(/\D/g, "");
+      const changesD: Array<[string, string, unknown, "num" | "text"]> = [
+        ["1218160030285805", "Current Listed Rent", body.newRent, "num"],
+        ["1217515853935577", "Security Deposit", body.newDeposit, "num"],
+        ["1217446589879104", "Concessions", body.newConcession, "text"],
+        ["1217446589255794", "Pet Policy", body.newPets, "text"],
+        ["1217446710797252", "Last Month Rent", body.newLastMo, "text"],
+      ];
+      const wantedD = changesD.filter(([, , v, ty]) => ty === "num" ? (v != null && Number.isFinite(Number(v))) : String(v ?? "").trim() !== "");
+      if (uidD && wantedD.length) {
+        try {
+          const sHits2 = ((await asana("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=1217446710785429&custom_fields.1213183515622826.value=${uidD}&opt_fields=name`)) ?? []) as Array<{ gid: string }>;
+          const lsGidD = sHits2[0]?.gid ?? "";
+          if (!lsGidD) lsSync.push("no Listing Settings task for this unit");
+          else {
+            for (const [gidF, label, v, ty] of wantedD) {
+              const val = ty === "num" ? Math.round(Number(v)) : String(v).trim().slice(0, 900);
+              try { await asana("PUT", `/tasks/${lsGidD}`, { custom_fields: { [gidF]: val } }); lsSync.push(`${label} updated`); }
+              catch { lsSync.push(`${label} write failed`); }
+            }
+          }
+        } catch { lsSync.push("Listing Settings lookup failed"); }
+      }
+      return j(headers, 200, { ok: true, storyGid: storyD?.gid ?? null, criteriaMet, modDate, stamped, lsSync });
     }
 
     // ---------- warFeedback: staff feedback on the WAR tool -> subtask on the WAR dev task ----------
