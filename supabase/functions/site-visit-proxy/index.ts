@@ -3064,7 +3064,7 @@ app.post("*", async (c) => {
         keyboxSaved,
         turnProposalSaved,
         lsGid: lsGidOut,
-        makeReadyUrl: uidMR ? `https://www.sagareus.com/make-ready?u=${uidMR}` : "",
+        makeReadyUrl: uidMR ? `https://www.sagareus.com/make-ready?u=${uidMR}&t=${todayStr.slice(0, 7)}` : "",
         reportDate: todayStr,
       });
     }

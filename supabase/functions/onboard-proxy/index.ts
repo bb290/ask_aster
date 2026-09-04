@@ -2377,12 +2377,35 @@ app.post("/onboard-proxy", async (c) => {
       } catch { /* chip shows nothing */ }
       // newest dispatch report comment
       let report = "";
+      // optional &t=YYYY-MM pins WHICH turnover this link shows (a unit turns
+      // over more than once); no match falls back to the newest report
+      const ymM = (String(body.ym ?? "").match(/^\d{4}-\d{2}$/) ?? [""])[0];
+      const videosM: string[] = [];
+      const extraPhotos: string[] = [];
       try {
         const stM = ((await asana("GET", `/tasks/${toM.gid}/stories?limit=100&opt_fields=type,text,created_at`)) ?? []) as Array<{ type: string; text?: string; created_at?: string }>;
+        let newest = "";
         for (const x of stM) {
           const tx = String(x.text ?? "");
-          if (x.type === "comment" && /^(move out condition inspection|turnover dispatch)/i.test(tx.trim())) report = tx;
+          if (x.type !== "comment") continue;
+          // walkthrough videos live in storage; collect them from any comment
+          for (const vm of tx.matchAll(/https:\/\/\S+\/inspections\/mo-videos\/\S+/g)) {
+            const u2 = String(vm[0]).replace(/[),.]+$/, "").slice(0, 500);
+            // photo backups share the storage path; images are not videos
+            if (/\.(jpe?g|png|webp|heic)(\?|$)/i.test(u2)) continue;
+            if (!videosM.includes(u2)) videosM.push(u2);
+          }
+          // standalone PHOTO BACKUPS comments (backfilled dispatches) count too
+          if (/^PHOTO BACKUPS/i.test(tx.trim())) {
+            for (const l of tx.split(/\r?\n/)) { const t3 = l.trim(); if (/^https:\/\//.test(t3)) extraPhotos.push(t3.slice(0, 500)); }
+            continue;
+          }
+          if (!/^(move out condition inspection|turnover dispatch)/i.test(tx.trim())) continue;
+          newest = tx;
+          const dLine = (tx.split(/\r?\n/)[1] ?? "").match(/\d{4}-\d{2}/);
+          if (ymM && dLine && dLine[0] === ymM) report = tx;
         }
+        if (!report) report = newest;
       } catch { /* handled below */ }
       if (!report) return j(headers, 404, { error: "no_report", message: "The dispatch report is not posted yet. Contact listings@sagareus.com with any questions." });
       // parse: title line, "date -- address" line, then sections split on known headers
@@ -2416,7 +2439,8 @@ app.post("/onboard-proxy", async (c) => {
       return j(headers, 200, {
         ok: true, address: addressM, dispatched: dispatchedM, reportDate: reportDateM, inspector: inspectorM,
         sections: sectionsM.filter((s2) => s2.lines.length).slice(0, 12),
-        photos: photosM.slice(0, 100),
+        photos: photosM.concat(extraPhotos.filter((u2) => !photosM.includes(u2))).slice(0, 100),
+        videos: videosM.slice(0, 6),
       });
     }
 
