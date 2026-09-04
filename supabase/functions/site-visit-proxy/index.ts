@@ -344,14 +344,18 @@ let execCache: { at: number; payload: unknown } | null = null;
 // Vacancy gate (Brittany 2026-08-27): a unit is on the vacant list only POST move-out,
 // pre move-in. The scheduled move-out date usually lives on the "Leasing |" master,
 // not the LU task, so the queues join against a master index.
-let moIdxCache: { at: number; byUid: Record<string, string>; byAddr: Record<string, string>; uidByAddr: Record<string, string> } | null = null;
-async function moveOutIndex(): Promise<{ byUid: Record<string, string>; byAddr: Record<string, string>; uidByAddr: Record<string, string> }> {
+let moIdxCache: { at: number; byUid: Record<string, string>; byAddr: Record<string, string>; uidByAddr: Record<string, string>; doneByUid: Record<string, string>; doneByAddr: Record<string, string> } | null = null;
+async function moveOutIndex(): Promise<{ byUid: Record<string, string>; byAddr: Record<string, string>; uidByAddr: Record<string, string>; doneByUid: Record<string, string>; doneByAddr: Record<string, string> }> {
   if (moIdxCache && Date.now() - moIdxCache.at < 2 * 60 * 1000) return moIdxCache;
   const byUid: Record<string, string> = {};
   const byAddr: Record<string, string> = {};
   // Unit ID lives on the Leasing MASTER, never the subtasks (Brittany 2026-08-28):
   // every consumer resolves it by walking up via this map
   const uidByAddr: Record<string, string> = {};
+  // Move Out Completion on the master: new properties vacant from day one have
+  // this but no Tenant Move-Out (486067, 2026-09-03) - it marks them vacant
+  const doneByUid: Record<string, string> = {};
+  const doneByAddr: Record<string, string> = {};
   let off = "";
   for (let pg = 0; pg < 12; pg++) {
     const r0 = await fetch(`${ASANA}/projects/1213171758682884/tasks?completed_since=now&limit=100&opt_fields=name,custom_fields.gid,custom_fields.display_value${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
@@ -361,9 +365,14 @@ async function moveOutIndex(): Promise<{ byUid: Record<string, string>; byAddr: 
       if (!/^leasing\s*\|/i.test(t.name)) continue;
       const cf = t.custom_fields ?? [];
       const mo = String(cf.find((f) => f.gid === "1213182815411738")?.display_value ?? "").slice(0, 10);
+      const done = String(cf.find((f) => f.gid === "1214521745467158")?.display_value ?? "").slice(0, 10);
       const uid = String(cf.find((f) => f.gid === "1213183515622826")?.display_value ?? "").trim();
       const addr = addressFromTaskName(t.name.replace(/^leasing\s*\|\s*/i, "Leasing | "));
       if (uid && addr) uidByAddr[normAddr(addr)] = uid;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(done)) {
+        if (uid) doneByUid[uid] = done;
+        if (addr) doneByAddr[normAddr(addr)] = done;
+      }
       if (!/^\d{4}-\d{2}-\d{2}$/.test(mo)) continue;
       if (uid) byUid[uid] = mo;
       if (addr) byAddr[normAddr(addr)] = mo;
@@ -371,7 +380,7 @@ async function moveOutIndex(): Promise<{ byUid: Record<string, string>; byAddr: 
     off = j0.next_page?.offset ?? "";
     if (!off) break;
   }
-  moIdxCache = { at: Date.now(), byUid, byAddr, uidByAddr };
+  moIdxCache = { at: Date.now(), byUid, byAddr, uidByAddr, doneByUid, doneByAddr };
   return moIdxCache;
 }
 let warqCache: { at: number; payload: unknown } | null = null;
@@ -1035,7 +1044,7 @@ app.post("*", async (c) => {
       const todayQ = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
       const LD_F = "1213182838328964";  // 💁 List Date
       const UID_F = "1213183515622826"; // Unit ID
-      const moIdx = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string> }));
+      const moIdx = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string>, doneByUid: {} as Record<string, string>, doneByAddr: {} as Record<string, string> }));
       type QRow = { gid: string; url: string; address: string; unitId: string; teamLead: string; lsGid: string; listDate: string; state: string; doNotList: string; dom: number | null; moveOut: string | null; modDate: string | null; modOverdue: boolean; firstWeek: boolean; warGid: string; warDue: string | null; warMissing: boolean | null };
       const rows: QRow[] = [];
       let offQ = "";
@@ -1059,7 +1068,8 @@ app.post("*", async (c) => {
           const moDone = String(cfQ.find((f) => f.gid === "1214521745467158")?.display_value ?? "").slice(0, 10);
           const unitIdQ = String(cfQ.find((f) => f.gid === UID_F)?.display_value ?? "").trim() || (moIdx.uidByAddr[normAddr(address)] ?? "");
           const moSched = /^\d{4}-\d{2}-\d{2}$/.test(moOwn) ? moOwn : (moIdx.byUid[unitIdQ] ?? moIdx.byAddr[normAddr(address)] ?? "");
-          const vacant = /^\d{4}-\d{2}-\d{2}$/.test(moDone) || (/^\d{4}-\d{2}-\d{2}$/.test(moSched) && moSched <= todayQ);
+          const moDoneAll = /^\d{4}-\d{2}-\d{2}$/.test(moDone) ? moDone : (moIdx.doneByUid[unitIdQ] ?? moIdx.doneByAddr[normAddr(address)] ?? "");
+          const vacant = /^\d{4}-\d{2}-\d{2}$/.test(moDoneAll) || (/^\d{4}-\d{2}-\d{2}$/.test(moSched) && moSched <= todayQ);
           if (!vacant) continue;
           // Do Not List (Brittany 2026-08-27): owner selling / self-listing / moving
           // back in / other. Stays visible at the bottom of the queue for awareness,
@@ -1090,7 +1100,7 @@ app.post("*", async (c) => {
           // no MOD until 7+ DOM. MOD only applies to live listings at all.
           const modOverdue = doNotList || state !== "leasing" || (dom != null && dom <= 6) ? false
             : (!modDate || Math.floor((Date.parse(todayQ + "T12:00:00Z") - Date.parse(modDate + "T12:00:00Z")) / 86400000) >= 7);
-          rows.push({ gid: t.gid, url: `https://app.asana.com/0/0/${t.gid}`, address, unitId, teamLead: "", lsGid: "", listDate, state, doNotList, dom, moveOut: /^\d{4}-\d{2}-\d{2}$/.test(moSched) ? moSched : (moDone || null), modDate: state === "leasing" ? modDate : null, modOverdue, firstWeek: state === "leasing" && dom != null && dom <= 6, warGid: "", warDue: null, warMissing: null });
+          rows.push({ gid: t.gid, url: `https://app.asana.com/0/0/${t.gid}`, address, unitId, teamLead: "", lsGid: "", listDate, state, doNotList, dom, moveOut: /^\d{4}-\d{2}-\d{2}$/.test(moSched) ? moSched : (moDoneAll || null), modDate: state === "leasing" ? modDate : null, modOverdue, firstWeek: state === "leasing" && dom != null && dom <= 6, warGid: "", warDue: null, warMissing: null });
         }
         offQ = j0.next_page?.offset ?? "";
         if (!offQ) break;
@@ -1209,7 +1219,7 @@ app.post("*", async (c) => {
       if (warqCache && Date.now() - warqCache.at < 2 * 60 * 1000) return warqCache.payload as { ok: boolean; agents: string[]; rows: unknown[] };
       const todayW = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
       const LDW = "1213182838328964";
-      const moIdxW = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string> }));
+      const moIdxW = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string>, doneByUid: {} as Record<string, string>, doneByAddr: {} as Record<string, string> }));
       type WRow = { gid: string; address: string; agent: string; agentGid: string; state: string; dom: number | null; warDue: string | null; warMissing: boolean | null };
       const rowsW: WRow[] = [];
       let offW = "";
@@ -1229,7 +1239,8 @@ app.post("*", async (c) => {
           const moDoneW = String(cfW.find((f) => f.gid === "1214521745467158")?.display_value ?? "").slice(0, 10);
           const uidW = String(cfW.find((f) => f.gid === "1213183515622826")?.display_value ?? "").trim() || (moIdxW.uidByAddr[normAddr(address)] ?? "");
           const moSchedW = /^\d{4}-\d{2}-\d{2}$/.test(moOwnW) ? moOwnW : (moIdxW.byUid[uidW] ?? moIdxW.byAddr[normAddr(address)] ?? "");
-          if (!(/^\d{4}-\d{2}-\d{2}$/.test(moDoneW) || (/^\d{4}-\d{2}-\d{2}$/.test(moSchedW) && moSchedW <= todayW))) continue;
+          const moDoneAllW = /^\d{4}-\d{2}-\d{2}$/.test(moDoneW) ? moDoneW : (moIdxW.doneByUid[uidW] ?? moIdxW.doneByAddr[normAddr(address)] ?? "");
+          if (!(/^\d{4}-\d{2}-\d{2}$/.test(moDoneAllW) || (/^\d{4}-\d{2}-\d{2}$/.test(moSchedW) && moSchedW <= todayW))) continue;
           if (String(cfW.find((f) => f.gid === "1214787859185273")?.display_value ?? "").trim()) continue; // Do Not List: no weekly report owed
           const listed = /^\d{4}-\d{2}-\d{2}$/.test(listDate) && listDate <= todayW;
           const state = leaseSigned ? "premovein" : (listed ? "leasing" : "turnover");
@@ -2938,6 +2949,17 @@ app.post("*", async (c) => {
         });
       }
       if (generalNote) { lines.push(""); lines.push("Notes:"); lines.push(generalNote); }
+      // photo backup links (Brittany 2026-09-03, after 414987 lost its photos):
+      // every capture uploads to storage during the walk, so the report keeps
+      // the originals even when the PDF fails to attach
+      const photoUrls = Array.isArray(body.photoUrls)
+        ? (body.photoUrls as unknown[]).map((x) => String(x)).filter((u) => /^https:\/\//.test(u)).slice(0, 100)
+        : [];
+      if (photoUrls.length) {
+        lines.push("");
+        lines.push(`PHOTO BACKUPS (${photoUrls.length})`);
+        photoUrls.forEach((u) => lines.push(u));
+      }
       const story = await postStory(tuGid, lines.join("\n").slice(0, 60000));
 
       // The Move-Out inspection subtask is deliberately left incomplete
@@ -2981,12 +3003,22 @@ app.post("*", async (c) => {
       // Work order -> Turn Proposal field on the Listing Settings task, line by line
       // (Brittany 2026-08-14). Find-or-create "Listing | {address}" like lsPush.
       let turnProposalSaved = false;
+      // Unit ID keys the Make Ready page and the LS lookup (Brittany 2026-09-03:
+      // never address, so two units at one property cannot cross)
+      const uidMR = String(body.unitId ?? "").replace(/\D/g, "");
+      let lsGidOut = "";
       if (findings.length) {
         try {
           const LS_PROJECT = "1217446710785429";
           const lsSlug = (a: string) => a.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
           const slug = lsSlug(address);
           let lsGid = "";
+          if (uidMR) {
+            try {
+              const shMR = ((await asana("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LS_PROJECT}&custom_fields.1213183515622826.value=${uidMR}&opt_fields=name`)) ?? []) as Array<{ gid: string }>;
+              lsGid = shMR[0]?.gid ?? "";
+            } catch { /* slug scan below */ }
+          }
           let off = "";
           for (let page = 0; page < 15 && !lsGid; page++) {
             const r0 = await fetch(`${ASANA}/projects/${LS_PROJECT}/tasks?limit=100&opt_fields=name${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
@@ -3006,7 +3038,7 @@ app.post("*", async (c) => {
               name: `Listing | ${address}`.slice(0, 250),
               projects: [LS_PROJECT],
               notes: "Source of truth for this property's Leasing URL. Edit fields here; the page updates live.\n\nCreated from the Turn Over Proposal inspection. Done by Claude on behalf of the inspector.",
-              custom_fields: { "1217509139690271": proposal },
+              custom_fields: uidMR ? { "1217509139690271": proposal, "1213183515622826": uidMR } : { "1217509139690271": proposal },
             });
             lsGid = t?.gid ?? "";
           } else {
@@ -3016,6 +3048,7 @@ app.post("*", async (c) => {
             }).catch(() => null);
           }
           turnProposalSaved = !!lsGid;
+          lsGidOut = lsGid;
         } catch { /* fail-soft: the field can be filled from the report by hand */ }
       }
 
@@ -3030,6 +3063,8 @@ app.post("*", async (c) => {
         scopeAppended,
         keyboxSaved,
         turnProposalSaved,
+        lsGid: lsGidOut,
+        makeReadyUrl: uidMR ? `https://www.sagareus.com/make-ready?u=${uidMR}` : "",
         reportDate: todayStr,
       });
     }
@@ -3501,12 +3536,16 @@ app.post("*", async (c) => {
             if (ps !== "Sent" && ps !== "Revised") continue;
             let sentOn = "";
             try { sentOn = String(JSON.parse(String(cfS.find((f) => f.gid === RN_F2)?.display_value ?? "") || "{}")?.d ?? ""); } catch { /* undated */ }
+            // slug off the Leasing Plan URL so the bench can team-approve in place
+            const lpUrl = String(cfS.find((f) => f.gid === "1217557090620385")?.display_value ?? "");
+            const slugS = (lpUrl.match(/[?&]p=([\w-]+)/) ?? [])[1] ?? "";
             sentPlans.push({
               gid: t.gid,
               url: `https://app.asana.com/0/0/${t.gid}`,
               address: String(t.name).replace(/^listing\s*\|\s*/i, "").trim(),
               unitId: uidOf(cfS),
               status: ps,
+              slug: slugS,
               sentOn: /^\d{4}-\d{2}-\d{2}$/.test(sentOn) ? sentOn : null,
             });
           }

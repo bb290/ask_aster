@@ -1882,12 +1882,24 @@ app.post("/onboard-proxy", async (c) => {
         const fm = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? "$" + Math.round(n).toLocaleString("en-US") : "TBD"; };
         // priorities block: chosen flavors + field-staff definitions
         const prio = (Array.isArray(snap.prio) ? snap.prio : []) as Array<{ k?: string; name?: string }>;
+        // bench-side team approval sends no snapshot (Brittany 2026-09-03): fall
+        // back to the Listing Settings fields so the fan-out blocks stay complete
+        const lsNum5 = (g0: string) => { const n0 = Number(String(cf5.find((f) => String(f.gid) === g0)?.display_value ?? "").replace(/[^0-9.]/g, "")); return Number.isFinite(n0) && n0 > 0 ? n0 : null; };
+        if (!prio.length) {
+          const pv5 = String(cf5.find((f) => String(f.gid) === "1217535711314799")?.display_value ?? "");
+          pv5.split(",").forEach((seg) => { const m5 = seg.trim().match(/^(Listing|Turn|Risk)\s*-\s*(.+)$/i); if (m5) prio.push({ k: m5[1], name: m5[2].trim() }); });
+        }
         const prioLines = prio.map((p) => {
           const k = String(p.k ?? ""); const n = String(p.name ?? "");
           const def = OB_PRIO_DEF[k + ":" + n] ?? "";
           return `${k}: ${n}` + (def ? ` - ${def}` : "");
         });
         const nums = (snap.nums ?? {}) as Record<string, unknown>;
+        if (nums.start == null) nums.start = lsNum5("1217446589856415");
+        if (nums.target == null) nums.target = lsNum5("1217446658749360");
+        if (nums.min == null) nums.min = lsNum5("1217446710834881");
+        if (snap.budget == null) snap.budget = lsNum5("1217611635986386");
+        if (snap.depositHeld == null) snap.depositHeld = lsNum5("1217530249320839");
         const sched = (Array.isArray(snap.sched) ? snap.sched : []) as Array<[number, number]>;
         const schedLines = sched.map((s) => `Week ${s[0]}: ${fm(s[1])}`);
         // Adjustment Plan field (pushed from the workbench) = what the team executes
@@ -2336,6 +2348,78 @@ app.post("/onboard-proxy", async (c) => {
     // Replaces the PandaDoc email gate (Brittany 2026-08-07): moves the deal to Proposal
     // Accepted, records the confirmed owner names/emails as a deal note, and fills missing
     // emails on matching associated contacts. Never moves a deal backward.
+    // ---------- mrView: the Make Ready page (public, Unit ID keyed) ----------
+    // Renders the dispatch work order + photo backups for owner AND vendor at
+    // /make-ready?u={unitId} (Brittany 2026-09-03: Unit ID, never address, so two
+    // units at one property cannot cross). No keybox codes ever leave here.
+    if (action === "mrView") {
+      const uidM = String(body.unitId ?? "").replace(/\D/g, "");
+      if (!uidM) return j(headers, 400, { error: "missing_unit" });
+      const lsM = await obTaskByUnitId("1217446710785429", uidM);
+      const masterM = await obLeasingMasterByUnitId(uidM);
+      if (!lsM && !masterM) return j(headers, 404, { error: "not_found", message: "We could not find this property. Check the link, or contact listings@sagareus.com." });
+      const addressM = String((lsM?.name ?? masterM?.name ?? "")).replace(/^listing\s*\|\s*/i, "").replace(/^leasing\s*\|\s*/i, "").split(" - ")[0].trim();
+      // Turn Over task off the master (Unit ID lives on the master; subtask walk)
+      let toM: { gid: string; name: string; completed?: boolean } | null = null;
+      if (masterM) {
+        try {
+          const subsM = ((await asana("GET", `/tasks/${masterM.gid}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+          const tos = subsM.filter((x) => /^turn\s*over\s*\|/i.test(String(x.name)));
+          toM = tos.find((x) => !x.completed) ?? tos[tos.length - 1] ?? null;
+        } catch { /* report 404 below */ }
+      }
+      if (!toM) return j(headers, 404, { error: "no_turnover", message: "No turn over has been dispatched for this property yet. Contact listings@sagareus.com with any questions." });
+      let dispatchedM = "";
+      try {
+        const tT = await asana("GET", `/tasks/${toM.gid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
+        dispatchedM = String(((tT.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>).find((f) => String(f.gid) === "1214522138482281")?.display_value ?? "").slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dispatchedM)) dispatchedM = "";
+      } catch { /* chip shows nothing */ }
+      // newest dispatch report comment
+      let report = "";
+      try {
+        const stM = ((await asana("GET", `/tasks/${toM.gid}/stories?limit=100&opt_fields=type,text,created_at`)) ?? []) as Array<{ type: string; text?: string; created_at?: string }>;
+        for (const x of stM) {
+          const tx = String(x.text ?? "");
+          if (x.type === "comment" && /^(move out condition inspection|turnover dispatch)/i.test(tx.trim())) report = tx;
+        }
+      } catch { /* handled below */ }
+      if (!report) return j(headers, 404, { error: "no_report", message: "The dispatch report is not posted yet. Contact listings@sagareus.com with any questions." });
+      // parse: title line, "date -- address" line, then sections split on known headers
+      const HEADS = /^(REQUIRED WORK ORDER|OPTIONAL UPGRADES|BY TYPE|ROOM BY ROOM|RATINGS|Notes:|PHOTO BACKUPS)/i;
+      const linesM = report.split(/\r?\n/).map((l) => l.replace(/\s+$/, ""))
+        .filter((l) => !/key\s*box|door\s*code/i.test(l));
+      let reportDateM = "";
+      const dm2 = (linesM[1] ?? "").match(/\d{4}-\d{2}-\d{2}/);
+      if (dm2) reportDateM = dm2[0];
+      let inspectorM = "";
+      const insLine = linesM.find((l) => /^inspected by/i.test(l.trim()));
+      if (insLine) inspectorM = insLine.replace(/^inspected by\s*:?\s*/i, "").split(/\s+-\s+|--/)[0].replace(/^:\s*/, "").trim().slice(0, 60);
+      const sectionsM: Array<{ title: string; lines: string[] }> = [];
+      const photosM: string[] = [];
+      let cur: { title: string; lines: string[] } | null = null;
+      for (const l of linesM.slice(1)) {
+        const t2 = l.trim();
+        if (HEADS.test(t2)) {
+          if (/^PHOTO BACKUPS/i.test(t2)) { cur = { title: "__photos__", lines: [] }; continue; }
+          cur = { title: t2.replace(/:$/, ""), lines: [] };
+          sectionsM.push(cur);
+          continue;
+        }
+        if (!cur || !t2) continue;
+        if (cur.title === "__photos__") {
+          if (/^https:\/\//.test(t2)) photosM.push(t2.slice(0, 500));
+          continue;
+        }
+        cur.lines.push(t2.slice(0, 400));
+      }
+      return j(headers, 200, {
+        ok: true, address: addressM, dispatched: dispatchedM, reportDate: reportDateM, inspector: inspectorM,
+        sections: sectionsM.filter((s2) => s2.lines.length).slice(0, 12),
+        photos: photosM.slice(0, 100),
+      });
+    }
+
     if (action === "propAcceptConfirm") {
       const HS = Deno.env.get("HUBSPOT_CRM_TOKEN") ?? "";
       const email = String(body.email ?? "").trim().slice(0, 200);
