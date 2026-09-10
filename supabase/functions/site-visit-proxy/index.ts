@@ -1128,11 +1128,15 @@ app.post("*", async (c) => {
               }
             }
           } catch { /* unparseable history: pill shows never */ }
-          // the first week on market owes nothing yet (Brittany 2026-08-26): no WAR,
-          // no MOD until 7+ DOM. MOD only applies to live listings at all.
-          const modOverdue = doNotList || state !== "leasing" || (dom != null && dom <= 6) ? false
+          // MODs are owed on all listed and/or vacant units (Brittany 2026-09-09):
+          // a Turn Over or Move In Pending unit gets its weekly review too. The
+          // first week (on market, or of vacancy) owes nothing yet.
+          const cycleStart = state === "leasing" ? listDate : (moDoneAll || moSched);
+          const cycleDays = /^\d{4}-\d{2}-\d{2}$/.test(cycleStart)
+            ? Math.floor((Date.parse(todayQ + "T12:00:00Z") - Date.parse(cycleStart + "T12:00:00Z")) / 86400000) : null;
+          const modOverdue = doNotList || (cycleDays != null && cycleDays <= 6) ? false
             : (!modDate || Math.floor((Date.parse(todayQ + "T12:00:00Z") - Date.parse(modDate + "T12:00:00Z")) / 86400000) >= 7);
-          rows.push({ gid: t.gid, url: `https://app.asana.com/0/0/${t.gid}`, address, unitId, teamLead: "", lsGid: "", listDate, state, doNotList, dom, moveOut: /^\d{4}-\d{2}-\d{2}$/.test(moSched) ? moSched : (moDoneAll || null), occupiedUntil, modDate: state === "leasing" ? modDate : null, modOverdue, firstWeek: state === "leasing" && dom != null && dom <= 6, warGid: "", warDue: null, warMissing: null });
+          rows.push({ gid: t.gid, url: `https://app.asana.com/0/0/${t.gid}`, address, unitId, teamLead: "", lsGid: "", listDate, state, doNotList, dom, moveOut: /^\d{4}-\d{2}-\d{2}$/.test(moSched) ? moSched : (moDoneAll || null), occupiedUntil, modDate, modOverdue, firstWeek: state === "leasing" && dom != null && dom <= 6, warGid: "", warDue: null, warMissing: null });
         }
         offQ = j0.next_page?.offset ?? "";
         if (!offQ) break;
@@ -1272,13 +1276,11 @@ app.post("*", async (c) => {
           const uidW = String(cfW.find((f) => f.gid === "1213183515622826")?.display_value ?? "").trim() || (moIdxW.uidByAddr[normAddr(address)] ?? "");
           const moSchedW = /^\d{4}-\d{2}-\d{2}$/.test(moOwnW) ? moOwnW : (moIdxW.byUid[uidW] ?? moIdxW.byAddr[normAddr(address)] ?? "");
           const moDoneAllW = /^\d{4}-\d{2}-\d{2}$/.test(moDoneW) ? moDoneW : (moIdxW.doneByUid[uidW] ?? moIdxW.doneByAddr[normAddr(address)] ?? "");
-          // Weekly reports are owed on ALL listed properties AND all vacant
-          // properties (Brittany 2026-09-09): a live listing owes its WAR even
-          // with the outgoing resident still in place, and a vacant unit owes
-          // one even when unlisted.
-          const vacantW = /^\d{4}-\d{2}-\d{2}$/.test(moDoneAllW) || (/^\d{4}-\d{2}-\d{2}$/.test(moSchedW) && moSchedW <= todayW);
+          // WARs are owed on ALL LISTED units regardless of occupancy or vacancy
+          // (Brittany 2026-09-09 correction). Unlisted vacants (Turn Over,
+          // Move In Pending) owe MODs on the exec bench but no WAR.
           const listedW2 = /^\d{4}-\d{2}-\d{2}$/.test(listDate) && listDate <= todayW;
-          if (!vacantW && !(listedW2 && !leaseSigned)) continue;
+          if (!(listedW2 && !leaseSigned)) continue;
           if (String(cfW.find((f) => f.gid === "1214787859185273")?.display_value ?? "").trim()) continue; // Do Not List: no weekly report owed
           const listed = /^\d{4}-\d{2}-\d{2}$/.test(listDate) && listDate <= todayW;
           const state = leaseSigned ? "premovein" : (listed ? "leasing" : "turnover");
