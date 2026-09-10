@@ -154,7 +154,19 @@ async function luByUnitId(uid: string): Promise<{ gid: string; name: string } | 
       const openSub = sl.find((s) => !s.completed);
       if (openSub) return openSub;
     }
-    return lus[0] ?? null;
+    if (lus[0]) return lus[0];
+    // Asana workspace search lags on NEW tasks (Norton Ave batch, 2026-09-07):
+    // fall back to the paged Leasing-master index, which never depends on search
+    try {
+      const idx = await moveOutIndex();
+      const mg = idx.masterByUid[uid];
+      if (mg) {
+        const subs2 = ((await asana("GET", `/tasks/${mg}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+        const sl2 = subs2.filter((s2) => /^(LU|TP|PreLease)\s*\|/i.test(s2.name));
+        return sl2.find((s2) => !s2.completed) ?? sl2[0] ?? null;
+      }
+    } catch { /* fall through */ }
+    return null;
   } catch { return null; }
 }
 
@@ -344,8 +356,8 @@ let execCache: { at: number; payload: unknown } | null = null;
 // Vacancy gate (Brittany 2026-08-27): a unit is on the vacant list only POST move-out,
 // pre move-in. The scheduled move-out date usually lives on the "Leasing |" master,
 // not the LU task, so the queues join against a master index.
-let moIdxCache: { at: number; byUid: Record<string, string>; byAddr: Record<string, string>; uidByAddr: Record<string, string>; doneByUid: Record<string, string>; doneByAddr: Record<string, string> } | null = null;
-async function moveOutIndex(): Promise<{ byUid: Record<string, string>; byAddr: Record<string, string>; uidByAddr: Record<string, string>; doneByUid: Record<string, string>; doneByAddr: Record<string, string> }> {
+let moIdxCache: { at: number; byUid: Record<string, string>; byAddr: Record<string, string>; uidByAddr: Record<string, string>; doneByUid: Record<string, string>; doneByAddr: Record<string, string>; masterByUid: Record<string, string> } | null = null;
+async function moveOutIndex(): Promise<{ byUid: Record<string, string>; byAddr: Record<string, string>; uidByAddr: Record<string, string>; doneByUid: Record<string, string>; doneByAddr: Record<string, string>; masterByUid: Record<string, string> }> {
   if (moIdxCache && Date.now() - moIdxCache.at < 2 * 60 * 1000) return moIdxCache;
   const byUid: Record<string, string> = {};
   const byAddr: Record<string, string> = {};
@@ -356,6 +368,7 @@ async function moveOutIndex(): Promise<{ byUid: Record<string, string>; byAddr: 
   // this but no Tenant Move-Out (486067, 2026-09-03) - it marks them vacant
   const doneByUid: Record<string, string> = {};
   const doneByAddr: Record<string, string> = {};
+  const masterByUid: Record<string, string> = {};
   let off = "";
   for (let pg = 0; pg < 12; pg++) {
     const r0 = await fetch(`${ASANA}/projects/1213171758682884/tasks?completed_since=now&limit=100&opt_fields=name,custom_fields.gid,custom_fields.display_value${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
@@ -369,6 +382,7 @@ async function moveOutIndex(): Promise<{ byUid: Record<string, string>; byAddr: 
       const uid = String(cf.find((f) => f.gid === "1213183515622826")?.display_value ?? "").trim();
       const addr = addressFromTaskName(t.name.replace(/^leasing\s*\|\s*/i, "Leasing | "));
       if (uid && addr) uidByAddr[normAddr(addr)] = uid;
+      if (uid) masterByUid[uid] = t.gid;
       if (/^\d{4}-\d{2}-\d{2}$/.test(done)) {
         if (uid) doneByUid[uid] = done;
         if (addr) doneByAddr[normAddr(addr)] = done;
@@ -380,7 +394,7 @@ async function moveOutIndex(): Promise<{ byUid: Record<string, string>; byAddr: 
     off = j0.next_page?.offset ?? "";
     if (!off) break;
   }
-  moIdxCache = { at: Date.now(), byUid, byAddr, uidByAddr, doneByUid, doneByAddr };
+  moIdxCache = { at: Date.now(), byUid, byAddr, uidByAddr, doneByUid, doneByAddr, masterByUid };
   return moIdxCache;
 }
 let warqCache: { at: number; payload: unknown } | null = null;
@@ -871,6 +885,18 @@ app.post("*", async (c) => {
       const dataB64 = String(body.dataB64 ?? "");
       if (!parent || !dataB64 || dataB64.length > 8_000_000) return j(headers, 400, { error: "bad_photo" });
       const bytes = Uint8Array.from(atob(dataB64), (ch) => ch.charCodeAt(0));
+      // replace: regenerated reports (e.g. a bedroom-count correction, unit 488555
+      // 2026-09-07) delete the SAME-NAMED attachment before uploading, so the task
+      // never carries two versions of one report
+      if (body.replace === true) {
+        try {
+          const exArr = ((await asana("GET", `/tasks/${parent}/attachments?opt_fields=name`)) ?? []) as Array<{ gid: string; name: string }>;
+          for (const ex of exArr) {
+            if (String(ex.name) !== filename) continue;
+            await fetch(`${ASANA}/attachments/${ex.gid}`, { method: "DELETE", headers: { "Authorization": `Bearer ${ASANA_PAT}` } }).catch(() => null);
+          }
+        } catch { /* old copy staying is not worth failing the upload */ }
+      }
       const form = new FormData();
       form.append("parent", parent);
       form.append("file", new Blob([bytes], { type: "image/jpeg" }), filename);
@@ -1044,8 +1070,8 @@ app.post("*", async (c) => {
       const todayQ = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
       const LD_F = "1213182838328964";  // 💁 List Date
       const UID_F = "1213183515622826"; // Unit ID
-      const moIdx = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string>, doneByUid: {} as Record<string, string>, doneByAddr: {} as Record<string, string> }));
-      type QRow = { gid: string; url: string; address: string; unitId: string; teamLead: string; lsGid: string; listDate: string; state: string; doNotList: string; dom: number | null; moveOut: string | null; modDate: string | null; modOverdue: boolean; firstWeek: boolean; warGid: string; warDue: string | null; warMissing: boolean | null };
+      const moIdx = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string>, doneByUid: {} as Record<string, string>, doneByAddr: {} as Record<string, string>, masterByUid: {} as Record<string, string> }));
+      type QRow = { gid: string; url: string; address: string; unitId: string; teamLead: string; lsGid: string; listDate: string; state: string; doNotList: string; dom: number | null; moveOut: string | null; occupiedUntil?: string; modDate: string | null; modOverdue: boolean; firstWeek: boolean; warGid: string; warDue: string | null; warMissing: boolean | null };
       const rows: QRow[] = [];
       let offQ = "";
       for (let pg = 0; pg < 12; pg++) {
@@ -1070,7 +1096,13 @@ app.post("*", async (c) => {
           const moSched = /^\d{4}-\d{2}-\d{2}$/.test(moOwn) ? moOwn : (moIdx.byUid[unitIdQ] ?? moIdx.byAddr[normAddr(address)] ?? "");
           const moDoneAll = /^\d{4}-\d{2}-\d{2}$/.test(moDone) ? moDone : (moIdx.doneByUid[unitIdQ] ?? moIdx.doneByAddr[normAddr(address)] ?? "");
           const vacant = /^\d{4}-\d{2}-\d{2}$/.test(moDoneAll) || (/^\d{4}-\d{2}-\d{2}$/.test(moSched) && moSched <= todayQ);
-          if (!vacant) continue;
+          // Pre-listed occupied units (PreLease: live listing, tenant still in
+          // place) join the queue too (Brittany 2026-09-09, unit 447916) - a live
+          // listing needs the weekly loop even before move out. Everything else
+          // still requires vacancy.
+          const listedEarly = /^\d{4}-\d{2}-\d{2}$/.test(String(cfQ.find((f) => f.gid === LD_F)?.display_value ?? "").slice(0, 10));
+          if (!vacant && !(listedEarly && !leaseSigned)) continue;
+          const occupiedUntil = !vacant && /^\d{4}-\d{2}-\d{2}$/.test(moSched) && moSched > todayQ ? moSched : "";
           // Do Not List (Brittany 2026-08-27): owner selling / self-listing / moving
           // back in / other. Stays visible at the bottom of the queue for awareness,
           // but owes no weekly update.
@@ -1100,7 +1132,7 @@ app.post("*", async (c) => {
           // no MOD until 7+ DOM. MOD only applies to live listings at all.
           const modOverdue = doNotList || state !== "leasing" || (dom != null && dom <= 6) ? false
             : (!modDate || Math.floor((Date.parse(todayQ + "T12:00:00Z") - Date.parse(modDate + "T12:00:00Z")) / 86400000) >= 7);
-          rows.push({ gid: t.gid, url: `https://app.asana.com/0/0/${t.gid}`, address, unitId, teamLead: "", lsGid: "", listDate, state, doNotList, dom, moveOut: /^\d{4}-\d{2}-\d{2}$/.test(moSched) ? moSched : (moDoneAll || null), modDate: state === "leasing" ? modDate : null, modOverdue, firstWeek: state === "leasing" && dom != null && dom <= 6, warGid: "", warDue: null, warMissing: null });
+          rows.push({ gid: t.gid, url: `https://app.asana.com/0/0/${t.gid}`, address, unitId, teamLead: "", lsGid: "", listDate, state, doNotList, dom, moveOut: /^\d{4}-\d{2}-\d{2}$/.test(moSched) ? moSched : (moDoneAll || null), occupiedUntil, modDate: state === "leasing" ? modDate : null, modOverdue, firstWeek: state === "leasing" && dom != null && dom <= 6, warGid: "", warDue: null, warMissing: null });
         }
         offQ = j0.next_page?.offset ?? "";
         if (!offQ) break;
@@ -1219,7 +1251,7 @@ app.post("*", async (c) => {
       if (warqCache && Date.now() - warqCache.at < 2 * 60 * 1000) return warqCache.payload as { ok: boolean; agents: string[]; rows: unknown[] };
       const todayW = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
       const LDW = "1213182838328964";
-      const moIdxW = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string>, doneByUid: {} as Record<string, string>, doneByAddr: {} as Record<string, string> }));
+      const moIdxW = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string>, doneByUid: {} as Record<string, string>, doneByAddr: {} as Record<string, string>, masterByUid: {} as Record<string, string> }));
       type WRow = { gid: string; address: string; agent: string; agentGid: string; state: string; dom: number | null; warDue: string | null; warMissing: boolean | null };
       const rowsW: WRow[] = [];
       let offW = "";
@@ -1240,7 +1272,13 @@ app.post("*", async (c) => {
           const uidW = String(cfW.find((f) => f.gid === "1213183515622826")?.display_value ?? "").trim() || (moIdxW.uidByAddr[normAddr(address)] ?? "");
           const moSchedW = /^\d{4}-\d{2}-\d{2}$/.test(moOwnW) ? moOwnW : (moIdxW.byUid[uidW] ?? moIdxW.byAddr[normAddr(address)] ?? "");
           const moDoneAllW = /^\d{4}-\d{2}-\d{2}$/.test(moDoneW) ? moDoneW : (moIdxW.doneByUid[uidW] ?? moIdxW.doneByAddr[normAddr(address)] ?? "");
-          if (!(/^\d{4}-\d{2}-\d{2}$/.test(moDoneAllW) || (/^\d{4}-\d{2}-\d{2}$/.test(moSchedW) && moSchedW <= todayW))) continue;
+          // Weekly reports are owed on ALL listed properties AND all vacant
+          // properties (Brittany 2026-09-09): a live listing owes its WAR even
+          // with the outgoing resident still in place, and a vacant unit owes
+          // one even when unlisted.
+          const vacantW = /^\d{4}-\d{2}-\d{2}$/.test(moDoneAllW) || (/^\d{4}-\d{2}-\d{2}$/.test(moSchedW) && moSchedW <= todayW);
+          const listedW2 = /^\d{4}-\d{2}-\d{2}$/.test(listDate) && listDate <= todayW;
+          if (!vacantW && !(listedW2 && !leaseSigned)) continue;
           if (String(cfW.find((f) => f.gid === "1214787859185273")?.display_value ?? "").trim()) continue; // Do Not List: no weekly report owed
           const listed = /^\d{4}-\d{2}-\d{2}$/.test(listDate) && listDate <= todayW;
           const state = leaseSigned ? "premovein" : (listed ? "leasing" : "turnover");
@@ -1559,11 +1597,17 @@ app.post("*", async (c) => {
       const address = String(body.address ?? "").trim();
       const text = String(body.text ?? "").trim();
       if (!address || !text) return j(headers, 400, { error: "missing_fields" });
-      const vacancies = await allVacancies();
-      const m = matchUnit(vacancies, address);
-      const hit = m.hit;
+      // Unit ID first (488323, 2026-09-07: the LU existed but its task-name address
+      // tokens did not match the bench address); address matching is the fallback
+      let hit: { gid: string; name?: string; address?: string } | null = null;
+      const uidPS = String(body.unitId ?? "").replace(/\D/g, "");
+      if (uidPS) hit = await luByUnitId(uidPS).catch(() => null);
       if (!hit) {
-        return j(headers, 404, { error: "lu_not_found", message: "No leasing task matches that address. Copy the text and post it manually." });
+        const vacancies = await allVacancies();
+        hit = matchUnit(vacancies, address).hit ?? null;
+      }
+      if (!hit) {
+        return j(headers, 404, { error: "lu_not_found", message: "No leasing task matches that address or Unit ID. Copy the text and post it manually." });
       }
       let ownerEmail = "";
       try {
@@ -1597,7 +1641,7 @@ app.post("*", async (c) => {
         preGid: pre.gid,
         preUrl: `https://app.asana.com/0/0/${pre.gid}`,
         storyGid: story?.gid ?? null,
-        matchedAddress: hit.address,
+        matchedAddress: hit.address ?? address,
         ownerEmail,
       });
     }
@@ -1642,6 +1686,8 @@ app.post("*", async (c) => {
       // (MarketRent is a hand-typed asking figure and exists even for never-leased units).
       let previousRent: number | null = null;
       let depositHeld: number | null = null;
+      let prevBreakdown: Array<{ label: string; amount: number }> = [];
+      let prevBreakdownMonth = "";
       let leaseHistory: boolean | null = null; // null = leases API not accessible (scope not granted)
       try {
         // NOTE: /v1/leases silently ignores unitids/unitid filters; propertyids works. Filter to the unit in code.
@@ -1652,16 +1698,52 @@ app.post("*", async (c) => {
           const leases = await lr.json().catch(() => []);
           const rents = (Array.isArray(leases) ? leases : [])
             .filter((l: { UnitId?: number }) => String(l?.UnitId ?? "") === String(uid))
-            .map((l: { LeaseFromDate?: string; AccountDetails?: { Rent?: number | { Amount?: number }; SecurityDeposit?: number } }) => {
+            .map((l: { Id?: number; LeaseFromDate?: string; AccountDetails?: { Rent?: number | { Amount?: number }; SecurityDeposit?: number } }) => {
               const r = l?.AccountDetails?.Rent;
               const amt = typeof r === "number" ? r : (typeof (r as { Amount?: number })?.Amount === "number" ? (r as { Amount: number }).Amount : null);
               const dep = l?.AccountDetails?.SecurityDeposit;
-              return { from: String(l?.LeaseFromDate ?? ""), rent: amt, deposit: typeof dep === "number" ? dep : null };
+              return { id: l?.Id, from: String(l?.LeaseFromDate ?? ""), rent: amt, deposit: typeof dep === "number" ? dep : null };
             })
             .filter((x: { rent: number | null }) => x.rent != null && x.rent > 0)
             .sort((a: { from: string }, b: { from: string }) => b.from.localeCompare(a.from));
           leaseHistory = rents.length > 0;
           if (rents.length) { previousRent = rents[0].rent; depositHeld = rents[0].deposit; }
+          // Total-cost breakdown of the previous lease (Brittany 2026-09-07): the
+          // last month's recurring charges (rent, utility recovery, pet rent,
+          // parking, storage...) so next-rent decisions compare total to total.
+          if (rents.length && rents[0].id) {
+            try {
+              const tr2 = await fetch(`https://api.buildium.com/v1/leases/${rents[0].id}/transactions?limit=200`, {
+                headers: { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET },
+              });
+              const txs2 = ((await tr2.json().catch(() => [])) as Array<Record<string, unknown>>) ?? [];
+              const byMonth: Record<string, Array<{ label: string; amt: number }>> = {};
+              for (const t2 of txs2) {
+                if (!/charge/i.test(String(t2.TransactionType ?? ""))) continue;
+                const mKey = String(t2.Date ?? "").slice(0, 7);
+                if (!/^\d{4}-\d{2}$/.test(mKey)) continue;
+                const j2 = (t2.Journal ?? {}) as Record<string, unknown>;
+                const memo2 = String(j2.Memo ?? "");
+                for (const ln2 of ((j2.Lines ?? []) as Array<Record<string, unknown>>)) {
+                  const amt2 = Number(ln2.Amount);
+                  if (!Number.isFinite(amt2) || amt2 <= 0) continue;
+                  const gl2 = String(((ln2.GLAccount ?? {}) as Record<string, unknown>).Name ?? "") || memo2 || "Charge";
+                  (byMonth[mKey] = byMonth[mKey] ?? []).push({ label: gl2.slice(0, 60), amt: amt2 });
+                }
+              }
+              // latest month that includes a rent-ish line = a typical full month
+              const months2 = Object.keys(byMonth).sort().reverse();
+              const pick2 = months2.find((mk) => byMonth[mk].some((x) => /rent/i.test(x.label) && !/pet|last month/i.test(x.label))) ?? months2[0];
+              if (pick2) {
+                const agg2: Record<string, number> = {};
+                for (const x of byMonth[pick2]) agg2[x.label] = (agg2[x.label] ?? 0) + x.amt;
+                const rows2 = Object.entries(agg2).map(([label, amt3]) => ({ label, amount: Math.round(amt3 * 100) / 100 }))
+                  .sort((a3, b3) => b3.amount - a3.amount).slice(0, 8);
+                prevBreakdown = rows2;
+                prevBreakdownMonth = pick2;
+              }
+            } catch { /* breakdown is best-effort */ }
+          }
         }
       } catch { /* leases unavailable; leave nulls */ }
       // full address for the comps lookup: line1 (+ unit #), city, state, zip
@@ -2022,6 +2104,8 @@ app.post("*", async (c) => {
       return j(headers, 200, {
         ok: true,
         unitId: String(uid),
+        prevBreakdown,
+        prevBreakdownMonth,
         ownerName: luOwnerName,
         ownerEmail: luOwnerEmail,
         ownerComms,
@@ -3077,6 +3161,30 @@ app.post("*", async (c) => {
       const dataB64 = String(body.dataB64 ?? "");
       if (!parent || !dataB64 || dataB64.length > 12_000_000) return j(headers, 400, { error: "bad_pdf" });
       const bytes = Uint8Array.from(atob(dataB64), (ch) => ch.charCodeAt(0));
+      // replace: regenerated reports (e.g. a bedroom-count correction, unit 488555
+      // 2026-09-07) delete the SAME-NAMED attachment before uploading, so the task
+      // never carries two versions of one report
+      if (body.replace === true) {
+        try {
+          const exArr = ((await asana("GET", `/tasks/${parent}/attachments?opt_fields=name`)) ?? []) as Array<{ gid: string; name: string }>;
+          for (const ex of exArr) {
+            if (String(ex.name) !== filename) continue;
+            await fetch(`${ASANA}/attachments/${ex.gid}`, { method: "DELETE", headers: { "Authorization": `Bearer ${ASANA_PAT}` } }).catch(() => null);
+          }
+        } catch { /* old copy staying is not worth failing the upload */ }
+      }
+      // replace: regenerated reports (e.g. a bedroom-count correction, unit 488555
+      // 2026-09-07) delete the SAME-NAMED attachment before uploading, so the task
+      // never carries two versions of one report
+      if (body.replace === true) {
+        try {
+          const exArr = ((await asana("GET", `/tasks/${parent}/attachments?opt_fields=name`)) ?? []) as Array<{ gid: string; name: string }>;
+          for (const ex of exArr) {
+            if (String(ex.name) !== filename) continue;
+            await fetch(`${ASANA}/attachments/${ex.gid}`, { method: "DELETE", headers: { "Authorization": `Bearer ${ASANA_PAT}` } }).catch(() => null);
+          }
+        } catch { /* old copy staying is not worth failing the upload */ }
+      }
       const form = new FormData();
       form.append("parent", parent);
       form.append("file", new Blob([bytes], { type: "application/pdf" }), filename);
