@@ -311,8 +311,26 @@ function parseWarMetrics(text: string): { inquiries: number; showings: number; a
   if (iq == null && sh == null && ap == null) return null;
   return { inquiries: iq ?? 0, showings: sh ?? 0, applications: ap ?? 0 };
 }
+// Asana stories come back OLDEST first, 100 per page: on a long-lived task the
+// newest comments live on the LAST page, so a single limit=100 read silently
+// freezes "recent comments" months in the past (422789 Turn Over bug,
+// Brittany 2026-09-10). Always walk to the end.
+async function allStories(taskGid: string, fields: string): Promise<Array<Record<string, unknown>>> {
+  const out: Array<Record<string, unknown>> = [];
+  let off = "";
+  for (let pg = 0; pg < 15; pg++) {
+    const r = await fetch(`${ASANA}/tasks/${taskGid}/stories?limit=100&opt_fields=${fields}${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
+      { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+    const jj = await r.json().catch(() => ({}));
+    if (!r.ok) break;
+    out.push(...((jj.data ?? []) as Array<Record<string, unknown>>));
+    off = jj.next_page?.offset ?? "";
+    if (!off) break;
+  }
+  return out;
+}
 async function warReportStories(warGid: string): Promise<Array<{ text: string; createdAt: string }>> {
-  const stories = await asana("GET", `/tasks/${warGid}/stories?limit=100&opt_fields=type,text,created_at`);
+  const stories = await allStories(warGid, "type,text,created_at");
   return ((stories ?? []) as Array<{ type: string; text?: string; created_at?: string }>)
     .filter((s) => s.type === "comment")
     .map((s) => ({ text: String(s.text ?? ""), createdAt: String(s.created_at ?? "") }))
@@ -953,7 +971,7 @@ app.post("*", async (c) => {
         recentSubtasks = (subs ?? []).filter(recentOnly).map(fmtSub());
         const insp = findInspectionSub((subs ?? []) as Array<{ gid: string; name: string }>);
         if (insp) {
-          const stories = await asana("GET", `/tasks/${insp.gid}/stories?limit=100&opt_fields=type,text,created_at`);
+          const stories = (await allStories(insp.gid, "type,text,created_at")) as Array<{ type: string; text?: string; created_at?: string }>;
           const comments = (stories ?? []).filter((st: { type: string }) => st.type === "comment");
           if (comments.length) {
             siteVisitDate = String(comments[comments.length - 1].created_at ?? "").slice(0, 10);
@@ -1036,6 +1054,21 @@ app.post("*", async (c) => {
       local.setUTCDate(local.getUTCDate() + add);
       const dueOn = local.toISOString().slice(0, 10);
       try { await asana("PUT", `/tasks/${war.gid}`, { due_on: dueOn }); } catch { /* non-fatal */ }
+      // Owner report sends stamp lastUpdate into the LU's Price History JSON so the
+      // bench queue's UPD pill can show the last-sent date without walking every
+      // WAR subtask's comment feed (Brittany 2026-09-11)
+      if (/^OWNER REPORT SENT/i.test(text)) {
+        try {
+          const tU = await asana("GET", `/tasks/${taskGid}?opt_fields=custom_fields.gid,custom_fields.name,custom_fields.display_value`);
+          const phU = ((tU.custom_fields ?? []) as Array<{ gid: string; name: string; display_value: string | null }>).find((f) => /price history/i.test(String(f.name)));
+          if (phU) {
+            let ph1: Record<string, unknown> = {};
+            try { const p1 = JSON.parse(String(phU.display_value ?? "") || "{}"); ph1 = (p1 && typeof p1 === "object" && !Array.isArray(p1)) ? p1 : { events: p1 }; } catch { ph1 = {}; }
+            ph1.lastUpdate = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+            await asana("PUT", `/tasks/${taskGid}`, { custom_fields: { [phU.gid]: JSON.stringify(ph1).slice(0, 6000) } });
+          }
+        } catch { /* the OWNER REPORT SENT comment already carries the record */ }
+      }
       execCache = null; // the WAR heartbeat moved: next execQueue must re-read
       warqCache = null;
       // weekly series + cumulative totals, recomputed from ALL report stories (self
@@ -1071,15 +1104,27 @@ app.post("*", async (c) => {
       const LD_F = "1213182838328964";  // 💁 List Date
       const UID_F = "1213183515622826"; // Unit ID
       const moIdx = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string>, doneByUid: {} as Record<string, string>, doneByAddr: {} as Record<string, string>, masterByUid: {} as Record<string, string> }));
-      type QRow = { gid: string; url: string; address: string; unitId: string; teamLead: string; lsGid: string; listDate: string; state: string; doNotList: string; dom: number | null; moveOut: string | null; occupiedUntil?: string; modDate: string | null; modOverdue: boolean; firstWeek: boolean; warGid: string; warDue: string | null; warMissing: boolean | null };
+      type QRow = { gid: string; url: string; address: string; unitId: string; teamLead: string; lsGid: string; listDate: string; state: string; doNotList: string; dom: number | null; moveOut: string | null; occupiedUntil?: string; modDate: string | null; modOverdue: boolean; firstWeek: boolean; updDate: string | null; warGid: string; warDue: string | null; warMissing: boolean | null };
       const rows: QRow[] = [];
       let offQ = "";
+      // completed_since 90 days back (not "now"): the LU task is COMPLETED at lease
+      // signing, which was dropping every Move In Pending unit off the bench
+      // (Brittany 2026-09-10, "10 vacant scheduled for move-in, none showing").
+      // Completed tasks stay only while their Move in Date is still ahead.
+      const sinceQ = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+      const MI_F = "1213183520317831"; // 🙌 Move in Date
       for (let pg = 0; pg < 12; pg++) {
-        const r0 = await fetch(`${ASANA}/projects/${LEASING_LU_PROJECT}/tasks?completed_since=now&limit=100&opt_fields=name,custom_fields.gid,custom_fields.name,custom_fields.display_value${offQ ? `&offset=${encodeURIComponent(offQ)}` : ""}`,
+        const r0 = await fetch(`${ASANA}/projects/${LEASING_LU_PROJECT}/tasks?completed_since=${sinceQ}&limit=100&opt_fields=name,completed,custom_fields.gid,custom_fields.name,custom_fields.display_value${offQ ? `&offset=${encodeURIComponent(offQ)}` : ""}`,
           { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
         const j0 = await r0.json().catch(() => ({}));
-        for (const t of (j0.data ?? []) as Array<{ gid: string; name: string; custom_fields?: Array<{ gid: string; name: string; display_value: string | null }> }>) {
+        for (const t of (j0.data ?? []) as Array<{ gid: string; name: string; completed?: boolean; custom_fields?: Array<{ gid: string; name: string; display_value: string | null }> }>) {
           if (!/^(LU|TP|PreLease)\s*\|/i.test(t.name)) continue;
+          if (t.completed) {
+            const cfC = t.custom_fields ?? [];
+            const lsC = String(cfC.find((f) => /lease signed/i.test(String(f.name)))?.display_value ?? "").trim();
+            const miC = String(cfC.find((f) => f.gid === MI_F)?.display_value ?? "").slice(0, 10);
+            if (!lsC || !/^\d{4}-\d{2}-\d{2}$/.test(miC) || miC <= todayQ) continue;
+          }
           const address = addressFromTaskName(t.name);
           if (!address || address.includes("<")) continue;
           const cfQ = t.custom_fields ?? [];
@@ -1101,7 +1146,9 @@ app.post("*", async (c) => {
           // listing needs the weekly loop even before move out. Everything else
           // still requires vacancy.
           const listedEarly = /^\d{4}-\d{2}-\d{2}$/.test(String(cfQ.find((f) => f.gid === LD_F)?.display_value ?? "").slice(0, 10));
-          if (!vacant && !(listedEarly && !leaseSigned)) continue;
+          // completed tasks already passed the Move In Pending gate above and can
+          // be pre-move-out (PreLease signed early), so vacancy is not required
+          if (!t.completed && !vacant && !(listedEarly && !leaseSigned)) continue;
           const occupiedUntil = !vacant && /^\d{4}-\d{2}-\d{2}$/.test(moSched) && moSched > todayQ ? moSched : "";
           // Do Not List (Brittany 2026-08-27): owner selling / self-listing / moving
           // back in / other. Stays visible at the bottom of the queue for awareness,
@@ -1114,11 +1161,13 @@ app.post("*", async (c) => {
           // MOD pill: lastReview stamped by execDecision into Price History; fallback
           // to the newest event date so pre-bench price drops still count
           let modDate: string | null = null;
+          let updDate: string | null = null; // last owner update sent (warSubmit stamps lastUpdate)
           try {
             const phRaw = String(cfQ.find((f) => /price history/i.test(String(f.name)))?.display_value ?? "");
             if (phRaw) {
               const p0 = JSON.parse(phRaw);
               const ph0 = (p0 && typeof p0 === "object" && !Array.isArray(p0)) ? p0 : { events: p0 };
+              if (/^\d{4}-\d{2}-\d{2}/.test(String(ph0.lastUpdate ?? ""))) updDate = String(ph0.lastUpdate).slice(0, 10);
               if (/^\d{4}-\d{2}-\d{2}/.test(String(ph0.lastReview ?? ""))) modDate = String(ph0.lastReview).slice(0, 10);
               else {
                 const ds = (Array.isArray(ph0.events) ? ph0.events : [])
@@ -1136,7 +1185,7 @@ app.post("*", async (c) => {
             ? Math.floor((Date.parse(todayQ + "T12:00:00Z") - Date.parse(cycleStart + "T12:00:00Z")) / 86400000) : null;
           const modOverdue = doNotList || (cycleDays != null && cycleDays <= 6) ? false
             : (!modDate || Math.floor((Date.parse(todayQ + "T12:00:00Z") - Date.parse(modDate + "T12:00:00Z")) / 86400000) >= 7);
-          rows.push({ gid: t.gid, url: `https://app.asana.com/0/0/${t.gid}`, address, unitId, teamLead: "", lsGid: "", listDate, state, doNotList, dom, moveOut: /^\d{4}-\d{2}-\d{2}$/.test(moSched) ? moSched : (moDoneAll || null), occupiedUntil, modDate, modOverdue, firstWeek: state === "leasing" && dom != null && dom <= 6, warGid: "", warDue: null, warMissing: null });
+          rows.push({ gid: t.gid, url: `https://app.asana.com/0/0/${t.gid}`, address, unitId, teamLead: "", lsGid: "", listDate, state, doNotList, dom, moveOut: /^\d{4}-\d{2}-\d{2}$/.test(moSched) ? moSched : (moDoneAll || null), occupiedUntil, modDate, modOverdue, firstWeek: state === "leasing" && dom != null && dom <= 6, updDate, warGid: "", warDue: null, warMissing: null });
         }
         offQ = j0.next_page?.offset ?? "";
         if (!offQ) break;
@@ -1256,42 +1305,55 @@ app.post("*", async (c) => {
       const todayW = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
       const LDW = "1213182838328964";
       const moIdxW = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string>, doneByUid: {} as Record<string, string>, doneByAddr: {} as Record<string, string>, masterByUid: {} as Record<string, string> }));
-      type WRow = { gid: string; address: string; agent: string; agentGid: string; state: string; dom: number | null; warDue: string | null; warMissing: boolean | null };
+      type WRow = { gid: string; address: string; agent: string; agentGid: string; state: string; dom: number | null; warDue: string | null; warMissing: boolean | null; noWar?: boolean };
       const rowsW: WRow[] = [];
       let offW = "";
+      // completed_since 90 days back so Move In Pending units (LU completed at lease
+      // signing) can still show as informational rows (Brittany 2026-09-11)
+      const sinceW = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+      const MI_FW = "1213183520317831"; // 🙌 Move in Date
       for (let pg = 0; pg < 12; pg++) {
-        const r0 = await fetch(`${ASANA}/projects/${LEASING_LU_PROJECT}/tasks?completed_since=now&limit=100&opt_fields=name,assignee.gid,assignee.name,custom_fields.gid,custom_fields.name,custom_fields.display_value${offW ? `&offset=${encodeURIComponent(offW)}` : ""}`,
+        const r0 = await fetch(`${ASANA}/projects/${LEASING_LU_PROJECT}/tasks?completed_since=${sinceW}&limit=100&opt_fields=name,completed,assignee.gid,assignee.name,custom_fields.gid,custom_fields.name,custom_fields.display_value${offW ? `&offset=${encodeURIComponent(offW)}` : ""}`,
           { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
         const j0 = await r0.json().catch(() => ({}));
-        for (const t of (j0.data ?? []) as Array<{ gid: string; name: string; assignee?: { gid: string; name: string } | null; custom_fields?: Array<{ gid: string; name: string; display_value: string | null }> }>) {
+        for (const t of (j0.data ?? []) as Array<{ gid: string; name: string; completed?: boolean; assignee?: { gid: string; name: string } | null; custom_fields?: Array<{ gid: string; name: string; display_value: string | null }> }>) {
           if (!/^(LU|TP|PreLease)\s*\|/i.test(t.name)) continue;
           const address = addressFromTaskName(t.name);
           if (!address || address.includes("<")) continue;
           const cfW = t.custom_fields ?? [];
           const listDate = String(cfW.find((f) => f.gid === LDW)?.display_value ?? "").slice(0, 10);
           const leaseSigned = String(cfW.find((f) => /lease signed/i.test(String(f.name)))?.display_value ?? "").trim();
-          // vacant only (Brittany 2026-08-27): agents owe weekly reports post move-out
           const moOwnW = String(cfW.find((f) => f.gid === "1213182815411738")?.display_value ?? "").slice(0, 10);
           const moDoneW = String(cfW.find((f) => f.gid === "1214521745467158")?.display_value ?? "").slice(0, 10);
           const uidW = String(cfW.find((f) => f.gid === "1213183515622826")?.display_value ?? "").trim() || (moIdxW.uidByAddr[normAddr(address)] ?? "");
           const moSchedW = /^\d{4}-\d{2}-\d{2}$/.test(moOwnW) ? moOwnW : (moIdxW.byUid[uidW] ?? moIdxW.byAddr[normAddr(address)] ?? "");
           const moDoneAllW = /^\d{4}-\d{2}-\d{2}$/.test(moDoneW) ? moDoneW : (moIdxW.doneByUid[uidW] ?? moIdxW.doneByAddr[normAddr(address)] ?? "");
-          // WARs are owed on ALL LISTED units regardless of occupancy or vacancy
-          // (Brittany 2026-09-09 correction). Unlisted vacants (Turn Over,
-          // Move In Pending) owe MODs on the exec bench but no WAR.
-          const listedW2 = /^\d{4}-\d{2}-\d{2}$/.test(listDate) && listDate <= todayW;
-          if (!(listedW2 && !leaseSigned)) continue;
           if (String(cfW.find((f) => f.gid === "1214787859185273")?.display_value ?? "").trim()) continue; // Do Not List: no weekly report owed
+          // WARs are owed on ALL LISTED units regardless of occupancy or vacancy
+          // (Brittany 2026-09-09 correction). Unlisted vacants (Turn Over) and
+          // Move In Pending units owe MODs on the exec bench, no WAR — they show
+          // here greyed out with a "No WAR needed" note so agents can see WHY an
+          // address is not on their report list (Brittany 2026-09-11).
+          const listedW2 = /^\d{4}-\d{2}-\d{2}$/.test(listDate) && listDate <= todayW;
+          const warOwed = !t.completed && listedW2 && !leaseSigned;
+          if (!warOwed) {
+            const vacantW = /^\d{4}-\d{2}-\d{2}$/.test(moDoneAllW) || (/^\d{4}-\d{2}-\d{2}$/.test(moSchedW) && moSchedW <= todayW);
+            const miW = String(cfW.find((f) => f.gid === MI_FW)?.display_value ?? "").slice(0, 10);
+            const pendingMoveIn = !!leaseSigned && (!t.completed || (/^\d{4}-\d{2}-\d{2}$/.test(miW) && miW > todayW));
+            if (t.completed && !pendingMoveIn) continue; // historic cycle, not informational
+            if (!vacantW && !pendingMoveIn) continue;    // occupied, no live listing: off the tool
+          }
           const listed = /^\d{4}-\d{2}-\d{2}$/.test(listDate) && listDate <= todayW;
           const state = leaseSigned ? "premovein" : (listed ? "leasing" : "turnover");
           const dom = listed ? Math.max(0, Math.floor((Date.parse(todayW + "T12:00:00Z") - Date.parse(listDate + "T12:00:00Z")) / 86400000)) : null;
-          rowsW.push({ gid: t.gid, address, agent: String(t.assignee?.name ?? ""), agentGid: String(t.assignee?.gid ?? ""), state, dom, warDue: null, warMissing: null });
+          rowsW.push({ gid: t.gid, address, agent: String(t.assignee?.name ?? ""), agentGid: String(t.assignee?.gid ?? ""), state, dom, warDue: null, warMissing: warOwed ? null : false, noWar: warOwed ? undefined : true });
         }
         offW = j0.next_page?.offset ?? "";
         if (!offW) break;
       }
-      for (let i = 0; i < rowsW.length; i += 5) {
-        await Promise.all(rowsW.slice(i, i + 5).map(async (q) => {
+      const rowsDue = rowsW.filter((r0) => !r0.noWar);
+      for (let i = 0; i < rowsDue.length; i += 5) {
+        await Promise.all(rowsDue.slice(i, i + 5).map(async (q) => {
           try {
             const subs = await asana("GET", `/tasks/${q.gid}/subtasks?limit=100&opt_fields=name,due_on,completed`);
             const w = ((subs ?? []) as Array<{ gid: string; name: string; due_on?: string | null; completed?: boolean }>)
@@ -1334,7 +1396,7 @@ app.post("*", async (c) => {
         dispatched = String(((tT.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>).find((f) => String(f.gid) === "1214522138482281")?.display_value ?? "").slice(0, 10);
         if (!/^\d{4}-\d{2}-\d{2}$/.test(dispatched)) dispatched = "";
       } catch { /* header shows TBD */ }
-      const stT = ((await asana("GET", `/tasks/${toGid}/stories?limit=100&opt_fields=type,text,html_text,created_at,created_by.name`)) ?? []) as Array<{ type: string; text?: string; html_text?: string; created_at?: string; created_by?: { name?: string } | null }>;
+      const stT = ((await allStories(toGid, "type,text,html_text,created_at,created_by.name")) ?? []) as Array<{ type: string; text?: string; html_text?: string; created_at?: string; created_by?: { name?: string } | null }>;
       // @mentions: plain text carries only a profile URL whose gid the bot cannot
       // resolve (403), but html_text embeds the display name inside the mention
       // anchor - so derive the text from html_text when present (Brittany 2026-08-27)
@@ -1390,7 +1452,38 @@ app.post("*", async (c) => {
         marketRent: gn("1217530253031654"),
         leasingPlanUrl: gv("1217557090620385"),
         teamLead: gv("1217446711292696"),
+        // the saved comp set (2026-09-12): both leasing benches share it - the Plan
+        // bench writes it on lsPush, the Execute bench restores it here and writes
+        // it back via execComps on send
+        compsData: gv("1217516812648029"),
       });
+    }
+
+    // ---------- execComps: Execute bench writes the shared comp set back ----------
+    // Writes ONLY the Comps Data field on the Listing Settings task (never the plan
+    // fields), so an exec save can never clobber the Plan bench's pricing/strategy.
+    // The compsData JSON carries planNote through unchanged; the bench preserves it.
+    if (action === "execComps") {
+      const uidC = String(body.unitId ?? "").replace(/\D/g, "");
+      let lsGidC = String(body.lsGid ?? "").replace(/\D/g, "");
+      const cdC = String(body.compsData ?? "").slice(0, 4000);
+      if (!cdC) return j(headers, 400, { error: "missing_comps" });
+      try { JSON.parse(cdC); } catch { return j(headers, 400, { error: "bad_comps_json" }); }
+      if (!lsGidC && uidC) {
+        try {
+          const sHitsC = ((await asana("GET",
+            `/workspaces/${WORKSPACE}/tasks/search?projects.any=1217446710785429&custom_fields.1213183515622826.value=${uidC}&opt_fields=name`)) ?? []) as Array<{ gid: string }>;
+          lsGidC = sHitsC[0]?.gid ?? "";
+        } catch { /* fall through */ }
+      }
+      if (!lsGidC) return j(headers, 404, { error: "no_listing_settings", message: "No Listing Settings task for this unit; comps not saved." });
+      await asana("PUT", `/tasks/${lsGidC}`, { custom_fields: { "1217516812648029": cdC } });
+      try {
+        await asana("POST", `/tasks/${lsGidC}/stories`, {
+          text: "Comps Data updated from the Execute & Adapt bench (selected comps, best comp, inquiries, concessions). Done by Claude on behalf of the team lead.",
+        });
+      } catch { /* story is best-effort */ }
+      return j(headers, 200, { ok: true, lsGid: lsGidC });
     }
 
     // ---------- execActivity: the agent's weekly reports off the WAR subtask ----------
@@ -1448,9 +1541,31 @@ app.post("*", async (c) => {
           created.push({ site, gid: sub.gid, url: `https://app.asana.com/0/0/${sub.gid}` });
         } catch { lines.push(`${site}: subtask creation FAILED - create it by hand`); }
       }
+      // pasted listing links save to the LU's Zillow / Redfin fields on record
+      // (Brittany 2026-09-11): the bench fills the blank, the task stays the truth
+      const urlsV = (body.urls ?? {}) as Record<string, unknown>;
+      const savedUrls: string[] = [];
+      try {
+        const toWrite: Array<[string, string]> = [];
+        for (const k of ["zillow", "redfin"]) {
+          const u0 = String(urlsV[k] ?? "").trim();
+          if (/^https?:\/\/\S+$/.test(u0) && u0.toLowerCase().includes(k)) toWrite.push([k, u0.slice(0, 500)]);
+        }
+        if (toWrite.length) {
+          const tV = await asana("GET", `/tasks/${luGidV}?opt_fields=custom_fields.gid,custom_fields.name`);
+          const cfV = (tV.custom_fields ?? []) as Array<{ gid: string; name: string }>;
+          const cfUpd: Record<string, string> = {};
+          for (const [k, u1] of toWrite) {
+            const fV = cfV.find((f0) => new RegExp(k, "i").test(String(f0.name)));
+            if (fV) { cfUpd[fV.gid] = u1; savedUrls.push(k); }
+          }
+          if (Object.keys(cfUpd).length) await asana("PUT", `/tasks/${luGidV}`, { custom_fields: cfUpd });
+        }
+      } catch { savedUrls.length = 0; /* the story still records; paste on the task by hand */ }
       await postStory(luGidV, `Listing verification (Execute & Adapt bench): ${lines.join(" | ")}.` +
+        (savedUrls.length ? ` Listing link${savedUrls.length > 1 ? "s" : ""} (${savedUrls.join(", ")}) saved to the task.` : "") +
         (created.length ? " Troubleshoot subtask ready." : "")).catch(() => null);
-      return j(headers, 200, { ok: true, created, summary: lines.join(" | ") });
+      return j(headers, 200, { ok: true, created, savedUrls, summary: lines.join(" | ") });
     }
 
     // ---------- execDecision: the team lead's weekly hold-or-adjust record on the LU ----------
@@ -1472,8 +1587,12 @@ app.post("*", async (c) => {
       L.push("LISTING DECISION (Execute & Adapt bench)");
       L.push(`Modified Date: ${modDate}`);
       if (Number.isFinite(domD)) L.push(`Days on market: ${Math.max(0, Math.round(domD))}`);
-      L.push(`This week: ${nD("inquiries")} inquiries / ${nD("showings")} showings / ${nD("applications")} applications`);
-      L.push(`Hold criteria (10 inquiries OR 5 showings OR 1 application): ${criteriaMet ? "MET" : "NOT MET"}`);
+      // metrics omitted entirely = a queue-pill "no changes" record on a unit with
+      // no weekly numbers (turnover / move in pending); skip the activity lines
+      if (body.metrics != null) {
+        L.push(`This week: ${nD("inquiries")} inquiries / ${nD("showings")} showings / ${nD("applications")} applications`);
+        L.push(`Hold criteria (10 inquiries OR 5 showings OR 1 application): ${criteriaMet ? "MET" : "NOT MET"}`);
+      }
       if (String(body.planLine ?? "").trim()) L.push(`Plan line invoked: ${String(body.planLine).trim().slice(0, 300)}`);
       L.push(`Decision: ${decision}`);
       if (mods.length) L.push("Modifications:\n- " + mods.join("\n- "));
@@ -1815,8 +1934,18 @@ app.post("*", async (c) => {
         // Both tasks load from the start: Unit Settings values win field by field, and
         // any blank field fills from Property Settings (Brittany 2026-08-20).
         const scanSettings = async (proj: string): Promise<string> => {
+          // exact Unit ID search first (fast); the paged walk is the fallback for
+          // fresh tasks the search index lags on. Walk raised 5 -> 15 pages: the
+          // Unit Settings project held 741 tasks on 2026-09-12 and unit 399465
+          // sat on page 6, so the 500-task cap silently matched the property task
+          // instead and the bench showed blank unit boxes.
+          try {
+            const sHit = ((await asana("GET",
+              `/workspaces/${WORKSPACE}/tasks/search?projects.any=${proj}&custom_fields.${UNIT_ID_FIELD}.value=${encodeURIComponent(String(uid))}&opt_fields=name`)) ?? []) as Array<{ gid: string }>;
+            if (sHit[0]) return sHit[0].gid;
+          } catch { /* fall through to the walk */ }
           let offS = "";
-          for (let pg = 0; pg < 5; pg++) {
+          for (let pg = 0; pg < 15; pg++) {
             const rS = await fetch(`${ASANA}/projects/${proj}/tasks?limit=100&opt_fields=custom_fields.gid,custom_fields.display_value${offS ? `&offset=${encodeURIComponent(offS)}` : ""}`,
               { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
             const jS = await rS.json().catch(() => ({}));
@@ -2087,6 +2216,33 @@ app.post("*", async (c) => {
           luOwnerEmail = go(/owner e-?mail/i).replace(/;/g, ",").trim().slice(0, 240);
         }
       } catch { /* owner block stays blank */ }
+      // Buildium rental owners are the DEFAULT identity; anything saved on the
+      // LU / TP / PreLease task is a deliberate override and wins (Brittany
+      // 2026-09-10: "no owner communication" owners get a staff address there).
+      // Bench saves write to that task only, never back to Buildium or Client Relations.
+      let ownerNameSource = luOwnerName ? "task" : "";
+      let ownerEmailSource = luOwnerEmail ? "task" : "";
+      if (!luOwnerName || !luOwnerEmail) {
+        try {
+          const pidB = String((u as Record<string, unknown>).PropertyId ?? "").trim();
+          if (pidB) {
+            const orr = await fetch(`https://api.buildium.com/v1/rentals/owners?propertyids=${encodeURIComponent(pidB)}&limit=20`,
+              { headers: { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET } });
+            if (orr.ok) {
+              const owners = (await orr.json().catch(() => [])) as Array<{ IsCompany?: boolean; FirstName?: string; LastName?: string; CompanyName?: string; Email?: string }>;
+              // greeting convention is FIRST names ("Hi Emily,"); Buildium sometimes
+              // stores the full name in FirstName, so take its first word. Companies
+              // keep the full company name (Brittany 2026-09-10).
+              const names = owners.map((o) => o.IsCompany
+                ? String(o.CompanyName ?? "").trim()
+                : (String(o.FirstName ?? "").trim().split(/\s+/)[0] ?? "")).filter(Boolean);
+              const emails = [...new Set(owners.map((o) => String(o.Email ?? "").trim().toLowerCase()).filter(Boolean))];
+              if (!luOwnerName && names.length) { luOwnerName = names.join(" & ").slice(0, 160); ownerNameSource = "buildium"; }
+              if (!luOwnerEmail && emails.length) { luOwnerEmail = emails.join(",").slice(0, 240); ownerEmailSource = "buildium"; }
+            }
+          }
+        } catch { /* defaults stay blank; the team fills them by hand */ }
+      }
       try {
         const pidO = String((u as Record<string, unknown>).PropertyId ?? "").trim();
         if (pidO) {
@@ -2110,6 +2266,8 @@ app.post("*", async (c) => {
         prevBreakdownMonth,
         ownerName: luOwnerName,
         ownerEmail: luOwnerEmail,
+        ownerNameSource,
+        ownerEmailSource,
         ownerComms,
         ownerCrGid,
         ownerSrcGid,
@@ -2669,17 +2827,24 @@ app.post("*", async (c) => {
         if (!lr.ok) return [];
         const list = await lr.json().catch(() => []);
         if (!Array.isArray(list) || !list.length) return [];
+        // Buildium image download endpoints vary between singular/plural; try both.
+        // One downloadrequest per image, in batches of 10: 40 photos resolve in a
+        // few round trips instead of 40 sequential ones (Brittany 2026-09-10)
+        const want = list.slice(0, 40);
         const photos: { id: number; name: string; url: string }[] = [];
-        for (const img of list.slice(0, 20)) {
-          // Buildium image download endpoints vary between singular/plural; try both.
+        const one = async (img: { Id: number; Description?: string }) => {
           let dr = await fetch(`${base}/${img.Id}/downloadrequest`, { method: "POST", headers: BH, body: "{}" });
           if (dr.status === 404 || dr.status === 405) {
             dr = await fetch(`${base}/${img.Id}/downloadrequests`, { method: "POST", headers: BH, body: "{}" });
           }
-          if (!dr.ok) continue;
+          if (!dr.ok) return null;
           const d = await dr.json().catch(() => ({}));
           const url = String(d.DownloadUrl ?? d.Url ?? d.ResultUrl ?? "");
-          if (url) photos.push({ id: img.Id, name: String(img.Description ?? ""), url });
+          return url ? { id: img.Id, name: String(img.Description ?? ""), url } : null;
+        };
+        for (let i = 0; i < want.length; i += 10) {
+          const got = await Promise.all(want.slice(i, i + 10).map(one));
+          for (const p of got) if (p) photos.push(p);
         }
         return photos;
       };
@@ -2865,6 +3030,60 @@ app.post("*", async (c) => {
     // for submit (Brittany 2026-08-14): the code writes to the Unit Settings Keybox
     // Code field the moment it is typed, the video posts to the Conduct subtask the
     // moment the upload finishes. moSubmit re-writes both later; all idempotent.
+    // ---------- moFile: the Move Out v2 inspection from Buildium unit files ----------
+    // The third-party inspector app syncs its report into Buildium; this pulls the
+    // newest unit file whose title contains "Move Out" and re-hosts a copy in storage
+    // (Buildium download links expire, so the emails need a stable URL).
+    if (action === "moFile") {
+      const uidF = String(body.unitId ?? "").replace(/\D/g, "");
+      if (!uidF) return j(headers, 400, { error: "missing_unit" });
+      if (!BUILDIUM_ID || !BUILDIUM_SECRET) return j(headers, 200, { ok: false, error: "buildium_unconfigured" });
+      const BHF = { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET };
+      const frF = await fetch(`https://api.buildium.com/v1/files?entitytype=RentalUnit&entityid=${uidF}&limit=200`, { headers: BHF });
+      if (!frF.ok) return j(headers, 200, { ok: false, error: `buildium_files_${frF.status}` });
+      const filesF = await frF.json().catch(() => []);
+      const candF = (Array.isArray(filesF) ? filesF : [])
+        .map((f: Record<string, unknown>) => ({
+          id: f.Id,
+          name: String(f.Title ?? f.FileName ?? f.Name ?? ""),
+          uploaded: String(f.UploadedDateTime ?? ""),
+          ct: String(f.ContentType ?? ""),
+        }))
+        .filter((f) => /move.?out/i.test(f.name))
+        .sort((a, b) => b.uploaded.localeCompare(a.uploaded));
+      const pickF = candF[0];
+      if (!pickF) return j(headers, 200, { ok: false, error: "not_found" });
+      const dlF = await fetch(`https://api.buildium.com/v1/files/${encodeURIComponent(String(pickF.id))}/downloadrequest`, { method: "POST", headers: BHF });
+      const djF = await dlF.json().catch(() => ({} as Record<string, unknown>));
+      const tmpF = String((djF as Record<string, unknown>).DownloadUrl ?? (djF as Record<string, unknown>).DownloadURL ?? "");
+      if (!dlF.ok || !tmpF) return j(headers, 200, { ok: false, error: "download_request_failed" });
+      const fresF = await fetch(tmpF);
+      if (!fresF.ok) return j(headers, 200, { ok: false, error: "download_failed" });
+      const bufF = new Uint8Array(await fresF.arrayBuffer());
+      if (bufF.length > 30_000_000) return j(headers, 200, { ok: false, error: "file_too_large" });
+      const supaUrlF = Deno.env.get("SUPABASE_URL") ?? "";
+      const supaKeyF = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+      if (!supaUrlF || !supaKeyF) return j(headers, 200, { ok: false, error: "storage_unconfigured" });
+      const shF = { "Authorization": `Bearer ${supaKeyF}`, "apikey": supaKeyF };
+      await fetch(`${supaUrlF}/storage/v1/bucket`, {
+        method: "POST", headers: { ...shF, "Content-Type": "application/json" },
+        body: JSON.stringify({ id: "inspections", name: "inspections", public: true }),
+      }).catch(() => null); // 409 when it exists; fine
+      const safeF = pickF.name.replace(/[^\w.\- ]+/g, "_").slice(0, 120) || "move-out-v2";
+      const extF = /\.[a-z0-9]{2,5}$/i.test(safeF) ? "" : (/pdf/i.test(pickF.ct) ? ".pdf" : "");
+      const keyF = `moveout-v2/${crypto.randomUUID()}/${safeF}${extF}`;
+      const upF = await fetch(`${supaUrlF}/storage/v1/object/inspections/${keyF}`, {
+        method: "POST", headers: { ...shF, "Content-Type": pickF.ct || "application/octet-stream" }, body: bufF,
+      });
+      if (!upF.ok) return j(headers, 200, { ok: false, error: "store_failed" });
+      return j(headers, 200, {
+        ok: true,
+        fileUrl: `${supaUrlF}/storage/v1/object/public/inspections/${keyF}`,
+        fileName: pickF.name,
+        uploaded: pickF.uploaded.slice(0, 10),
+      });
+    }
+
     if (action === "moUpdate") {
       const taskGid = String(body.taskGid ?? "");
       const address = String(body.address ?? "").trim();
@@ -2872,15 +3091,15 @@ app.post("*", async (c) => {
       const videoLink = String(body.videoLink ?? "").trim().slice(0, 400);
       if (!keyboxCode && !videoLink) return j(headers, 400, { error: "missing_fields" });
       let keyboxSaved = false, videoPosted = false;
-      if (keyboxCode && address) {
+      // keybox lives EXCLUSIVELY on the Leasing parent's [Onsite] Key Box field
+      // (Brittany 2026-09-15); Unit Settings' key field is being repurposed as the
+      // post-move-in storage locker label and is no longer written here.
+      if (keyboxCode && taskGid) {
         try {
-          const ms = await matchSettings(address);
-          if (ms.hit) {
-            const cur = await asana("GET", `/tasks/${ms.hit.gid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
-            const f = (cur.custom_fields ?? []).find((x: { gid: string }) => x.gid === "1217495572560475");
-            if (String(f?.display_value ?? "").trim() !== keyboxCode) {
-              await asana("PUT", `/tasks/${ms.hit.gid}`, { custom_fields: { "1217495572560475": keyboxCode } });
-            }
+          const pk = await asana("GET", `/tasks/${taskGid}?opt_fields=parent.gid`) as { parent?: { gid: string } | null };
+          const pg = pk?.parent?.gid;
+          if (pg) {
+            await asana("PUT", `/tasks/${pg}`, { custom_fields: { "1218512667092355": keyboxCode } });
             keyboxSaved = true;
           }
         } catch { /* fail-soft: submit re-writes it */ }
@@ -3004,9 +3223,14 @@ app.post("*", async (c) => {
       ];
       if (inspector) lines.splice(2, 0, `Inspected by: ${inspector}`);
       if (videoLink) { lines.push(`Walkthrough video: ${videoLink}`); lines.push(""); }
-      // keybox CODE never prints in the report/PDF: it lives ONLY in the Unit Settings
-      // Keybox Code field and the owner + vendor access emails (Brittany 2026-08-14)
-      if (keyboxCode) { lines.push("Keybox code updated in Unit Settings."); lines.push(""); }
+      // the Move Out v2 inspection (third-party inspector app -> Buildium files ->
+      // re-hosted copy) is the condition record from 2026-09; link it first
+      const moFileUrl = String(body.moFileUrl ?? "").trim().slice(0, 500);
+      const moFileName = String(body.moFileName ?? "").trim().slice(0, 160);
+      if (/^https:\/\//.test(moFileUrl)) { lines.push(`Move Out Condition Inspection (Move Out v2${moFileName ? ": " + moFileName : ""}): ${moFileUrl}`); lines.push(""); }
+      // keybox CODE never prints in the report/PDF: it lives ONLY on the Leasing
+      // parent's [Onsite] Key Box field and the owner + vendor access emails
+      if (keyboxCode) { lines.push("Keybox code updated on the Leasing task ([Onsite] Key Box)."); lines.push(""); }
       else if (keyboxLoc) { lines.push(`Keybox location: ${keyboxLoc}`); lines.push(""); }
       // ratings retired from the Propose widget (Brittany 2026-08-19); print only if sent
       if (cleanRating || yardRating || cleanNote || yardNote) {
@@ -3058,16 +3282,14 @@ app.post("*", async (c) => {
       }
       try { await asana("PUT", `/tasks/${tuGid}`, { custom_fields: { "1214522138482281": { date: todayStr } } }); } catch { /* fail-soft */ }
 
-      // New keybox code -> the Unit Settings Keybox Code field (its only home besides
-      // the owner + vendor access emails)
+      // New keybox code -> the Leasing parent's [Onsite] Key Box field, its only home
+      // besides the owner + vendor access emails (Brittany 2026-09-15; Unit Settings'
+      // key field is being repurposed as the post-move-in storage locker label)
       let keyboxSaved = false;
-      if (keyboxCode) {
+      if (keyboxCode && parentGid) {
         try {
-          const ms = await matchSettings(address);
-          if (ms.hit) {
-            await asana("PUT", `/tasks/${ms.hit.gid}`, { custom_fields: { "1217495572560475": keyboxCode.slice(0, 40) } });
-            keyboxSaved = true;
-          }
+          await asana("PUT", `/tasks/${parentGid}`, { custom_fields: { "1218512667092355": keyboxCode.slice(0, 40) } });
+          keyboxSaved = true;
         } catch { /* fail-soft: the code still rides the owner email */ }
       }
 
