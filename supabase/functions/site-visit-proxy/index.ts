@@ -3030,6 +3030,22 @@ app.post("*", async (c) => {
     // for submit (Brittany 2026-08-14): the code writes to the Unit Settings Keybox
     // Code field the moment it is typed, the video posts to the Conduct subtask the
     // moment the upload finishes. moSubmit re-writes both later; all idempotent.
+    // ---------- moKb: current [Onsite] Key Box value from the Leasing parent ----------
+    // Prefills the dispatch tool's keybox input so staff see the code on file and
+    // update it when they change the physical code (Brittany 2026-09-15).
+    if (action === "moKb") {
+      const tgK = String(body.taskGid ?? "");
+      if (!tgK) return j(headers, 400, { error: "missing_task" });
+      try {
+        const pkK = await asana("GET", `/tasks/${tgK}?opt_fields=parent.gid`) as { parent?: { gid: string } | null };
+        const pgK = pkK?.parent?.gid;
+        if (!pgK) return j(headers, 200, { ok: true, code: "" });
+        const ptK = await asana("GET", `/tasks/${pgK}?opt_fields=custom_fields.gid,custom_fields.display_value`);
+        const fK = ((ptK.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>).find((x) => x.gid === "1218512667092355");
+        return j(headers, 200, { ok: true, code: String(fK?.display_value ?? "").trim().slice(0, 40) });
+      } catch { return j(headers, 200, { ok: false, code: "" }); }
+    }
+
     // ---------- moFile: the Move Out v2 inspection from Buildium unit files ----------
     // The third-party inspector app syncs its report into Buildium; this pulls the
     // newest unit file whose title contains "Move Out" and re-hosts a copy in storage
