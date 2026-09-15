@@ -3069,7 +3069,7 @@ app.post("*", async (c) => {
         method: "POST", headers: { ...shF, "Content-Type": "application/json" },
         body: JSON.stringify({ id: "inspections", name: "inspections", public: true }),
       }).catch(() => null); // 409 when it exists; fine
-      const safeF = pickF.name.replace(/[^\w.\- ]+/g, "_").slice(0, 120) || "move-out-v2";
+      const safeF = pickF.name.replace(/[^\w.\-]+/g, "_").slice(0, 120) || "move-out-v2"; // no spaces: the URL rides plain-text emails
       const extF = /\.[a-z0-9]{2,5}$/i.test(safeF) ? "" : (/pdf/i.test(pickF.ct) ? ".pdf" : "");
       const keyF = `moveout-v2/${crypto.randomUUID()}/${safeF}${extF}`;
       const upF = await fetch(`${supaUrlF}/storage/v1/object/inspections/${keyF}`, {
