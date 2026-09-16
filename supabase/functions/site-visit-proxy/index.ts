@@ -3072,8 +3072,13 @@ app.post("*", async (c) => {
       const addrF = String(body.address ?? "").trim();
       const streetNoF = (addrF.match(/^\d+/) ?? [""])[0];
       const dateishF = (n: string) => /\d{1,4}[-\/.]\d{1,2}[-\/.]\d{1,4}/.test(n);
-      const appNamed = allF.filter((f) => dateishF(f.name) && (!streetNoF || f.name.trim().startsWith(streetNoF)));
-      const moNamed = allF.filter((f) => /move.?out/i.test(f.name));
+      // dispatch runs right after the inspection, and old files reuse both naming
+      // schemes (a 2024 "address - date" file nearly matched on 447916): only files
+      // UPLOADED in the last 60 days count
+      const freshCut = new Date(Date.now() - 60 * 86400000).toISOString();
+      const freshF = allF.filter((f) => f.uploaded && f.uploaded >= freshCut);
+      const appNamed = freshF.filter((f) => dateishF(f.name) && (!streetNoF || f.name.trim().startsWith(streetNoF)));
+      const moNamed = freshF.filter((f) => /move.?out/i.test(f.name));
       const pickF = appNamed[0] ?? moNamed[0];
       if (!pickF) return j(headers, 200, { ok: false, error: "not_found" });
       const dlF = await fetch(`https://api.buildium.com/v1/files/${encodeURIComponent(String(pickF.id))}/downloadrequest`, { method: "POST", headers: BHF });
