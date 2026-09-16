@@ -3120,9 +3120,15 @@ app.post("*", async (c) => {
       }).catch(() => null); // 409 when it exists; fine
       const safeF = pickF.name.replace(/[^\w.\-]+/g, "_").slice(0, 120) || "move-out-v2"; // no spaces: the URL rides plain-text emails
       const extF = /\.[a-z0-9]{2,5}$/i.test(safeF) ? "" : (/pdf/i.test(pickF.ct) ? ".pdf" : "");
-      const keyF = `moveout-v2/${crypto.randomUUID()}/${safeF}${extF}`;
+      // deterministic path: the URL reads as the filename, the same Buildium file
+      // always maps to one stable URL (no per-refresh duplicate copies), and the
+      // short hash segment keeps it unguessable (Brittany 2026-09-16)
+      const hashInF = new TextEncoder().encode(String(pickF.id) + ":" + uidF);
+      const hashF = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", hashInF)))
+        .map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 16);
+      const keyF = `moveout-v2/${hashF}/${safeF}${extF}`;
       const upF = await fetch(`${supaUrlF}/storage/v1/object/inspections/${keyF}`, {
-        method: "POST", headers: { ...shF, "Content-Type": pickF.ct || "application/octet-stream" }, body: bufF,
+        method: "POST", headers: { ...shF, "Content-Type": pickF.ct || "application/octet-stream", "x-upsert": "true" }, body: bufF,
       });
       if (!upF.ok) return j(headers, 200, { ok: false, error: "store_failed" });
       return j(headers, 200, {
