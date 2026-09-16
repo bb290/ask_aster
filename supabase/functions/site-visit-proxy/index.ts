@@ -3184,16 +3184,21 @@ app.post("*", async (c) => {
         const subs9 = await asana("GET", `/tasks/${tuGid9}/subtasks?limit=100&opt_fields=name,completed`);
         const list9 = (subs9 ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
         if (kind9 === "vendor") {
-          // vendor dispatch record: comment + TO assignee + due today, left OPEN until sent (Brittany 2026-08-20)
-          const vTask = list9.find((t) => /^email\s*\|\s*vendor.*dispatch\s*rent\s*ready/i.test(t.name)) ??
-                        list9.find((t) => /^email\s*\|\s*vendor/i.test(t.name));
-          if (!vTask) return j(headers, 200, { ok: true, emailLogged: null });
-          await postStory(vTask.gid, emailCopy);
-          const tu9 = await asana("GET", `/tasks/${tuGid9}?opt_fields=assignee.gid`).catch(() => null);
-          const upd9: Record<string, unknown> = { due_on: today9 };
-          if (tu9?.assignee?.gid) upd9.assignee = tu9.assignee.gid;
-          await asana("PUT", `/tasks/${vTask.gid}`, upd9).catch(() => null);
-          return j(headers, 200, { ok: true, emailLogged: vTask.name });
+          // vendor dispatch email posts as a comment on the TURN OVER task itself,
+          // @mentioning its assignee, and the task goes due today (Brittany
+          // 2026-09-16; the Email | Vendor subtask is no longer touched)
+          const tu9 = await asana("GET", `/tasks/${tuGid9}?opt_fields=assignee.gid,assignee.name`).catch(() => null);
+          const aGid9 = tu9?.assignee?.gid ?? "";
+          try {
+            const html9 = storyHtml(emailCopy);
+            await asana("POST", `/tasks/${tuGid9}/stories`, {
+              html_text: aGid9 ? html9.replace("<body>", `<body><a data-asana-gid="${aGid9}"/>\n`) : html9,
+            });
+          } catch {
+            await postStory(tuGid9, emailCopy);
+          }
+          await asana("PUT", `/tasks/${tuGid9}`, { due_on: today9 }).catch(() => null);
+          return j(headers, 200, { ok: true, emailLogged: "the Turn Over task" + (tu9?.assignee?.name ? ", @" + tu9.assignee.name + " mentioned" : "") + ", due today" });
         }
         // owner email lands on the MOVE-OUT task's "Email | Owner - Move Out
         // Notification" subtask (Brittany 2026-09-16); older cycles without that
