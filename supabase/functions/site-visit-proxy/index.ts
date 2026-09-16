@@ -3156,6 +3156,20 @@ app.post("*", async (c) => {
           if (pg) {
             await asana("PUT", `/tasks/${pg}`, { custom_fields: { "1218512667092355": keyboxCode } });
             keyboxSaved = true;
+            // a saved code completes the Move-Out subtask "Change | Lockbox code &
+            // Update 1Password" (Brittany 2026-09-16); the code itself never posts
+            try {
+              const sibsL = ((await asana("GET", `/tasks/${pg}/subtasks?limit=100&opt_fields=name`)) ?? []) as Array<{ gid: string; name: string }>;
+              const moL = sibsL.find((t) => /^move.?out\s*\|/i.test(t.name));
+              if (moL) {
+                const mSubL = ((await asana("GET", `/tasks/${moL.gid}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+                const chL = mSubL.find((t) => /change\s*\|.*lockbox/i.test(t.name));
+                if (chL && !chL.completed) {
+                  const todayL = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+                  await asana("PUT", `/tasks/${chL.gid}`, { completed: true, due_on: todayL }).catch(() => null);
+                }
+              }
+            } catch { /* fail-soft */ }
           }
         } catch { /* fail-soft: submit re-writes it */ }
       }
