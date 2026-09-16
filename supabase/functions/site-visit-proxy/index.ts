@@ -3042,7 +3042,19 @@ app.post("*", async (c) => {
         if (!pgK) return j(headers, 200, { ok: true, code: "" });
         const ptK = await asana("GET", `/tasks/${pgK}?opt_fields=custom_fields.gid,custom_fields.display_value`);
         const fK = ((ptK.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>).find((x) => x.gid === "1218512667092355");
-        return j(headers, 200, { ok: true, code: String(fK?.display_value ?? "").trim().slice(0, 40) });
+        // owner name + email from the LU/TP/PreLease sibling, for the email previews
+        let ownerNameK = "", ownerEmailK = "";
+        try {
+          const subsK = await asana("GET", `/tasks/${pgK}/subtasks?limit=100&opt_fields=name`);
+          const luK = ((subsK ?? []) as Array<{ gid: string; name: string }>).find((t) => /^(lu|tp|pre.?lease)\s*\|/i.test(t.name));
+          if (luK) {
+            const luT = await asana("GET", `/tasks/${luK.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+            const cfK = (luT.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
+            ownerNameK = String(cfK.find((f) => /owner name/i.test(f.name))?.display_value ?? "").trim().slice(0, 160);
+            ownerEmailK = String(cfK.find((f) => /owner e-?mail/i.test(f.name))?.display_value ?? "").replace(/;/g, ",").trim().slice(0, 200);
+          }
+        } catch { /* previews fall back to the token */ }
+        return j(headers, 200, { ok: true, code: String(fK?.display_value ?? "").trim().slice(0, 40), ownerName: ownerNameK, ownerEmail: ownerEmailK });
       } catch { return j(headers, 200, { ok: false, code: "" }); }
     }
 
@@ -3081,7 +3093,7 @@ app.post("*", async (c) => {
       // manually-uploaded "Move Out ..." inspections in the emails)
       const appNamed = freshF.filter((f) => dateishF(f.name) && (!streetNoF || f.name.trim().startsWith(streetNoF)));
       const pickF = appNamed[0];
-      if (!pickF) return j(headers, 200, { ok: false, error: "not_found" });
+      if (!pickF) return j(headers, 200, { ok: false, error: "not_found", fresh: freshF.slice(0, 8).map((f) => f.name + " (up " + f.uploaded.slice(0, 10) + ")") });
       const dlF = await fetch(`https://api.buildium.com/v1/files/${encodeURIComponent(String(pickF.id))}/downloadrequest`, { method: "POST", headers: BHF });
       const djF = await dlF.json().catch(() => ({} as Record<string, unknown>));
       const tmpF = String((djF as Record<string, unknown>).DownloadUrl ?? (djF as Record<string, unknown>).DownloadURL ?? "");
