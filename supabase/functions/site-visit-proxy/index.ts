@@ -3077,9 +3077,10 @@ app.post("*", async (c) => {
       // UPLOADED in the last 60 days count
       const freshCut = new Date(Date.now() - 60 * 86400000).toISOString();
       const freshF = allF.filter((f) => f.uploaded && f.uploaded >= freshCut);
+      // app-named files ONLY (Brittany 2026-09-15: the fallback was surfacing old
+      // manually-uploaded "Move Out ..." inspections in the emails)
       const appNamed = freshF.filter((f) => dateishF(f.name) && (!streetNoF || f.name.trim().startsWith(streetNoF)));
-      const moNamed = freshF.filter((f) => /move.?out/i.test(f.name));
-      const pickF = appNamed[0] ?? moNamed[0];
+      const pickF = appNamed[0];
       if (!pickF) return j(headers, 200, { ok: false, error: "not_found" });
       const dlF = await fetch(`https://api.buildium.com/v1/files/${encodeURIComponent(String(pickF.id))}/downloadrequest`, { method: "POST", headers: BHF });
       const djF = await dlF.json().catch(() => ({} as Record<string, unknown>));

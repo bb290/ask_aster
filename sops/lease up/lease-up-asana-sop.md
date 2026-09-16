@@ -24,7 +24,7 @@ Pre-listing steps (1–2) are handled by the Leasing Team Lead. Active listing s
  4. [4 — Upload | Photos to Buildium & Google Drive](4-upload-photos-to-buildium-google-drive.md) — confirm photos are ready and upload to both platforms
  5. [5 — Prepare | 📐 Floor Plan](5-prepare-floor-plan.md) — prepare floor plan graphic for the listing (TODO)
  6. [6 — Decide | Occupied showings? (y/n)](6-decide-occupied-showings-y-n.md) — decide whether to allow occupied showings (TODO criteria)
- 7. [7 — Go Live | Buildium Listing & Update list_date metric](7-go-live-buildium-listing-update-list-date-metric.md) — post the listing and record list_date
+ 7. [7 — Go Live | BD Listing; Input 💁 List Date](7-go-live-bd-listing-input-list-date.md) — post the listing and input 💁 List Date on the LU task
  8. [8 — Assign | Task to Agent & Move to Active Section](8-assign-task-to-agent-move-to-active-section.md) — assign parent task and subtasks to the team
  9. [9 — Email | Owner - Property Listed Notification](9-email-owner-property-listed-notification.md) — formally notify the owner the listing is live
 10. [10 — Record | Listing Video](10-record-listing-video.md) — capture walk-through video and upload to Google Drive

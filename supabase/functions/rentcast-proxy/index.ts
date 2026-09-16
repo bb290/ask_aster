@@ -107,7 +107,8 @@ app.post("*", async (c) => {
     return new Response(JSON.stringify({ error: "rate_limited", message: "Daily lookup limit reached. Try again tomorrow, or request a proposal and we'll run the numbers for you." }), { status: 429, headers });
   }
 
-  const cacheKey = [address.toLowerCase(), propertyType, bedrooms ?? "", bathrooms ?? "", squareFootage ?? "", maxRadius ?? "", "v2"].join("|");
+  // v7: bedroom-exact comp filter when bedrooms is specified (v6: sweep merged + DOM noise filter)
+  const cacheKey = [address.toLowerCase(), propertyType, bedrooms ?? "", bathrooms ?? "", squareFootage ?? "", maxRadius ?? "", "v7"].join("|");
   const { data: cacheRow } = await supabase
     .from("rentcast_cache").select("payload, created_at").eq("cache_key", cacheKey).maybeSingle();
 
@@ -153,14 +154,28 @@ app.post("*", async (c) => {
   }
 
   const raw = await upstream.json();
+  // DOM noise filter (Brittany 2026-09-12, all three benches): 1-day listings are
+  // just-seen artifacts and 100+ day "actives" are stale (a 1,454-DOM listing
+  // surfaced 2026-09-11); comps with no DOM at all stay in.
+  const domOk = (d: unknown) => {
+    const n = Number(d);
+    return d == null || !isFinite(n) || (n !== 1 && n < 100);
+  };
   await supabase.rpc("rentcast_increment", { p_day: today, p_scope: "global" });
+
+  // Bedroom-exact filter (Brittany 2026-09-13: "I input 2 bed & it's giving me
+  // 2,3,4 bed units. I want JUST 2 bedrooms"). RentCast's AVM treats bedrooms as
+  // a subject attribute, not a comp filter, so near-miss comps ride along; when
+  // the caller specifies bedrooms, every comp must match exactly. Unknown-bedroom
+  // comps drop too - a comp we can't verify isn't a comp.
+  const bedOk = (b: unknown) => bedrooms === undefined || Number(b) === bedrooms;
 
   // Trim to exactly what the widget needs; never pass the raw payload through.
   const payload = {
     rent: raw.rent ?? null,
     rentRangeLow: raw.rentRangeLow ?? null,
     rentRangeHigh: raw.rentRangeHigh ?? null,
-    comparables: (Array.isArray(raw.comparables) ? raw.comparables : []).slice(0, 25).map((x: Record<string, unknown>) => ({
+    comparables: (Array.isArray(raw.comparables) ? raw.comparables : []).filter((x: Record<string, unknown>) => domOk(x.daysOnMarket) && bedOk(x.bedrooms)).slice(0, 25).map((x: Record<string, unknown>) => ({
       address: x.formattedAddress ?? "",
       rent: x.price ?? null,
       bedrooms: x.bedrooms ?? null,
@@ -170,8 +185,65 @@ app.post("*", async (c) => {
       daysOld: x.daysOld ??
         (x.lastSeenDate ? Math.max(0, Math.round((Date.now() - Date.parse(String(x.lastSeenDate))) / 86400000)) : null),
       status: x.status ?? null,
+      // Listing timeline (Brittany 2026-09-07): when the comp listed at the shown
+      // price, when it was delisted, and how long it ran. Inquiry counts are the
+      // listing platform's private data and are NOT available from any source.
+      listedDate: x.listedDate ?? null,
+      removedDate: x.removedDate ?? null,
+      daysOnMarket: x.daysOnMarket ?? null,
     })),
   };
+
+  // ALSO sweep /listings/rental/long-term for every ACTIVE listing in the radius
+  // (Brittany 2026-09-11: the AVM's model-picked comp set skipped active units
+  // the team then found by hand on Zillow). The AVM chooses ~25 comps for its
+  // estimate; it is not a listings search. Public reports get the sweep too
+  // (Brittany same day); note each fresh report now costs TWO upstream calls
+  // against the daily caps.
+  {
+    try {
+      const lqs = new URLSearchParams({ address, status: "Active", limit: "100", radius: String(maxRadius ?? 1) });
+      // the sweep pulled EVERY active listing regardless of bedrooms until 2026-09-13;
+      // filter at the source so the 100-listing budget isn't spent on wrong sizes
+      if (bedrooms !== undefined) lqs.set("bedrooms", String(bedrooms));
+      const lr = await fetch(`https://api.rentcast.io/v1/listings/rental/long-term?${lqs}`, {
+        headers: { "X-Api-Key": RENTCAST_API_KEY, "Accept": "application/json" },
+      });
+      if (lr.ok) {
+        const lj = await lr.json();
+        await supabase.rpc("rentcast_increment", { p_day: today, p_scope: "global" });
+        const norm = (s: unknown) => String(s ?? "").toLowerCase().replace(/[^a-z0-9]/g, "");
+        const seen = new Set(payload.comparables.map((c: { address: unknown }) => norm(c.address)));
+        seen.add(norm(address));
+        const subLat = Number(raw.latitude), subLng = Number(raw.longitude);
+        const dist = (la: number, ln: number) => {
+          if (!isFinite(subLat) || !isFinite(subLng) || !isFinite(la) || !isFinite(ln)) return null;
+          const R = 3958.8, toR = Math.PI / 180;
+          const dLa = (la - subLat) * toR, dLn = (ln - subLng) * toR;
+          const a = Math.sin(dLa / 2) ** 2 + Math.cos(subLat * toR) * Math.cos(la * toR) * Math.sin(dLn / 2) ** 2;
+          return Math.round(R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)) * 10) / 10;
+        };
+        const extras = (Array.isArray(lj) ? lj : [])
+          .map((x: Record<string, unknown>) => ({
+            address: x.formattedAddress ?? "",
+            rent: x.price ?? null,
+            bedrooms: x.bedrooms ?? null,
+            bathrooms: x.bathrooms ?? null,
+            squareFootage: x.squareFootage ?? null,
+            distance: dist(Number(x.latitude), Number(x.longitude)),
+            daysOld: x.lastSeenDate ? Math.max(0, Math.round((Date.now() - Date.parse(String(x.lastSeenDate))) / 86400000)) : 0,
+            status: x.status ?? "Active",
+            listedDate: x.listedDate ?? null,
+            removedDate: x.removedDate ?? null,
+            daysOnMarket: x.daysOnMarket ?? null,
+          }))
+          .filter((e) => e.address && e.rent != null && domOk(e.daysOnMarket) && bedOk(e.bedrooms) && !seen.has(norm(e.address)))
+          .sort((a, b) => (a.distance ?? 99) - (b.distance ?? 99))
+          .slice(0, 40);
+        payload.comparables = payload.comparables.concat(extras);
+      }
+    } catch { /* the AVM comps still return; the sweep is additive */ }
+  }
 
   await supabase.from("rentcast_cache").upsert({ cache_key: cacheKey, payload, created_at: new Date().toISOString() });
 

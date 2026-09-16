@@ -1092,8 +1092,19 @@ app.post("/onboard-proxy", async (c) => {
       const deals = (bj?.results ?? []).filter((d: { properties?: Record<string, string> }) => d.properties?.pipeline === "2185322227")
         .sort((a: { properties?: Record<string, string> }, b: { properties?: Record<string, string> }) =>
           String(b.properties?.hs_lastmodifieddate ?? "").localeCompare(String(a.properties?.hs_lastmodifieddate ?? "")));
-      const deal = deals[0];
-      if (!deal) return j(headers, 404, { error: "no_mgmt_deal", message: "No Mgmt 3.0 deal for that contact." });
+      // When the workbench names the deal it loaded, write to exactly that deal - and
+      // FAIL rather than fall back to latest-modified: with several deals on one contact
+      // a fallback could quietly save one property's analysis onto another's deal
+      // (peddy721 case 2026-09-10).
+      const saveDealId = String(body.dealId ?? "").replace(/[^0-9]/g, "").slice(0, 30);
+      const deal = saveDealId
+        ? deals.find((d: { id?: unknown }) => String(d.id ?? "") === saveDealId)
+        : deals[0];
+      if (!deal) {
+        return j(headers, 404, saveDealId
+          ? { error: "deal_mismatch", message: "That deal is not associated with this contact anymore. Re-run the lookup and try again." }
+          : { error: "no_mgmt_deal", message: "No Mgmt 3.0 deal for that contact." });
+      }
       const props: Record<string, string> = {};
       if (Number.isFinite(rent) && rent > 0) props.estimated_rent = String(rent);
       if (propUrl) props.ob_proposal_url = propUrl;
@@ -1149,8 +1160,12 @@ app.post("/onboard-proxy", async (c) => {
       const HS = Deno.env.get("HUBSPOT_CRM_TOKEN") ?? "";
       const email = String(body.email ?? "").trim().slice(0, 200);
       const slugIn = String(body.slug ?? "").trim().toLowerCase().slice(0, 120).replace(/[^a-z0-9-]/g, "");
+      // Staff can target a specific deal: one contact can hold several Mgmt 3.0 deals
+      // (peddy721 case 2026-09-10: three addresses, latest-modified always won).
+      const dealIdIn = String(body.dealId ?? "").replace(/[^0-9]/g, "").slice(0, 30);
       if (!HS || (!email && !slugIn)) return j(headers, 200, { ok: true, proposal: {} });
       const staff = !!TEAM_KEY && c.req.header("x-sv-key") === TEAM_KEY;
+      let allDeals: { id: string; p: Record<string, string> }[] = [];
       try {
         const hs = (path: string, init?: RequestInit) => fetch("https://api.hubapi.com" + path, {
           ...init, headers: { "Authorization": `Bearer ${HS}`, "Content-Type": "application/json" },
@@ -1181,7 +1196,9 @@ app.post("/onboard-proxy", async (c) => {
             .filter((d: { id: string; p: Record<string, string> }) => d.p.pipeline === "2185322227");
           deals.sort((a: { p: Record<string, string> }, b: { p: Record<string, string> }) =>
             String(b.p.hs_lastmodifieddate ?? "").localeCompare(String(a.p.hs_lastmodifieddate ?? "")));
-          dd = deals[0];
+          allDeals = deals;
+          // staff picks a specific deal by id (unknown ids fall back to latest, a read is harmless)
+          dd = (staff && dealIdIn ? deals.find((d: { id: string }) => d.id === dealIdIn) : undefined) ?? deals[0];
         } else {
           // Slug path: deal first (CONTAINS_TOKEN narrows, the endsWith check makes it exact -
           // token search alone could match a subset address), then the associated contact.
@@ -1232,7 +1249,12 @@ app.post("/onboard-proxy", async (c) => {
         } catch { /* non-fatal */ }
         const name = String(d0.dealname ?? "").replace(/^\s*\[[^\]]*\]\s*/, "").trim();
         const city = String(d0.subject_city ?? "").trim();
-        const address = city && name && !name.toLowerCase().includes(city.toLowerCase()) ? `${name}, ${city}` : name;
+        let address = city && name && !name.toLowerCase().includes(city.toLowerCase()) ? `${name}, ${city}` : name;
+        // Without a state, RentCast geocodes ambiguous city names anywhere in the US
+        // ("4914 131st Place SE, Bellevue" matched Bellevue NE and returned Omaha
+        // comps, 2026-09-07). Sagareus only manages WA property, so pin the state
+        // whenever the deal address doesn't already end with one.
+        if (address && !/\b(WA|Washington)\b\.?,?\s*(\d{5}(-\d{4})?)?\s*$/i.test(address)) address = `${address}, WA`;
         let data: unknown = null;
         try { data = d0.ob_proposal_data ? JSON.parse(String(d0.ob_proposal_data)) : null; } catch { data = null; }
         const out: Record<string, unknown> = {
@@ -1276,6 +1298,10 @@ app.post("/onboard-proxy", async (c) => {
           out.rentometer = String(d0.rentometer_link ?? "");
           out.dealName = String(d0.dealname ?? "");
           out.dealId = dd?.id ?? "";   // Save To Deal opens the deal record in HubSpot
+          // one contact, several properties: the workbench renders a deal chooser
+          if (allDeals.length > 1) {
+            out.deals = allDeals.map((d) => ({ id: d.id, name: String(d.p.dealname ?? ""), stage: String(d.p.dealstage ?? "") }));
+          }
         }
         return j(headers, 200, { ok: true, proposal: out });
       } catch { return j(headers, 200, { ok: true, proposal: {} }); }
@@ -1741,16 +1767,23 @@ app.post("/onboard-proxy", async (c) => {
             if (!lr.ok) return [] as { name: string; url: string }[];
             const list = await lr.json().catch(() => []);
             if (!Array.isArray(list) || !list.length) return [];
+            // one downloadrequest per image; batches of 10 so 40 photos resolve
+            // in a few round trips instead of 40 sequential ones (Brittany 2026-09-10)
+            const want = list.slice(0, 40);
             const photos: { name: string; url: string }[] = [];
-            for (const img of list.slice(0, 12)) {
+            const one = async (img: { Id: number; Description?: string }) => {
               let dr = await fetch(`${base}/${img.Id}/downloadrequest`, { method: "POST", headers: BH, body: "{}" });
               if (dr.status === 404 || dr.status === 405) {
                 dr = await fetch(`${base}/${img.Id}/downloadrequests`, { method: "POST", headers: BH, body: "{}" });
               }
-              if (!dr.ok) continue;
+              if (!dr.ok) return null;
               const d = await dr.json().catch(() => ({}));
               const url = String(d.DownloadUrl ?? d.Url ?? d.ResultUrl ?? "");
-              if (url) photos.push({ name: String(img.Description ?? "").slice(0, 80), url });
+              return url ? { name: String(img.Description ?? "").slice(0, 80), url } : null;
+            };
+            for (let i = 0; i < want.length; i += 10) {
+              const got = await Promise.all(want.slice(i, i + 10).map(one));
+              for (const p of got) if (p) photos.push(p);
             }
             return photos;
           };
@@ -1783,6 +1816,9 @@ app.post("/onboard-proxy", async (c) => {
             bathrooms: cc.bathrooms ?? null,
             squareFootage: Number(cc.squareFootage) || null,
             distance: cc.distance != null && isFinite(Number(cc.distance)) ? Number(cc.distance) : null,
+            // per-comp data from the bench (Brittany 2026-09-11): shown only when filled
+            inq: cc.inq != null && isFinite(Number(cc.inq)) ? Number(cc.inq) : null,
+            conc: String(cc.conc ?? "").slice(0, 200) || null,
           })) : [];
           return j(headers, 200, { ok: true, comps: {
             rent: dnum(data.rent) ?? dnum(g(/^market rent$/i)),
@@ -2383,7 +2419,21 @@ app.post("/onboard-proxy", async (c) => {
       const videosM: string[] = [];
       const extraPhotos: string[] = [];
       try {
-        const stM = ((await asana("GET", `/tasks/${toM.gid}/stories?limit=100&opt_fields=type,text,created_at`)) ?? []) as Array<{ type: string; text?: string; created_at?: string }>;
+        // stories come back OLDEST first, 100/page: walk every page or a
+        // long-lived Turn Over task hides its newest dispatch report
+        // (site-visit-proxy 422789 bug class, Brittany 2026-09-10)
+        const stAll: Array<Record<string, unknown>> = [];
+        let stOff = "";
+        for (let stPg = 0; stPg < 15; stPg++) {
+          const stR = await fetch(`${ASANA}/tasks/${toM.gid}/stories?limit=100&opt_fields=type,text,created_at${stOff ? `&offset=${encodeURIComponent(stOff)}` : ""}`,
+            { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+          const stJ = await stR.json().catch(() => ({}));
+          if (!stR.ok) break;
+          stAll.push(...((stJ.data ?? []) as Array<Record<string, unknown>>));
+          stOff = stJ.next_page?.offset ?? "";
+          if (!stOff) break;
+        }
+        const stM = stAll as Array<{ type: string; text?: string; created_at?: string }>;
         let newest = "";
         for (const x of stM) {
           const tx = String(x.text ?? "");
@@ -2420,9 +2470,13 @@ app.post("/onboard-proxy", async (c) => {
       if (insLine) inspectorM = insLine.replace(/^inspected by\s*:?\s*/i, "").split(/\s+-\s+|--/)[0].replace(/^:\s*/, "").trim().slice(0, 60);
       const sectionsM: Array<{ title: string; lines: string[] }> = [];
       const photosM: string[] = [];
+      let pdfUrlM = "";
       let cur: { title: string; lines: string[] } | null = null;
       for (const l of linesM.slice(1)) {
         const t2 = l.trim();
+        // the attached-PDF line moves to the page header as a download button
+        const pm2 = t2.match(/^[\w\s-]*pdf\s*:\s*(https?:\/\/\S+)/i);
+        if (pm2) { if (!pdfUrlM) pdfUrlM = pm2[1].slice(0, 500); continue; }
         if (HEADS.test(t2)) {
           if (/^PHOTO BACKUPS/i.test(t2)) { cur = { title: "__photos__", lines: [] }; continue; }
           cur = { title: t2.replace(/:$/, ""), lines: [] };
@@ -2441,6 +2495,7 @@ app.post("/onboard-proxy", async (c) => {
         sections: sectionsM.filter((s2) => s2.lines.length).slice(0, 12),
         photos: photosM.concat(extraPhotos.filter((u2) => !photosM.includes(u2))).slice(0, 100),
         videos: videosM.slice(0, 6),
+        pdfUrl: pdfUrlM,
       });
     }
 

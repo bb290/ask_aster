@@ -22,7 +22,7 @@ A listing that posts in Buildium but fails to syndicate costs real inquiries; Zi
 
 ## When This Runs
 
-2 days after [7 — Go Live | Buildium Listing & Update list_date metric](7-go-live-buildium-listing-update-list-date-metric.md). Assigned to the Leasing Assistant as a +2 subtask during step 8.
+2 days after [7 — Go Live | BD Listing; Input 💁 List Date](7-go-live-bd-listing-input-list-date.md). Assigned to the Leasing Assistant as a +2 subtask during step 8.
 
 ## Procedure
 

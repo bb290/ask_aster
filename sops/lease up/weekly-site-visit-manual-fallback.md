@@ -4,9 +4,9 @@ service_line: lease up
 sop_owner: brittany@sagareus.com
 outline_url: https://sagareus.getoutline.com/doc/weekly-site-visit-manual-fallback-bdcObUreW9
 status: active
-last_reviewed: 2026-07-21
+last_reviewed: 2026-07-29
 visibility_tier: ic
-version: 1
+version: 2
 tags: [leasing, site-visit, manual-fallback, inspection, operation-no-drama]
 created_but_never_updated: false
 ---
@@ -39,7 +39,7 @@ SITE VISIT — [date]
 
 ESSENTIALS (if these pass, someone can move in)
 ( ) 3 Front Keys — each tested in the door, rekeyed since last resident
-( ) 2 Mailbox Keys — each tested, box empty
+( ) 1 Mailbox Key — tested, box empty
 ( ) Photo Clean — lights on, blinds open, counters clear, showing-ready
 ( ) Move-In Clean — no odor, scrubbed, cabinets/closets empty, zero prior resident items
 ( ) Smoke & CO Detectors — each bedroom + common area, CO per floor, no chirps

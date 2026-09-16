@@ -4,9 +4,9 @@ service_line: lease up
 sop_owner: brittany@sagareus.com
 outline_url: https://sagareus.getoutline.com/doc/weekly-site-visit-yjZFdeB9EC
 status: active
-last_reviewed: 2026-07-21
+last_reviewed: 2026-07-29
 visibility_tier: ic
-version: 8
+version: 9
 tags: [leasing, site-visit, vacant-unit, move-in, turnover, documentation, operation-no-drama, leasing-3.0, site-visit-tool]
 created_but_never_updated: false
 ---
@@ -34,7 +34,7 @@ These are the misses that generated real post-move-in tickets in the last 90 day
 * **Appliances: actually run them.** Washer, dryer, dishwasher, fridge and ice maker, disposal, oven, microwave. "Looks fine" is not tested.
 * **Heating and A/C: actually test them.** Turn the heat on and feel warm air. Run the A/C and feel cold air. Check the thermostat responds and remotes are installed. No smells, no random shutoffs.
 * **Keys and access.** 3 unit keys, garage remotes. Locks lock, and no two units share a key.
-* **2 mailbox keys: actually test them.** Put the key in the mailbox lock and turn it. A key that exists but does not open the box is a missing mailbox key.
+* **1 mailbox key: actually test it.** Put the key in the mailbox lock and turn it. A key that exists but does not open the box is a missing mailbox key.
 * **Cleanliness/Smell.** Still clean since the last clean? Fridge, oven, cabinets, window sills, floors.
 * **Pests.** Ants, roaches, spiders, droppings. Kitchen and bathrooms first.
 * **Water.** Leaks under sinks, running toilets, water pressure, hot water, caulk and seals around tubs.
