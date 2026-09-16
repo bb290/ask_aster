@@ -3195,8 +3195,24 @@ app.post("*", async (c) => {
           await asana("PUT", `/tasks/${vTask.gid}`, upd9).catch(() => null);
           return j(headers, 200, { ok: true, emailLogged: vTask.name });
         }
-        const emailTask = list9.find((t) => /^email\s*\|\s*owner.*turn\s*over\s*plan/i.test(t.name)) ??
-                          list9.find((t) => /^email\s*\|\s*owner.*turn\s*over/i.test(t.name));
+        // owner email lands on the MOVE-OUT task's "Email | Owner - Move Out
+        // Notification" subtask (Brittany 2026-09-16); older cycles without that
+        // subtask fall back to the Turn Over subtask names
+        let emailTask: { gid: string; name: string } | null = null;
+        try {
+          const pk9 = await asana("GET", `/tasks/${tuGid9}?opt_fields=parent.gid`) as { parent?: { gid: string } | null };
+          if (pk9?.parent?.gid) {
+            const sibs9 = ((await asana("GET", `/tasks/${pk9.parent.gid}/subtasks?limit=100&opt_fields=name`)) ?? []) as Array<{ gid: string; name: string }>;
+            const mo9 = sibs9.find((t) => /^move.?out\s*\|/i.test(t.name));
+            if (mo9) {
+              const mSubs9 = ((await asana("GET", `/tasks/${mo9.gid}/subtasks?limit=100&opt_fields=name`)) ?? []) as Array<{ gid: string; name: string }>;
+              emailTask = mSubs9.find((t) => /email\s*\|\s*owner.*move\s*out\s*notification/i.test(t.name)) ?? null;
+            }
+          }
+        } catch { /* fall back below */ }
+        emailTask = emailTask ??
+          list9.find((t) => /^email\s*\|\s*owner.*turn\s*over\s*plan/i.test(t.name)) ??
+          list9.find((t) => /^email\s*\|\s*owner.*turn\s*over/i.test(t.name)) ?? null;
         if (!emailTask) return j(headers, 200, { ok: true, emailLogged: null });
         await postStory(emailTask.gid, emailCopy);
         await asana("PUT", `/tasks/${emailTask.gid}`, { due_on: today9, completed: true }).catch(() => null);
@@ -3296,10 +3312,15 @@ app.post("*", async (c) => {
       if (odor) lines.push(`Odor: ${odor}`);
       if (mold) lines.push(`Mold: ${mold}`);
       if (pests) lines.push(`Pests: ${pests}`);
+      // no work-order sections on findings-less submits (2026-09-16: the Move Out
+      // v2 report carries the condition detail; legacy dispatch callers still send
+      // findings and keep the sections)
+      if (findings.length) {
       lines.push("");
       lines.push(`REQUIRED WORK ORDER (${reqFindings.length} item${reqFindings.length === 1 ? "" : "s"}) -- estimate 1, executed up to Authorization`);
       reqFindings.forEach((f) => lines.push(`- ${f.type}${f.note ? " -- " + f.note : ""}${f.photos ? ` (${f.photos} photo${f.photos > 1 ? "s" : ""})` : ""}`));
       if (!reqFindings.length) lines.push("None. Everything not listed is assumed OK.");
+      }
       if (optFindings.length) {
         lines.push("");
         lines.push(`OPTIONAL UPGRADES (${optFindings.length} item${optFindings.length === 1 ? "" : "s"}) -- estimate 2 separately; owner picks from these`);
@@ -3327,13 +3348,21 @@ app.post("*", async (c) => {
       }
       const story = await postStory(tuGid, lines.join("\n").slice(0, 60000));
 
-      // The Move-Out inspection subtask is deliberately left incomplete
-      // (Brittany 2026-08-14); only the completion-date field below is stamped.
-
-      // Move Out Completion Date on the MOVE-OUT task (Brittany 2026-08-20; was the LU task),
-      // and Turn Over Dispatched stamped on the Turn Over task itself
+      // Move-Out task completes on dispatch (Brittany 2026-09-16; it stayed open
+      // pre-Move-Out-v2), with the completion date stamped, and the two Move-Out
+      // subtasks this tool now performs itself get ticked: Attach | Move Out
+      // Inspection Report to Turn Over Task and Update | move_out_date metric.
       if (moGid) {
-        try { await asana("PUT", `/tasks/${moGid}`, { custom_fields: { "1214521745467158": { date: todayStr } } }); } catch { /* fail-soft */ }
+        try { await asana("PUT", `/tasks/${moGid}`, { completed: true, custom_fields: { "1214521745467158": { date: todayStr } } }); } catch { /* fail-soft */ }
+        try {
+          const mSubT = ((await asana("GET", `/tasks/${moGid}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+          for (const tS of mSubT) {
+            if (tS.completed) continue;
+            if (/attach\s*\|.*inspection/i.test(tS.name) || /update\s*\|.*move.?_?out.?_?date/i.test(tS.name)) {
+              await asana("PUT", `/tasks/${tS.gid}`, { completed: true, due_on: todayStr }).catch(() => null);
+            }
+          }
+        } catch { /* fail-soft */ }
       }
       try { await asana("PUT", `/tasks/${tuGid}`, { custom_fields: { "1214522138482281": { date: todayStr } } }); } catch { /* fail-soft */ }
 
