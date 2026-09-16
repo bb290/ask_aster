@@ -3174,13 +3174,9 @@ app.post("*", async (c) => {
         } catch { /* fail-soft: submit re-writes it */ }
       }
       if (videoLink && taskGid) {
-        try {
-          // straight onto the picked Turn Over task, same home as the submit report
-          await postStory(taskGid, `Walkthrough video (uploaded in real time from the inspection): ${videoLink}`);
-          videoPosted = true;
-        } catch { /* fail-soft: the link rides the submit report */ }
-        // the link also lands on the Move-Out task's "Record | Move-out video"
-        // subtask, which completes (Brittany 2026-09-16)
+        // no Turn Over task comment for the video (Brittany 2026-09-16: the TO
+        // task carries only the condition comment + vendor email); the link lands
+        // on the Move-Out task's "Record | Move-out video" subtask, which completes
         try {
           const pkV = await asana("GET", `/tasks/${taskGid}?opt_fields=parent.gid`) as { parent?: { gid: string } | null };
           const pgV = pkV?.parent?.gid;
@@ -3194,6 +3190,7 @@ app.post("*", async (c) => {
                 await postStory(recV.gid, `Move out video: ${videoLink}`);
                 const todayV = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
                 await asana("PUT", `/tasks/${recV.gid}`, { completed: true, due_on: todayV }).catch(() => null);
+                videoPosted = true;
               }
             }
           }
@@ -3214,8 +3211,6 @@ app.post("*", async (c) => {
       if (!tuGid9 || !emailCopy.trim()) return j(headers, 400, { error: "missing_fields" });
       const today9 = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
       try {
-        const subs9 = await asana("GET", `/tasks/${tuGid9}/subtasks?limit=100&opt_fields=name,completed`);
-        const list9 = (subs9 ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
         if (kind9 === "vendor") {
           // vendor dispatch email posts as a comment on the TURN OVER task itself,
           // @mentioning its assignee, and the task goes due today (Brittany
@@ -3248,9 +3243,8 @@ app.post("*", async (c) => {
             }
           }
         } catch { /* fall back below */ }
-        emailTask = emailTask ??
-          list9.find((t) => /^email\s*\|\s*owner.*turn\s*over\s*plan/i.test(t.name)) ??
-          list9.find((t) => /^email\s*\|\s*owner.*turn\s*over/i.test(t.name)) ?? null;
+        // no Turn Over fallback (Brittany 2026-09-16): the owner email lands on
+        // the Move-Out notification subtask or nowhere
         if (!emailTask) return j(headers, 200, { ok: true, emailLogged: null });
         await postStory(emailTask.gid, emailCopy);
         await asana("PUT", `/tasks/${emailTask.gid}`, { due_on: today9, completed: true }).catch(() => null);
@@ -3337,10 +3331,9 @@ app.post("*", async (c) => {
       const moFileUrl = String(body.moFileUrl ?? "").trim().slice(0, 500);
       const moFileName = String(body.moFileName ?? "").trim().slice(0, 160);
       if (/^https:\/\//.test(moFileUrl)) { lines.push(`Move Out Condition Inspection (Move Out v2${moFileName ? ": " + moFileName : ""}): ${moFileUrl}`); lines.push(""); }
-      // keybox CODE never prints in the report/PDF: it lives ONLY on the Leasing
-      // parent's [Onsite] Key Box field and the owner + vendor access emails
-      if (keyboxCode) { lines.push("Keybox code updated on the Leasing task ([Onsite] Key Box)."); lines.push(""); }
-      else if (keyboxLoc) { lines.push(`Keybox location: ${keyboxLoc}`); lines.push(""); }
+      // keybox never prints in the report (Brittany 2026-09-16: not even the
+      // updated-note line); the code lives ONLY on the Leasing parent's
+      // [Onsite] Key Box field and the owner + vendor access emails
       // ratings retired from the Propose widget (Brittany 2026-08-19); print only if sent
       if (cleanRating || yardRating || cleanNote || yardNote) {
         lines.push("RATINGS");
@@ -3384,7 +3377,16 @@ app.post("*", async (c) => {
         lines.push(`PHOTO BACKUPS (${photoUrls.length})`);
         photoUrls.forEach((u) => lines.push(u));
       }
-      const story = await postStory(tuGid, lines.join("\n").slice(0, 60000));
+      // the condition comment @mentions the Turn Over assignee (Brittany 2026-09-16)
+      let story: { gid?: string } | null = null;
+      const bodyText9 = lines.join("\n").slice(0, 60000);
+      try {
+        const tuA9 = await asana("GET", `/tasks/${tuGid}?opt_fields=assignee.gid`).catch(() => null);
+        const aG9 = tuA9?.assignee?.gid ?? "";
+        story = aG9
+          ? await asana("POST", `/tasks/${tuGid}/stories`, { html_text: storyHtml(bodyText9).replace("<body>", `<body><a data-asana-gid="${aG9}"/>\n`) })
+          : await postStory(tuGid, bodyText9);
+      } catch { story = await postStory(tuGid, bodyText9); }
 
       // LU heads-up comment (Brittany 2026-09-16): move out complete, show-ready,
       // and the report link, so leasing sees the unit state at a glance
