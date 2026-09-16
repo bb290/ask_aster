@@ -2982,20 +2982,6 @@ app.post("*", async (c) => {
       if (note) { lines.push(""); lines.push("Notes:"); lines.push(note); }
       const story = await postStory(tuGid, lines.join("\n").slice(0, 60000));
 
-      // LU heads-up comment (Brittany 2026-09-16): move out complete, show-ready,
-      // and the report link, so leasing sees the unit state at a glance
-      const showReady9 = String(body.showReady ?? "").trim().slice(0, 10);
-      let luNoted = false;
-      if (luGid) {
-        try {
-          const luLines = [`Move out complete -- ${todayStr} -- ${address}`];
-          if (showReady9) luLines.push(`• Photo / Show Ready: ${showReady9}`);
-          luLines.push(`• Move Out Report: ${/^https:\/\//.test(moFileUrl) ? moFileUrl : "not synced at dispatch"}`);
-          await postStory(luGid, luLines.join("\n"));
-          luNoted = true;
-        } catch { /* fail-soft */ }
-      }
-
       // keybox code -> Unit Settings (same rule as Propose)
       let keyboxSaved = false;
       if (keyboxCode) {
