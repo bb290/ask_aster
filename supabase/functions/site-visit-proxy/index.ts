@@ -3058,16 +3058,23 @@ app.post("*", async (c) => {
       const frF = await fetch(`https://api.buildium.com/v1/files?entitytype=RentalUnit&entityid=${uidF}&limit=200`, { headers: BHF });
       if (!frF.ok) return j(headers, 200, { ok: false, error: `buildium_files_${frF.status}` });
       const filesF = await frF.json().catch(() => []);
-      const candF = (Array.isArray(filesF) ? filesF : [])
+      const allF = (Array.isArray(filesF) ? filesF : [])
         .map((f: Record<string, unknown>) => ({
           id: f.Id,
           name: String(f.Title ?? f.FileName ?? f.Name ?? ""),
           uploaded: String(f.UploadedDateTime ?? ""),
           ct: String(f.ContentType ?? ""),
         }))
-        .filter((f) => /move.?out/i.test(f.name))
         .sort((a, b) => b.uploaded.localeCompare(a.uploaded));
-      const pickF = candF[0];
+      // The inspector app syncs the report titled "{address} - {date}"
+      // (Brittany 2026-09-15): prefer the newest file starting with the street
+      // number and carrying a date; fall back to a *Move Out* title.
+      const addrF = String(body.address ?? "").trim();
+      const streetNoF = (addrF.match(/^\d+/) ?? [""])[0];
+      const dateishF = (n: string) => /\d{1,4}[-\/.]\d{1,2}[-\/.]\d{1,4}/.test(n);
+      const appNamed = allF.filter((f) => dateishF(f.name) && (!streetNoF || f.name.trim().startsWith(streetNoF)));
+      const moNamed = allF.filter((f) => /move.?out/i.test(f.name));
+      const pickF = appNamed[0] ?? moNamed[0];
       if (!pickF) return j(headers, 200, { ok: false, error: "not_found" });
       const dlF = await fetch(`https://api.buildium.com/v1/files/${encodeURIComponent(String(pickF.id))}/downloadrequest`, { method: "POST", headers: BHF });
       const djF = await dlF.json().catch(() => ({} as Record<string, unknown>));
