@@ -3165,6 +3165,25 @@ app.post("*", async (c) => {
           await postStory(taskGid, `Walkthrough video (uploaded in real time from the inspection): ${videoLink}`);
           videoPosted = true;
         } catch { /* fail-soft: the link rides the submit report */ }
+        // the link also lands on the Move-Out task's "Record | Move-out video"
+        // subtask, which completes (Brittany 2026-09-16)
+        try {
+          const pkV = await asana("GET", `/tasks/${taskGid}?opt_fields=parent.gid`) as { parent?: { gid: string } | null };
+          const pgV = pkV?.parent?.gid;
+          if (pgV) {
+            const sibsV = ((await asana("GET", `/tasks/${pgV}/subtasks?limit=100&opt_fields=name`)) ?? []) as Array<{ gid: string; name: string }>;
+            const moV = sibsV.find((t) => /^move.?out\s*\|/i.test(t.name));
+            if (moV) {
+              const mSubV = ((await asana("GET", `/tasks/${moV.gid}/subtasks?limit=100&opt_fields=name`)) ?? []) as Array<{ gid: string; name: string }>;
+              const recV = mSubV.find((t) => /record\s*\|.*video/i.test(t.name));
+              if (recV) {
+                await postStory(recV.gid, `Move out video: ${videoLink}`);
+                const todayV = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+                await asana("PUT", `/tasks/${recV.gid}`, { completed: true, due_on: todayV }).catch(() => null);
+              }
+            }
+          }
+        } catch { /* fail-soft */ }
       }
       return j(headers, 200, { ok: true, keyboxSaved, videoPosted });
     }
