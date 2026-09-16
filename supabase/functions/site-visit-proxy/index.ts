@@ -3091,7 +3091,15 @@ app.post("*", async (c) => {
       const freshF = allF.filter((f) => f.uploaded && f.uploaded >= freshCut);
       // app-named files ONLY (Brittany 2026-09-15: the fallback was surfacing old
       // manually-uploaded "Move Out ..." inspections in the emails)
-      const appNamed = freshF.filter((f) => dateishF(f.name) && (!streetNoF || f.name.trim().startsWith(streetNoF)));
+      // app titles are "{address} - {date}", so they always LEAD with the street
+      // number; without an address to compare, still require a leading digit so
+      // "Move Out Inspection - {date}" style titles can never match (2026-09-15:
+      // a stale widget build calling without the address resurrected the old file)
+      const appNamed = freshF.filter((f) => {
+        const nmF = f.name.trim();
+        if (!dateishF(nmF)) return false;
+        return streetNoF ? nmF.startsWith(streetNoF) : /^\d/.test(nmF);
+      });
       const pickF = appNamed[0];
       if (!pickF) return j(headers, 200, { ok: false, error: "not_found", fresh: freshF.slice(0, 8).map((f) => f.name + " (up " + f.uploaded.slice(0, 10) + ")") });
       const dlF = await fetch(`https://api.buildium.com/v1/files/${encodeURIComponent(String(pickF.id))}/downloadrequest`, { method: "POST", headers: BHF });
