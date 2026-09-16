@@ -3030,6 +3030,93 @@ app.post("*", async (c) => {
     // for submit (Brittany 2026-08-14): the code writes to the Unit Settings Keybox
     // Code field the moment it is typed, the video posts to the Conduct subtask the
     // moment the upload finishes. moSubmit re-writes both later; all idempotent.
+    // ---------- moDraft: create a Gmail draft in the INSPECTOR's own mailbox ----------
+    // Service account with domain-wide delegation, scope gmail.compose (drafts only,
+    // can never send; Brittany 2026-09-16: drafts land in the inspector's mailbox).
+    // Secret GMAIL_SA_JSON = the service-account key JSON. Absent secret = the
+    // widget falls back to the mailto flow.
+    if (action === "moDraft") {
+      const saRaw = Deno.env.get("GMAIL_SA_JSON") ?? "";
+      if (!saRaw) return j(headers, 200, { ok: false, error: "gmail_unconfigured" });
+      const userEmail = String(body.userEmail ?? "").trim().toLowerCase();
+      const toAddr = String(body.to ?? "").trim().slice(0, 300);
+      const subject = String(body.subject ?? "").trim().slice(0, 250);
+      const textBody = String(body.textBody ?? "").slice(0, 40000);
+      const htmlBody = String(body.htmlBody ?? "").slice(0, 80000);
+      if (!/^[^@\s]+@sagareus\.com$/.test(userEmail)) return j(headers, 400, { error: "bad_user" });
+      if (!subject || !textBody) return j(headers, 400, { error: "missing_fields" });
+      try {
+        const sa = JSON.parse(saRaw) as { client_email: string; private_key: string };
+        // JWT -> access token impersonating the inspector
+        const b64u = (bytes: Uint8Array) => {
+          let bin = "";
+          for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+          return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+        };
+        const enc = (o: unknown) => b64u(new TextEncoder().encode(JSON.stringify(o)));
+        const now = Math.floor(Date.now() / 1000);
+        const unsigned = enc({ alg: "RS256", typ: "JWT" }) + "." + enc({
+          iss: sa.client_email, sub: userEmail,
+          scope: "https://www.googleapis.com/auth/gmail.compose",
+          aud: "https://oauth2.googleapis.com/token", iat: now, exp: now + 300,
+        });
+        const pem = sa.private_key.replace(/-----[^-]+-----/g, "").replace(/\s/g, "");
+        const der = Uint8Array.from(atob(pem), (c) => c.charCodeAt(0));
+        const keyObj = await crypto.subtle.importKey("pkcs8", der, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, false, ["sign"]);
+        const sig = new Uint8Array(await crypto.subtle.sign("RSASSA-PKCS1-v1_5", keyObj, new TextEncoder().encode(unsigned)));
+        const tokRes = await fetch("https://oauth2.googleapis.com/token", {
+          method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: `grant_type=${encodeURIComponent("urn:ietf:params:oauth:grant-type:jwt-bearer")}&assertion=${unsigned + "." + b64u(sig)}`,
+        });
+        const tok = await tokRes.json().catch(() => ({}));
+        if (!tokRes.ok || !tok.access_token) {
+          return j(headers, 200, { ok: false, error: "gmail_auth_failed", detail: String(tok.error_description ?? tok.error ?? tokRes.status).slice(0, 200) });
+        }
+        // multipart/alternative MIME, each part base64 so unicode is safe
+        const b64mime = (t: string) => {
+          const bytes = new TextEncoder().encode(t);
+          let bin = "";
+          for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+          return btoa(bin);
+        };
+        const subj = /^[\x20-\x7e]*$/.test(subject) ? subject : `=?UTF-8?B?${b64mime(subject)}?=`;
+        const bnd = "sagab" + crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+        const mime = [
+          `To: ${toAddr}`,
+          "Cc: listings@sagareus.com",
+          `Subject: ${subj}`,
+          "MIME-Version: 1.0",
+          `Content-Type: multipart/alternative; boundary="${bnd}"`,
+          "",
+          `--${bnd}`,
+          "Content-Type: text/plain; charset=UTF-8",
+          "Content-Transfer-Encoding: base64",
+          "",
+          b64mime(textBody),
+          `--${bnd}`,
+          "Content-Type: text/html; charset=UTF-8",
+          "Content-Transfer-Encoding: base64",
+          "",
+          b64mime(htmlBody || `<pre>${textBody.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</pre>`),
+          `--${bnd}--`,
+          "",
+        ].join("\r\n");
+        const dRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/drafts", {
+          method: "POST", headers: { "Authorization": `Bearer ${tok.access_token}`, "Content-Type": "application/json" },
+          body: JSON.stringify({ message: { raw: b64u(new TextEncoder().encode(mime)) } }),
+        });
+        const dj = await dRes.json().catch(() => ({}));
+        if (!dRes.ok) return j(headers, 200, { ok: false, error: "gmail_draft_failed", detail: String(dj?.error?.message ?? dRes.status).slice(0, 200) });
+        return j(headers, 200, {
+          ok: true,
+          draftId: String(dj.id ?? ""),
+          gmailUrl: `https://mail.google.com/mail/?authuser=${encodeURIComponent(userEmail)}#drafts`,
+        });
+      } catch (e) {
+        return j(headers, 200, { ok: false, error: "gmail_error", detail: String((e as Error)?.message ?? e).slice(0, 200) });
+      }
+    }
+
     // ---------- moKb: current [Onsite] Key Box value from the Leasing parent ----------
     // Prefills the dispatch tool's keybox input so staff see the code on file and
     // update it when they change the physical code (Brittany 2026-09-15).
