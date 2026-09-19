@@ -3843,9 +3843,51 @@ app.post("*", async (c) => {
         } catch { /* fail-soft: the field can be filled from the report by hand */ }
       }
 
+      // Photo / Show Ready = Yes (Brittany 2026-09-19): the unit can list NOW, so
+      // the LU task's Go Live subtask goes due today assigned to the Leasing Team
+      // Lead, and Target List Date on Listing Settings becomes today (that field
+      // feeds the workbench queue).
+      let goLiveSet = false, targetListSet = false, goLiveLead = "";
+      if (showReady9.toLowerCase() === "yes") {
+        const LSP9 = "1217446710785429", UIDF9 = "1213183515622826", LEADF9 = "1217446711292696", TLDF9 = "1217515135889617";
+        let lsGid9 = "";
+        let leadGid9 = "";
+        if (uidMR) {
+          try {
+            const sH9 = ((await asana("GET",
+              `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LSP9}&custom_fields.${UIDF9}.value=${uidMR}&opt_fields=name`)) ?? []) as Array<{ gid: string }>;
+            lsGid9 = sH9[0]?.gid ?? "";
+          } catch { /* fail-soft */ }
+        }
+        if (lsGid9) {
+          try {
+            await asana("PUT", `/tasks/${lsGid9}`, { custom_fields: { [TLDF9]: { date: todayStr } } });
+            targetListSet = true;
+          } catch { /* fail-soft */ }
+          try {
+            const lsT9 = await asana("GET", `/tasks/${lsGid9}?opt_fields=custom_fields.gid,custom_fields.people_value.gid,custom_fields.people_value.name`);
+            const leadF9 = ((lsT9.custom_fields ?? []) as Array<{ gid: string; people_value?: Array<{ gid: string; name: string }> }>).find((f) => f.gid === LEADF9);
+            if (leadF9?.people_value?.[0]) { leadGid9 = leadF9.people_value[0].gid; goLiveLead = leadF9.people_value[0].name; }
+          } catch { /* assignee stays as-is */ }
+        }
+        if (luGid) {
+          try {
+            const luSubs9 = ((await asana("GET", `/tasks/${luGid}/subtasks?limit=100&opt_fields=name`)) ?? []) as Array<{ gid: string; name: string }>;
+            const gl9 = luSubs9.find((t) => /^go\s*live/i.test(t.name));
+            if (gl9) {
+              const upd9: Record<string, unknown> = { due_on: todayStr };
+              if (leadGid9) upd9.assignee = leadGid9;
+              await asana("PUT", `/tasks/${gl9.gid}`, upd9);
+              goLiveSet = true;
+            }
+          } catch { /* fail-soft */ }
+        }
+      }
+
       return j(headers, 200, {
         ok: true,
         luNoted,
+        goLiveSet, targetListSet, goLiveLead,
         // photos + PDF attach here too: the Turn Over task carries everything
         conductGid: tuGid,
         conductUrl: `https://app.asana.com/0/0/${tuGid}`,
