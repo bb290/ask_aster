@@ -1,22 +1,30 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
+// Sagareus Files: a single-tool MCP server that reads Asana attachments
+// server-side and returns them in a format claude.ai can consume natively.
+//
+// History: this function was Ask Aster (semantic search over the SOP corpus
+// plus a catalog of leasing skills exposed as MCP prompts and tools). On
+// 2026-09-19 Aster was stripped down to this one tool. The skills moved to
+// the Sagareus team Claude account and the search tool, prompts, and corpus
+// ingest were deleted. The function slug (ask-aster) and its URL are kept
+// so existing connector installs and OAuth tokens keep working.
+
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPTransport } from "@hono/mcp";
 import { Hono } from "hono";
 import { z } from "zod";
-import { createClient } from "@supabase/supabase-js";
 // pdfjs-dist legacy build: works in Deno Edge Runtime without DOM polyfills
 // for text extraction. The `password: ""` parameter handles consumer credit
 // reports (Equifax, RealPage, etc.) that are commonly exported encrypted
-// with an empty user password — `unpdf` couldn't pass that through.
+// with an empty user password.
 import { getDocument } from "pdfjs-dist/legacy";
 // MuPDF compiled to WASM: tolerant parser + rasterizer for PDFs that
 // pdfjs-dist can't open (the "Unknown block type in flate stream" case
 // on credit-report exports) and for scanned PDFs with no text layer.
 // When pdfjs fails or returns no text, we render each page to a PNG via
 // MuPDF and return them as MCP image content for claude.ai's vision model
-// to read directly. Equivalent to the `mutool clean` step in the recipe,
-// plus a rasterization step, all in pure JS+WASM.
+// to read directly.
 import * as mupdf from "mupdf";
 
 // Minimal type shim for MuPDF's JS bindings. Artifex's published types
@@ -27,224 +35,31 @@ interface MupdfDocument {
   loadPage(index: number): any;
   destroy?(): void;
 }
-import { ALL_PROMPTS } from "./prompts/index.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
-const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-const OPENROUTER_API_KEY = Deno.env.get("OPENROUTER_API_KEY")!;
+// Kept under its historical name: it is the HMAC secret behind every OAuth
+// token already issued to staff connectors. Renaming it would log everyone
+// out.
 const ASTER_ACCESS_KEY = Deno.env.get("ASTER_ACCESS_KEY")!;
 const ASANA_API_TOKEN = Deno.env.get("ASANA_API_TOKEN")!;
-
-const OPENROUTER_BASE = "https://openrouter.ai/api/v1";
-const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
-
-// Voice instruction prepended to every Aster response. This biases the
-// calling assistant (typically Claude) toward Sagareus internal-staff tone
-// when wrapping Aster's results into a conversational reply.
-//
-// v0.8 (May 23 2026): co-ownership carve-out for non-conforming multifamily
-// internet and mail policy adherence. Per
-// decisions/2026-05-23-leasing-coowns-non-conforming-multifamily-internet-mail.md,
-// those questions are IN leasing's lane and should not route to accounting.
-//
-// v0.7 (May 9 2026): bakes in the leasing-team-pilot assumption. Every
-// caller is treated as a leasing team member by default, since v0 is
-// scoped to that team only. Out-of-scope questions get routed via the
-// matrix in decisions/2026-05-09-leasing-team-scope-and-routing.md
-// rather than answered substantively.
-const VOICE_NOTE = [
-  "[Voice note for the assistant: respond casually and conversationally,",
-  "roughly 10th-grade reading level, like a smart coworker who has been at",
-  "Sagareus a while. Dry humor in moderation is welcome. Translate the content",
-  "below into plain English instead of quoting it verbatim. Skip the",
-  "bureaucratic phrasing. Don't use em dashes; use commas or periods instead.",
-  "",
-  "Audience: Sagareus internal staff, specifically the LEASING team. Assume",
-  "every caller is on the leasing team unless they say otherwise.",
-  "",
-  "Leasing's lane covers 8 service lines: applicant screening, tenant",
-  "placement, lease up, move in, premove out, move out, inspections, and",
-  "turn over (shared with operations). Anything else is out of scope for",
-  "leasing.",
-  "",
-  "Cross-team carve-out: non-conforming multifamily internet and mail policy",
-  "adherence is co-owned by leasing (tenant-facing enforcement at move in /",
-  "lease up / move out) and client relations (owner-facing). Leasing answers",
-  "those questions directly. Do not route them to accounting. Accounting only",
-  "owns utility billing mechanics (flat fees, pass-throughs, ledgers).",
-  "",
-  "If the question is in-scope, answer normally using the search results below.",
-  "",
-  "If the question is out-of-scope (maintenance, accounting, customer service,",
-  "business development, etc.), do NOT try to answer the substantive question.",
-  "Instead, tell the leasing person:",
-  "  1. The question is outside leasing's lane and which department owns it",
-  "  2. The inbox to route the tenant or owner to:",
-  "       maintenance@sagareus.com  -> broken stuff, work orders",
-  "       accounting@sagareus.com   -> rent, utility BILLING (flat fees,",
-  "                                    pass-throughs, ledgers), deposit",
-  "                                    returns, owner financials",
-  "       MGMT@sagareus.com         -> everything else, and as the catch-all",
-  "                                    when unsure",
-  "  3. A short handoff script they can paste to the tenant or owner, in",
-  "     Sagareus voice (casual, no em dashes).",
-  "",
-  "The full routing matrix and handoff scripts live in",
-  "decisions/2026-05-09-leasing-team-scope-and-routing.md if you need detail.",
-  "The non-conforming multifamily co-ownership carve-out is in",
-  "decisions/2026-05-23-leasing-coowns-non-conforming-multifamily-internet-mail.md.",
-  "",
-  "Section 8 / voucher carve-out: when a leasing person asks how to HELP a",
-  "Section 8 or voucher applicant get, secure, or land a unit, LEAD with",
-  "proactively working the pre-lease pipeline WITH the applicant: look at units",
-  "coming down the pipeline before they are marketed (current tenant has given",
-  "notice but not moved out), match them to the applicant's voucher criteria,",
-  "and SEND the applicant those unlisted opportunities (pictures, unit number,",
-  "bedrooms, bathrooms, washer, dryer) so they can start the voucher paperwork",
-  "early and be ready to sign at move-out. Do NOT lead with sprinting the RFTA",
-  "or inspection paperwork. Those process SOPs are for running a deal already",
-  "in motion; they are secondary and come after the pipeline answer. Never",
-  "imply we hold or lock a unit for a voucher holder, and never imply a complete",
-  "application secures the unit. The full Section 8 / First-In-Time policy and",
-  "playbook is in decisions/2026-05-27-seattle-fit-section-8-completeness.md.",
-  "",
-  "The point is to de-load the leasing person, not give them a half-right",
-  "answer to something that isn't theirs to handle.]",
-].join("\n");
-
-async function getEmbedding(text: string): Promise<number[]> {
-  const r = await fetch(`${OPENROUTER_BASE}/embeddings`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${OPENROUTER_API_KEY}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      model: "openai/text-embedding-3-small",
-      input: text,
-    }),
-  });
-  if (!r.ok) {
-    const msg = await r.text().catch(() => "");
-    throw new Error(`OpenRouter embeddings failed: ${r.status} ${msg}`);
-  }
-  const d = await r.json();
-  return d.data[0].embedding;
-}
 
 // --- MCP Server Setup ---
 
 const server = new McpServer({
-  name: "ask-aster",
-  version: "0.1.0",
+  name: "sagareus-files",
+  version: "1.0.0",
 });
-
-server.registerTool(
-  "ask_aster",
-  {
-    title: "Ask Aster",
-    description:
-      "Semantic search over Sagareus's SOPs, decisions, incidents, and edge cases. Use this when the team asks operational questions like 'how do we handle a tenant who hasn't paid by day 14', 'what's our policy on rodent infestation', or 'tell me about the unit confusion at 13337 30th Ave NE'. Returns ranked content chunks with the source file path so the caller can pull the full doc if needed.\n\nVoice when responding to the user with these results: casual and conversational, like a smart coworker who has been at Sagareus a while. About 10th-grade reading level. Dry humor in moderation is welcome. Translate the content into plain English; don't quote SOP or decision text verbatim. Skip bureaucratic phrasing. Don't use em dashes; use commas or periods instead. Audience is internal Sagareus staff.",
-    inputSchema: {
-      query: z.string().describe("The operational question to search for"),
-      service_line: z
-        .string()
-        .optional()
-        .describe(
-          "Optional filter to one of the 25 service lines (e.g. 'rent collection', 'lease up', 'utilities'). Lowercase, spaces preserved. Omit to search across all lines.",
-        ),
-      limit: z.number().optional().default(10).describe("Max number of chunks to return (default 10)"),
-    },
-  },
-  async ({ query, service_line, limit }) => {
-    try {
-      const qEmb = await getEmbedding(query);
-      const { data, error } = await supabase.rpc("match_sops", {
-        query_embedding: qEmb,
-        match_threshold: 0.3,
-        match_count: limit,
-        filter_service_line: service_line ?? null,
-      });
-
-      if (error) {
-        return {
-          content: [{ type: "text" as const, text: `Search error: ${error.message}` }],
-          isError: true,
-        };
-      }
-
-      if (!data || data.length === 0) {
-        const filterNote = service_line ? ` in service_line "${service_line}"` : "";
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text: `${VOICE_NOTE}\n\nNothing matched "${query}"${filterNote}. Try broader phrasing or drop the service_line filter.`,
-            },
-          ],
-        };
-      }
-
-      const results = (data as Array<{
-        file_path: string;
-        chunk_heading: string | null;
-        content: string;
-        title: string;
-        service_line: string;
-        visibility_tier: string;
-        status: string;
-        last_reviewed: string | null;
-        tags: string[];
-        created_but_never_updated: boolean;
-        similarity: number;
-      }>).map((r, i) => {
-        const headerParts = [
-          `--- Result ${i + 1} (${(r.similarity * 100).toFixed(1)}% match) ---`,
-          `Title: ${r.title}`,
-          `Service line: ${r.service_line}`,
-        ];
-        if (r.chunk_heading) headerParts.push(`Section: ${r.chunk_heading}`);
-        if (r.status !== "active") headerParts.push(`Status: ${r.status}`);
-        if (r.tags?.length) headerParts.push(`Tags: ${r.tags.join(", ")}`);
-        if (r.last_reviewed) headerParts.push(`Last reviewed: ${r.last_reviewed}`);
-        if (r.created_but_never_updated) {
-          headerParts.push(`⚠ created_but_never_updated: this SOP has not been touched since initial migration`);
-        }
-        headerParts.push(`Source: ${r.file_path}`);
-        headerParts.push("");
-        headerParts.push(r.content);
-        return headerParts.join("\n");
-      });
-
-      return {
-        content: [
-          {
-            type: "text" as const,
-            text: `${VOICE_NOTE}\n\nFound ${data.length} chunk(s) for "${query}":\n\n${results.join("\n\n")}`,
-          },
-        ],
-      };
-    } catch (err: unknown) {
-      return {
-        content: [{ type: "text" as const, text: `Error: ${(err as Error).message}` }],
-        isError: true,
-      };
-    }
-  },
-);
 
 // --- fetch_asana_attachment ---
 //
-// Aster lives in claude.ai. When the leasing team asks Aster to read an
-// Asana attachment (credit reports, paystubs, etc.) the Claude code-execution
-// container has a network allowlist that does not include asanausercontent.com,
-// so the bytes never reach the client. This tool runs server-side, where no
-// such allowlist applies, and returns the file in an MCP content format
-// Claude can read natively.
+// claude.ai's code-execution container has a network allowlist that does
+// not include asanausercontent.com, so attachment bytes never reach the
+// client. This tool runs server-side, where no such allowlist applies, and
+// returns the file in an MCP content format Claude can read natively.
 //
 // Two-step pattern:
-//   1. mcp__asana__asana_get_attachments_for_object -> list attachments + GIDs
-//   2. fetch_asana_attachment(attachment_gid)       -> read the file itself
+//   1. Asana connector: get_attachments_for_object -> list attachments + GIDs
+//   2. fetch_asana_attachment(attachment_gid)      -> read the file itself
 
 const ASANA_API_BASE = "https://app.asana.com/api/1.0";
 const ASANA_MAX_BYTES = 25 * 1024 * 1024; // 25 MB
@@ -316,7 +131,7 @@ server.registerTool(
   {
     title: "Fetch Asana attachment",
     description:
-      "Fetch the actual contents of an Asana attachment. The get_attachments tool only returns metadata and URLs; use this tool to read the file itself. Pass the attachment GID returned by get_attachments. Returns content in the format the model can read natively: PDFs come back as server-extracted text with page markers (works for credit reports, POI docs, ledgers, underwriting reports, leases); raster images come back as MCP image content; text/json/xml come back as text; everything else comes back as a base64 resource blob. Scanned PDFs with no text layer return a clear error.",
+      "Fetch the actual contents of an Asana attachment. The Asana connector's get_attachments tool only returns metadata and URLs; use this tool to read the file itself. Pass the attachment GID returned by get_attachments. Returns content in the format the model can read natively: PDFs come back as server-extracted text with page markers (works for credit reports, POI docs, ledgers, underwriting reports, leases), or as rendered page images when there is no text layer; raster images come back as MCP image content; text/json/xml come back as text; everything else comes back as a base64 resource blob.",
     inputSchema: {
       attachment_gid: z
         .string()
@@ -348,7 +163,7 @@ server.registerTool(
           content: [{
             type: "text" as const,
             text:
-              `Asana rejected the request with ${metaResp.status}. The Asana API token may have expired or been revoked. Have an admin rotate the ASANA_API_TOKEN secret on the Aster edge function and redeploy.`,
+              `Asana rejected the request with ${metaResp.status}. The Asana API token may have expired or been revoked. Have an admin rotate the ASANA_API_TOKEN secret on the Sagareus Files edge function and redeploy.`,
           }],
           isError: true,
         };
@@ -387,11 +202,7 @@ server.registerTool(
         };
       }
 
-      // Step 2: pre-flight size check off the metadata if Asana included it.
-      // The download_url itself may not echo content-length, so this is the
-      // earliest cheap check we can do.
-
-      // Step 3: download. download_url is short-lived and signed, no auth
+      // Step 2: download. download_url is short-lived and signed, no auth
       // header needed.
       const fileResp = await fetch(download_url);
       console.log(
@@ -420,7 +231,7 @@ server.registerTool(
             text:
               `Attachment '${name}' is ${
                 (declaredLen / 1024 / 1024).toFixed(1)
-              } MB, larger than Aster's 25 MB limit. Upload the file directly into chat instead.`,
+              } MB, larger than the 25 MB limit. Upload the file directly into chat instead.`,
           }],
           isError: true,
         };
@@ -437,7 +248,7 @@ server.registerTool(
             text:
               `Attachment '${name}' is ${
                 (buf.byteLength / 1024 / 1024).toFixed(1)
-              } MB, larger than Aster's 25 MB limit. Upload the file directly into chat instead.`,
+              } MB, larger than the 25 MB limit. Upload the file directly into chat instead.`,
           }],
           isError: true,
         };
@@ -509,13 +320,13 @@ server.registerTool(
             extractedPages = pages;
             extractionMethod = "pdfjs";
           }
-          // else: text layer empty, fall through to MuPDF render below
+          // else: text layer empty, fall through to MuPDF below
         } catch (pdfjsErr) {
           // pdfjs couldn't even open the PDF. Fall through to MuPDF.
           console.log(
             `fetch_asana_attachment: pdfjs failed gid=${attachment_gid} err="${
               (pdfjsErr as Error).message
-            }" — falling back to mupdf`,
+            }", falling back to mupdf`,
           );
         }
 
@@ -570,7 +381,7 @@ server.registerTool(
             content: [{
               type: "text" as const,
               text:
-                `Asana attachment '${name}' (${sizeLabel}, ${totalPages} page(s)) — extracted text (${extractionMethod}):\n\n${body}${truncatedNote}`,
+                `Asana attachment '${name}' (${sizeLabel}, ${totalPages} page(s)), extracted text (${extractionMethod}):\n\n${body}${truncatedNote}`,
             }],
           };
         }
@@ -627,7 +438,7 @@ server.registerTool(
               {
                 type: "text" as const,
                 text:
-                  `Asana attachment '${name}' (${sizeLabel}, ${totalPages} page(s)) — no text layer or unparseable; rendered each page as a grayscale PNG for vision reading.${truncatedNote} Read the page images below to extract content.`,
+                  `Asana attachment '${name}' (${sizeLabel}, ${totalPages} page(s)), no text layer or unparseable; rendered each page as a grayscale PNG for vision reading.${truncatedNote} Read the page images below to extract content.`,
               },
               ...imageContents,
             ],
@@ -696,97 +507,18 @@ server.registerTool(
   },
 );
 
-// --- MCP Prompts (slash commands surfaced to clients) ---
-//
-// Each prompt is generated from a SKILL.md file under skills/<name>/SKILL.md
-// by scripts/sync-prompts.ts. The SKILL.md is the source of truth; the TS
-// modules under prompts/ are deployment artifacts.
-
-for (const p of ALL_PROMPTS) {
-  server.registerPrompt(
-    p.name,
-    {
-      title: p.name,
-      description: p.description,
-    },
-    () => ({
-      messages: [
-        {
-          role: "user",
-          content: { type: "text", text: p.content },
-        },
-      ],
-    }),
-  );
-}
-
-// --- MCP Tools for skills (workaround for claude.ai web) ---
-//
-// claude.ai web doesn't surface MCP prompts in the chat slash menu (as of
-// May 2026). To make the skill catalog usable for claude.ai users, each
-// skill is also registered as a tool. The model can call the tool when an
-// agent invokes the skill via natural language. The tool returns the
-// SKILL.md body wrapped in an instruction note so the model interprets it
-// as directives to follow, not text to paste back.
-//
-// Tool names convert kebab-case (prompt names) to snake_case (MCP tool
-// convention). E.g. /meet-aster prompt -> meet_aster tool.
-
-function wrapSkillBodyAsToolResult(skillName: string, body: string): string {
-  return [
-    `[Skill invoked: ${skillName}.`,
-    `The text below is your instruction set for handling this conversation.`,
-    `Read it as directives, not as text to paste back to the user. Begin`,
-    `executing the skill immediately, following the voice and flow it`,
-    `describes. Maintain the Sagareus voice rules (no em dashes, plain English,`,
-    `casual coworker tone). If the skill says to render markdown (like an`,
-    `image), render it directly to the user. If it says to ask a question,`,
-    `ask it. If it says to wait for a connector check, run that check first.]`,
-    ``,
-    body,
-  ].join("\n");
-}
-
-for (const p of ALL_PROMPTS) {
-  const toolName = p.name.replace(/-/g, "_");
-  server.registerTool(
-    toolName,
-    {
-      title: p.name,
-      description: p.description,
-      inputSchema: {
-        context: z
-          .string()
-          .optional()
-          .describe(
-            "Optional context the user has already provided in their request (e.g., a property address, an incident summary). The skill should acknowledge this context and not re-ask for it.",
-          ),
-      },
-    },
-    ({ context }) => ({
-      content: [
-        {
-          type: "text" as const,
-          text: wrapSkillBodyAsToolResult(p.name, p.content) +
-            (context ? `\n\n[User-provided context: ${context}]` : ""),
-        },
-      ],
-    }),
-  );
-}
-
 // --- OAuth 2.0 (for claude.ai custom connector compatibility) ---
 //
-// Aster's native auth is the shared ASTER_ACCESS_KEY (sent as x-aster-key
-// header or ?key=). claude.ai's custom connector flow requires OAuth 2.0
-// with Dynamic Client Registration (RFC 7591) and PKCE (RFC 7636). We
-// implement the minimum endpoints to satisfy that flow. Since all
-// leasing-team users have the same access level in v0, the OAuth ceremony
-// is cosmetic: any client that completes the flow gets a signed Bearer
-// token that validates against the same ASTER_ACCESS_KEY (used as HMAC
-// secret). No state is persisted; codes and tokens are self-contained.
+// Native auth is the shared ASTER_ACCESS_KEY (sent as x-aster-key header or
+// ?key=). claude.ai's custom connector flow requires OAuth 2.0 with Dynamic
+// Client Registration (RFC 7591) and PKCE (RFC 7636). We implement the
+// minimum endpoints to satisfy that flow. All staff have the same access
+// level, so the OAuth ceremony is cosmetic: any client that completes the
+// flow gets a signed Bearer token that validates against the same
+// ASTER_ACCESS_KEY (used as HMAC secret). No state is persisted; codes and
+// tokens are self-contained.
 //
-// Grandfathered x-aster-key connections continue to work alongside the new
+// Grandfathered x-aster-key connections continue to work alongside the
 // OAuth path. Both are checked in the catch-all auth middleware.
 
 const ISSUER = `${SUPABASE_URL}/functions/v1/ask-aster`;
@@ -1103,7 +835,7 @@ app.all("*", async (c) => {
 
   // Fix: Claude Desktop connectors don't always send the Accept header that
   // StreamableHTTPTransport requires. Patch it in if missing. (Same workaround
-  // OB1 uses — see https://github.com/NateBJones-Projects/OB1/issues/33)
+  // OB1 uses, see https://github.com/NateBJones-Projects/OB1/issues/33)
   if (!c.req.header("accept")?.includes("text/event-stream")) {
     const headers = new Headers(c.req.raw.headers);
     headers.set("Accept", "application/json, text/event-stream");

@@ -1,89 +1,37 @@
-# Ask Aster
+# Sagareus Files (formerly Ask Aster)
 
-Source-of-truth Git repo for Ask Aster, Sagareus's custom MCP server. Holds SOPs, edge cases, and decisions as markdown files; synced to a Postgres + pgvector index that the MCP server queries.
+Supabase project for Sagareus's edge functions. The main one is **Sagareus Files**, a single-tool MCP server that reads Asana attachments server-side and returns them in a format claude.ai can consume. It also hosts the onboarding, RentCast, screening, and site-visit proxies.
 
-See OpenB for the design doc, Claude-only scope decision, auth + admin spec, and content model + visibility spec (all captured May 2026).
-
-## Layout
-
-```
-sops/{service_line}/{slug}.md        # procedural SOPs — versioned, owned, retrievable
-docs/                                 # reference content (templates, role profiles, tool guides)
-```
-
-## Frontmatter schema (SOPs)
-
-```yaml
----
-title: <human title>
-service_line: <one of 25 lines below>
-sop_owner: <email>
-status: active | draft | deprecated
-last_reviewed: YYYY-MM-DD
-visibility_tier: ic | director
-version: <int, starts at 1>
-tags: [<lowercase, hyphenated>]
-created_but_never_updated: false   # set true at import if revision history shows initial-only
----
-```
-
-## Service lines (25)
-
-resident relations, client relations, vendor relations, premove out, move out, lease up, applicant screening, move in, deposit return, maintenance, rent collection, utilities, client accounting, resident accounting, vendor accounting, property onboarding, property offboarding, inspections, kpi reporting, tenant placement, business development, staff support, turn over, multifamily playbook, renewal & rent increase
-
-Service lines live as a Postgres column and can be added, renamed, or merged at any time without a schema migration.
-
-## Visibility tiers (v1)
-
-- `ic` — independent contributor; sees ic-tier content, read only
-- `director` — sees everything, read + write + admin
-
-v2 will add `team_lead` between ic and director. v3 adds `manager` with read+write but not admin.
-
-## Content type note (v1 → v2)
-
-Multifamily Playbook (per-property reference) and Utilities Playbook (per-provider reference) are imported as SOPs in v1 under the `multifamily playbook` and `utilities` service lines respectively. These docs are reference-shaped rather than procedural; v2 may carve out a separate `references` content type with its own table. For v1 they live in `sops/` for retrieval simplicity.
+Until 2026-09-19 this repo was Ask Aster: a semantic-search MCP over the SOP corpus plus a catalog of leasing skills. Those skills moved to the Sagareus team Claude account and Aster was stripped to the attachment tool. The markdown corpus under `sops/`, `decisions/`, `incidents/`, and `docs/` is kept as historical source material and is no longer indexed. The live SOP library is Outline.
 
 ## Reading Asana Attachments
 
-Claude's code-execution container has a network allowlist that does not include `asanausercontent.com`, so files surfaced by the Asana MCP's `get_attachments` (signed URLs that resolve to that host) can't be read from inside a Claude session. Aster's `fetch_asana_attachment` tool runs server-side, where no such allowlist applies, and returns the file in a format the model can read natively:
+claude.ai's code-execution container has a network allowlist that does not include `asanausercontent.com`, so files surfaced by the Asana connector's `get_attachments` (signed URLs that resolve to that host) can't be read from inside a Claude session. `fetch_asana_attachment` runs server-side, where no such allowlist applies, and returns the file in a format the model can read natively:
 
-- **PDFs** are text-extracted server-side via [`unpdf`](https://github.com/unjs/unpdf) (handles credit reports, POI docs, ledgers, underwriting decisions, lease addenda). Page boundaries are preserved with `--- Page N of M ---` markers. Scanned PDFs with no text layer return a clear error so the caller knows to OCR or re-upload.
+- **PDFs** are text-extracted server-side (pdfjs first, MuPDF as a more tolerant fallback). Page boundaries are preserved with `--- Page N of M ---` markers. Scanned PDFs with no text layer are rendered page by page to grayscale PNG and returned as image content for the vision model, up to 20 pages.
 - **Raster images** (PNG/JPG/GIF/WEBP) return as MCP image content.
 - **text/json/xml** decode and return as text content.
 - **Anything else** (zip, xlsx, docx) returns as a base64 resource blob; the model can describe it but not parse it natively.
 
 Use as a two-step pattern:
 
-1. `mcp__asana__asana_get_attachments_for_object` with the parent task GID to list available attachments and their GIDs.
-2. `mcp__claude_ai_Ask_Aster__fetch_asana_attachment` with each attachment GID you want to actually read.
+1. Asana connector `get_attachments_for_object` with the parent task GID to list available attachments and their GIDs.
+2. Sagareus Files `fetch_asana_attachment` with each attachment GID you want to read.
 
-Example chained call (in a Claude chat with both the Asana and Ask Aster connectors enabled):
+Requires `ASANA_API_TOKEN` set as a secret on the edge function (Asana Personal Access Token, generated at `app.asana.com/0/my-apps`). Files larger than 25 MB are rejected; upload those directly to chat instead.
 
-```text
-# 1. List what's on the task.
-mcp__asana__asana_get_attachments_for_object(
-  object_gid: "1215182714098623",
-)
-# => [{ gid: "1234567890", name: "credit_report.pdf", ... }, ...]
+## Connector
 
-# 2. Read each one through Aster.
-mcp__claude_ai_Ask_Aster__fetch_asana_attachment(
-  attachment_gid: "1234567890",
-)
-# => MCP image content for PDFs and images,
-#    MCP text content for txt/json/xml,
-#    MCP resource content for everything else.
+- URL: `https://ahonotvcbmczrtnpajua.supabase.co/functions/v1/ask-aster`
+- Auth: OAuth 2.0 with dynamic client registration and PKCE, auto-approved for anyone who completes the flow (internal staff only, no per-person identity). The legacy `x-aster-key` header still works.
+- The function slug stays `ask-aster` so existing connector installs and tokens keep working. Only the display name in claude.ai changes to Sagareus Files.
+
+## Deploy
+
+```bash
+supabase functions deploy ask-aster
 ```
-
-Requires `ASANA_API_TOKEN` set as a secret on the Supabase Edge Function (Asana Personal Access Token, generated at `app.asana.com/0/my-apps`). Files larger than 25 MB are rejected; upload those directly to chat instead.
 
 ## Migration provenance
 
-Initial content imported from GetOutline on 2026-05-01:
-- SOPs 2.0 collection → `visibility_tier: ic`
-- Director SOPs collection → `visibility_tier: director`
-- Utilities Playbook collection → `service_line: utilities`, `visibility_tier: ic`
-- Multifamily Playbook collection → `service_line: multifamily playbook`, `visibility_tier: ic`
-
-GetOutline is being deprecated; expect it to be archived and the subscription cancelled by week 8 of the Aster rollout.
+The markdown corpus was imported from GetOutline on 2026-05-01 (SOPs 2.0, Director SOPs, Utilities Playbook, Multifamily Playbook). The frontmatter schema on those files is unchanged from the Aster era. Outline was never retired; it remains the SOP source of truth, and the corpus here is a snapshot.

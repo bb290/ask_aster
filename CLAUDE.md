@@ -1,128 +1,48 @@
-# Ask Aster — context for Claude Code
+# Sagareus Files (formerly Ask Aster) — context for Claude Code
 
 ## What this is
 
-Ask Aster is Sagareus's custom MCP server. Internal team asks it operational questions ("how do we handle a tenant who hasn't paid by day 14?") through their AI client (Claude) and gets answers grounded in our SOPs.
+This repo holds Sagareus's Supabase project (`ahonotvcbmczrtnpajua`) and its edge functions. The headline function is **Sagareus Files**, a one-tool MCP server that reads Asana attachments server-side so claude.ai skills can consume PDFs, images, and other files attached to Asana tasks.
 
-This repo holds:
+It used to be Ask Aster: semantic search over the SOP corpus plus a catalog of leasing skills exposed as MCP prompts and tools. On 2026-09-19 Aster was stripped to the single attachment tool. The skills now live in the Sagareus team Claude account (see `clients/sagareus/CLAUDE.md`, 2026-09-18 note, and `clients/sagareus/operations/skills-handoff-2026-09-18/`). The search tool, prompts, prompt sync, and corpus ingest were deleted.
 
-- `sops/` — 628 markdown SOPs across 22 service lines (source of truth for operational procedures)
-- `docs/` — 121 reference docs (role profiles, templates, section indexes) — **not indexed in v0**
-- `supabase/functions/ask-aster/` — the MCP server (Supabase Edge Function, Deno + Hono)
-- `scripts/` — local ingestion script + prompt sync script
-- `sql/` — Supabase schema and RPC
-- `skills/` — SKILL.md files for the staff capture skills + manager rollout skill (source of truth for the MCP prompts the server exposes)
+## Layout
 
-## Current phase: v0
+- `supabase/functions/ask-aster/` — Sagareus Files MCP server (Deno + Hono). The slug and URL are still `ask-aster` on purpose: renaming the function would change the connector URL and log every staff member out.
+- `supabase/functions/onboard-proxy/`, `rentcast-proxy/`, `screening-proxy/`, `site-visit-proxy/` — other edge functions in the same project, unrelated to Aster.
+- `sops/`, `decisions/`, `incidents/`, `docs/` — the markdown corpus Aster used to index. No longer ingested anywhere. Kept as historical source material; the live SOP library is Outline.
+- `sql/` — schema history. `01` to `03` are the old Aster corpus tables (still present in Postgres, no longer written to). `04` and `05` belong to the proxies.
 
-The single question v0 is built to answer: **does semantic retrieval over our SOPs return useful results often enough to be worth building on?**
+## The one tool
 
-Everything else is deferred. v0 specifically does NOT have:
+`fetch_asana_attachment(attachment_gid)`: re-fetches attachment metadata with the Asana API token, downloads the bytes, and returns them as MCP content. PDFs go through a three-tier cascade (pdfjs text, MuPDF text, MuPDF page render to PNG for vision). Images return as image content, text/json/xml as text, everything else as a base64 resource. 25 MB cap.
 
-- Write tools (no `capture_edge_case`, no `update_sop`)
-- Auth beyond a shared access key (no SSO, no per-user roles)
-- Visibility tier filtering
-- Stale-SOP guardrail (just surfaces a flag)
-- A dashboard
-- Indexing of `docs/`
+Two-step pattern from a skill: Asana connector `get_attachments_for_object` for the GIDs, then this tool per GID.
 
-If you (Claude Code) find yourself wanting to add any of those, **stop and ask**. They're all v1+ work and adding them now muddies the v0 signal.
+## Secrets (Supabase function secrets)
 
-### Note on MCP prompts (added v0.6, May 8 2026)
+- `ASANA_API_TOKEN` — Asana personal access token used for every read. Shared token, not per-person.
+- `ASTER_ACCESS_KEY` — kept under its historical name. It is the HMAC secret behind every OAuth token already issued to staff connectors, so renaming it logs everyone out.
+- `SUPABASE_URL` — injected by the platform, used to build the OAuth issuer URL.
 
-The server now exposes MCP **prompts** (slash commands surfaced to clients) in addition to the `ask_aster` tool. These are NOT write tools — Aster itself remains read-only. The prompts contain instructions the client model follows, which include calling other connected MCP tools (Asana) for writes. The capture loop is:
+`SUPABASE_SERVICE_ROLE_KEY` and `OPENROUTER_API_KEY` are no longer read by the function and can be removed from the project's secrets.
 
-1. Staff invokes `/incident-report` or `/edge-case` in Claude.ai chat
-2. The Aster prompt instructs the model to ask questions, gather info, and call `mcp__asana__asana_create_task` (Asana MCP, separately connected)
-3. Staff capture lands in Asana → Roll Out → New captures
-4. Manager reviews, optionally invokes `/decision-to-rollout` to spawn rollout work
+## Deploy
 
-Aster MCP doesn't write to anything — it only emits instructions. The v0 "no write tools" rule still holds.
-
-## Architecture (v0.6)
-
-```
-Claude (any client — Claude.ai web, Desktop, Code)
-   │
-   ▼
-Supabase Edge Function: ask-aster
-   │  - validates x-aster-key header
-   │  - exposes one MCP tool: ask_aster(query, service_line?, limit?)
-   │  - exposes MCP prompts: /incident-report, /edge-case, /decision-to-rollout
-   │      (synced from skills/<name>/SKILL.md → prompts/<name>.ts)
-   │  - tool: embeds query → calls match_sops RPC → returns ranked chunks
-   │  - prompts: return SKILL.md content as user-role messages; client model
-   │    follows the instructions and calls other MCPs (Asana) as needed
-   ▼
-Supabase Postgres + pgvector
-   │  - sops table: one row per H2 chunk
-   │  - frontmatter fields broken out as columns for filtering
-   │  - hnsw index on embedding column
+```bash
+supabase functions deploy ask-aster
 ```
 
-Source of truth flow:
-- For corpus content: markdown files in `sops/`, `decisions/`, `incidents/`, `edge-cases/` are canonical. The Postgres table is a derived index, regenerable by re-running `scripts/ingest.ts`. If they disagree, markdown wins.
-- For prompts: `skills/<name>/SKILL.md` is canonical. `supabase/functions/ask-aster/prompts/<name>.ts` are generated by `scripts/sync-prompts.ts`. If they disagree, SKILL.md wins.
-
-## Stack decisions (do not change without asking)
-
-- **Embedding model:** `openai/text-embedding-3-small` via OpenRouter (1536 dim). Same as OpenB. Schema is hard-coded to 1536; switching models means reindexing.
-- **Chunking:** by H2 heading. Files with no H2 become single chunks. This was chosen after sampling the corpus; ~75% of files have 2+ H2 sections.
-- **Threshold:** 0.3 in `match_sops`. Lower than OpenB's 0.5 because SOP queries trade precision for recall in v0.
-- **Service line filter:** optional, on the column. No frontmatter changes needed to add new service lines — they're just new string values.
-- **Auth:** single shared `ASTER_ACCESS_KEY`. v1 will replace this with Google Workspace SSO + role gating.
-
-## Supabase project
-
-- Project ref: `ahonotvcbmczrtnpajua`
-- URL: `https://ahonotvcbmczrtnpajua.supabase.co`
-- This is a **separate** project from OpenB. Don't tangle them.
+`supabase/config.toml` sets `verify_jwt = false` for this function because it does its own auth (OAuth bearer token or the legacy `x-aster-key` header).
 
 ## Workflow conventions
 
-- **Before any destructive operation** (dropping tables, force-pushing, deleting files) — ask.
-- **Before any architectural change** (new tables, new tools, swapping libraries) — ask.
-- **Routine stuff** (running ingest, reading logs, deploying functions, editing code in scope) — go ahead.
-- **Secrets stay out of chat.** If a secret is needed, ask the user to export it as an env var before running.
+- Before any destructive operation (dropping tables, force-pushing, deleting files), ask.
+- Before adding tools to this server, ask. The point of the strip was one tool.
+- Secrets stay out of chat. Ask the user to export env vars before running anything that needs them.
 
-## Editing skills / prompts
+## Cleanup still open
 
-Skills are sourced from `skills/<name>/SKILL.md`. To add a new prompt or modify an existing one:
-
-```bash
-# 1. Edit the SKILL.md
-$EDITOR skills/incident-report/SKILL.md
-
-# 2. Regenerate the TS prompt modules
-deno run --allow-read --allow-write scripts/sync-prompts.ts
-
-# 3. Deploy the function
-supabase functions deploy ask-aster
-
-# 4. Reconnect Aster MCP in the client to pick up the new prompts
-```
-
-Do NOT edit files under `supabase/functions/ask-aster/prompts/` directly — they're regenerated from SKILL.md and your edits will be overwritten on the next sync.
-
-Current prompts:
-- `incident-report` — staff capture skill, files an Asana task in Roll Out → New captures
-- `edge-case` — staff capture skill, same destination
-- `decision-to-rollout` — manager skill, takes a New captures task GID and spawns rollout work in Roll Out → Ready for Roll Out
-
-## Re-ingestion
-
-As of v0.5, ingest is incremental. Each chunk's embed input is SHA-256 hashed; the hash is stored alongside the row in the `content_hash` column. On subsequent runs, files whose chunk hashes all match existing rows are skipped entirely. Re-embedding only happens for files that actually changed (or whose chunks did). Files removed from the repo are cleaned up at the end of each run.
-
-First-time setup requires `sql/03_content_hash.sql` to be run against the project. The first ingest after that migration re-embeds everything (existing rows have null hash), but subsequent runs are fast (~10 sec for zero changes, ~30 sec for a few new captures).
-
-## Out of scope right now
-
-- ChatGPT MCP support — Claude-only for v0
-- Multi-tenant (other Sagareus clients having their own Aster) — that's the long-term vision but not on the v0 roadmap
-- The OpenB dashboard pattern — Aster has no UI in v0; Claude is the UI
-
-## Reference
-
-- Original spec and rollout plan: in OpenB under tags `Ask Aster`, `MCP server`, `rollout plan`
-- Migration summary (how we got from GetOutline to 750 .md files): in chat history
-- OB1 (the project this is forked from): https://github.com/NateBJones-Projects/OB1
+- Drop the Aster corpus tables (`sops` and the `match_sops` RPC from `sql/01` to `03`) once nobody needs the index.
+- Remove the unused `SUPABASE_SERVICE_ROLE_KEY` and `OPENROUTER_API_KEY` secrets from the project.
+- Rename the connector in claude.ai from Aster to Sagareus Files (display name only; URL unchanged).

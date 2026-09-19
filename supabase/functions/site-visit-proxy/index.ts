@@ -527,6 +527,7 @@ async function turnOverTasks(): Promise<Array<{ gid: string; address: string; co
   toOpenCache = { at: Date.now(), tasks };
   return tasks;
 }
+let moUsersCache: { at: number; users: Array<{ name: string; email: string }> } | null = null;
 let maintVisitCache: { at: number; recs: Array<{ gid: string; address: string }> } | null = null;
 async function maintVisitTasks(): Promise<Array<{ gid: string; address: string }>> {
   if (maintVisitCache && Date.now() - maintVisitCache.at < 5 * 60 * 1000) return maintVisitCache.recs;
@@ -3254,6 +3255,31 @@ app.post("*", async (c) => {
     // for submit (Brittany 2026-08-14): the code writes to the Unit Settings Keybox
     // Code field the moment it is typed, the video posts to the Conduct subtask the
     // moment the upload finishes. moSubmit re-writes both later; all idempotent.
+    // ---------- moUsers: Asana workspace users for the Inspector Name dropdown ----------
+    // Always in sync with Asana (Brittany 2026-09-19); @sagareus.com humans only.
+    if (action === "moUsers") {
+      if (moUsersCache && Date.now() - moUsersCache.at < 10 * 60 * 1000) return j(headers, 200, { ok: true, users: moUsersCache.users });
+      const usersU: Array<{ name: string; email: string }> = [];
+      let offU = "";
+      for (let pg = 0; pg < 3; pg++) {
+        const rU = await fetch(`${ASANA}/workspaces/${WORKSPACE}/users?limit=100&opt_fields=name,email${offU ? `&offset=${encodeURIComponent(offU)}` : ""}`,
+          { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+        const jU = await rU.json().catch(() => ({}));
+        if (!rU.ok) break;
+        for (const u of (jU.data ?? []) as Array<{ name: string; email?: string }>) {
+          const em = String(u.email ?? "").toLowerCase();
+          if (!/@sagareus\.com$/.test(em)) continue;
+          if (/bot|asana/i.test(String(u.name)) || /^asana_bot@/.test(em)) continue;
+          usersU.push({ name: String(u.name).slice(0, 80), email: em });
+        }
+        offU = jU.next_page?.offset ?? "";
+        if (!offU) break;
+      }
+      usersU.sort((a, b) => a.name.localeCompare(b.name));
+      moUsersCache = { at: Date.now(), users: usersU };
+      return j(headers, 200, { ok: true, users: usersU });
+    }
+
     // ---------- moDraft: create a Gmail draft in the INSPECTOR's own mailbox ----------
     // Service account with domain-wide delegation, scope gmail.compose (drafts only,
     // can never send; Brittany 2026-09-16: drafts land in the inspector's mailbox).
