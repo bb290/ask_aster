@@ -1,14 +1,15 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 
-// Sagareus Files: a single-tool MCP server that reads Asana attachments
-// server-side and returns them in a format claude.ai can consume natively.
+// Ask Aster: an MCP server that reads Asana attachments server-side
+// (fetch_asana_attachment) and carries the applicant screening skill as an
+// MCP prompt plus a matching tool.
 //
-// History: this function was Ask Aster (semantic search over the SOP corpus
-// plus a catalog of leasing skills exposed as MCP prompts and tools). On
-// 2026-09-19 Aster was stripped down to this one tool. The skills moved to
-// the Sagareus team Claude account and the search tool, prompts, and corpus
-// ingest were deleted. The function slug (ask-aster) and its URL are kept
-// so existing connector installs and OAuth tokens keep working.
+// History: Aster used to also offer semantic search over the SOP corpus
+// plus a catalog of leasing skills exposed as MCP prompts and tools. On
+// 2026-09-19 it was stripped down to the attachment tool and screening.
+// The other skills moved to the Sagareus team Claude account and the search
+// tool and corpus ingest were deleted. The server name, function slug, URL,
+// and connector name are unchanged so nothing on the staff side needs to move.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPTransport } from "@hono/mcp";
@@ -35,6 +36,7 @@ interface MupdfDocument {
   loadPage(index: number): any;
   destroy?(): void;
 }
+import { ALL_PROMPTS } from "./prompts/index.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 // Kept under its historical name: it is the HMAC secret behind every OAuth
@@ -46,8 +48,8 @@ const ASANA_API_TOKEN = Deno.env.get("ASANA_API_TOKEN")!;
 // --- MCP Server Setup ---
 
 const server = new McpServer({
-  name: "sagareus-files",
-  version: "1.0.0",
+  name: "ask-aster",
+  version: "0.1.0",
 });
 
 // --- fetch_asana_attachment ---
@@ -163,7 +165,7 @@ server.registerTool(
           content: [{
             type: "text" as const,
             text:
-              `Asana rejected the request with ${metaResp.status}. The Asana API token may have expired or been revoked. Have an admin rotate the ASANA_API_TOKEN secret on the Sagareus Files edge function and redeploy.`,
+              `Asana rejected the request with ${metaResp.status}. The Asana API token may have expired or been revoked. Have an admin rotate the ASANA_API_TOKEN secret on the Aster edge function and redeploy.`,
           }],
           isError: true,
         };
@@ -506,6 +508,81 @@ server.registerTool(
     }
   },
 );
+
+// --- MCP Prompts (slash commands surfaced to clients) ---
+//
+// Each prompt is generated from a SKILL.md file under skills/<name>/SKILL.md
+// by scripts/sync-prompts.ts. The SKILL.md is the source of truth; the TS
+// modules under prompts/ are deployment artifacts. Only screening remains.
+
+for (const p of ALL_PROMPTS) {
+  server.registerPrompt(
+    p.name,
+    {
+      title: p.name,
+      description: p.description,
+    },
+    () => ({
+      messages: [
+        {
+          role: "user",
+          content: { type: "text", text: p.content },
+        },
+      ],
+    }),
+  );
+}
+
+// --- MCP Tools for skills (workaround for claude.ai web) ---
+//
+// claude.ai web doesn't surface MCP prompts in the chat slash menu, so each
+// skill is also registered as a tool. The tool returns the SKILL.md body
+// wrapped in an instruction note so the model interprets it as directives
+// to follow, not text to paste back. Tool names convert kebab-case to
+// snake_case (screening stays screening).
+
+function wrapSkillBodyAsToolResult(skillName: string, body: string): string {
+  return [
+    `[Skill invoked: ${skillName}.`,
+    `The text below is your instruction set for handling this conversation.`,
+    `Read it as directives, not as text to paste back to the user. Begin`,
+    `executing the skill immediately, following the voice and flow it`,
+    `describes. Maintain the Sagareus voice rules (no em dashes, plain English,`,
+    `casual coworker tone). If the skill says to render markdown (like an`,
+    `image), render it directly to the user. If it says to ask a question,`,
+    `ask it. If it says to wait for a connector check, run that check first.]`,
+    ``,
+    body,
+  ].join("\n");
+}
+
+for (const p of ALL_PROMPTS) {
+  const toolName = p.name.replace(/-/g, "_");
+  server.registerTool(
+    toolName,
+    {
+      title: p.name,
+      description: p.description,
+      inputSchema: {
+        context: z
+          .string()
+          .optional()
+          .describe(
+            "Optional context the user has already provided in their request (e.g., an Asana task link). The skill should acknowledge this context and not re-ask for it.",
+          ),
+      },
+    },
+    ({ context }) => ({
+      content: [
+        {
+          type: "text" as const,
+          text: wrapSkillBodyAsToolResult(p.name, p.content) +
+            (context ? `\n\n[User-provided context: ${context}]` : ""),
+        },
+      ],
+    }),
+  );
+}
 
 // --- OAuth 2.0 (for claude.ai custom connector compatibility) ---
 //

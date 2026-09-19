@@ -1,8 +1,8 @@
-# Sagareus Files (formerly Ask Aster)
+# Ask Aster
 
-Supabase project for Sagareus's edge functions. The main one is **Sagareus Files**, a single-tool MCP server that reads Asana attachments server-side and returns them in a format claude.ai can consume. It also hosts the onboarding, RentCast, screening, and site-visit proxies.
+Supabase project for Sagareus's edge functions. The main one is **Ask Aster**, now a small MCP server with two jobs: `fetch_asana_attachment`, which reads Asana attachments server-side and returns them in a format claude.ai can consume, and the applicant screening skill (`/screening` prompt plus a `screening` tool). It also hosts the onboarding, RentCast, screening, and site-visit proxies.
 
-Until 2026-09-19 this repo was Ask Aster: a semantic-search MCP over the SOP corpus plus a catalog of leasing skills. Those skills moved to the Sagareus team Claude account and Aster was stripped to the attachment tool. The markdown corpus under `sops/`, `decisions/`, `incidents/`, and `docs/` is kept as historical source material and is no longer indexed. The live SOP library is Outline.
+Until 2026-09-19 Aster was also a semantic-search MCP over the SOP corpus plus a catalog of leasing skills. The other skills moved to the Sagareus team Claude account and Aster was stripped to the attachment tool and screening. The markdown corpus under `sops/`, `decisions/`, `incidents/`, and `docs/` is kept as historical source material and is no longer indexed. The live SOP library is Outline.
 
 ## Reading Asana Attachments
 
@@ -16,7 +16,7 @@ claude.ai's code-execution container has a network allowlist that does not inclu
 Use as a two-step pattern:
 
 1. Asana connector `get_attachments_for_object` with the parent task GID to list available attachments and their GIDs.
-2. Sagareus Files `fetch_asana_attachment` with each attachment GID you want to read.
+2. Ask Aster `fetch_asana_attachment` with each attachment GID you want to read.
 
 Requires `ASANA_API_TOKEN` set as a secret on the edge function (Asana Personal Access Token, generated at `app.asana.com/0/my-apps`). Files larger than 25 MB are rejected; upload those directly to chat instead.
 
@@ -24,7 +24,11 @@ Requires `ASANA_API_TOKEN` set as a secret on the edge function (Asana Personal 
 
 - URL: `https://ahonotvcbmczrtnpajua.supabase.co/functions/v1/ask-aster`
 - Auth: OAuth 2.0 with dynamic client registration and PKCE, auto-approved for anyone who completes the flow (internal staff only, no per-person identity). The legacy `x-aster-key` header still works.
-- The function slug stays `ask-aster` so existing connector installs and tokens keep working. Only the display name in claude.ai changes to Sagareus Files.
+- Server name, function slug, URL, and the claude.ai connector name are unchanged; existing installs and tokens keep working.
+
+## Screening skill
+
+Source: `skills/screening/SKILL.md` plus `TEMPLATE.md` and `SCREENING_CRITERIA.md`. Regenerate the deployed prompt with `deno run --allow-read --allow-write scripts/sync-prompts.ts`, then deploy.
 
 ## Deploy
 
