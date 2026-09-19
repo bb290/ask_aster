@@ -3294,6 +3294,9 @@ app.post("*", async (c) => {
       const textBody = String(body.textBody ?? "").slice(0, 40000);
       const htmlBody = String(body.htmlBody ?? "").slice(0, 80000);
       const fromAddr = String(body.from ?? "").trim().toLowerCase();
+      // cc defaults to listings@ (every leasing flow wants the archive copy);
+      // pass cc:"" to send with none (bizdev proposal, person to person)
+      const ccAddr = body.cc === undefined ? "listings@sagareus.com" : String(body.cc).trim().slice(0, 300);
       if (!/^[^@\s]+@sagareus\.com$/.test(userEmail)) return j(headers, 400, { error: "bad_user" });
       if (fromAddr && !/^[^@\s]+@sagareus\.com$/.test(fromAddr)) return j(headers, 400, { error: "bad_from" });
       if (!subject || !textBody) return j(headers, 400, { error: "missing_fields" });
@@ -3339,7 +3342,7 @@ app.post("*", async (c) => {
           // falls back to the user's own address when the alias is missing.
           ...(fromAddr ? [`From: ${fromAddr}`] : []),
           `To: ${toAddr}`,
-          "Cc: listings@sagareus.com",
+          ...(ccAddr ? [`Cc: ${ccAddr}`] : []),
           `Subject: ${subj}`,
           "MIME-Version: 1.0",
           `Content-Type: multipart/alternative; boundary="${bnd}"`,
