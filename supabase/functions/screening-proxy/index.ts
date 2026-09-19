@@ -594,7 +594,11 @@ app.post("*", async (c) => {
           if (!fr.ok) { failures.push(`${name}: download ${fr.status}`); continue; }
           const bytes = new Uint8Array(await fr.arrayBuffer());
           totalBytes += bytes.byteLength;
-          if (totalBytes > 22 * 1024 * 1024) { failures.push(`${name}: total size cap reached, screen it in a second pass`); continue; }
+          // 40MB total: parseDocuments batches big packets into multiple model
+          // calls now (2026-09-18), so the run cap is our memory budget, not the
+          // provider's per-request ceiling. Per-file stays 15MB (one file must
+          // still fit a single call).
+          if (totalBytes > 40 * 1024 * 1024) { failures.push(`${name}: total size cap reached, screen it in a second pass`); continue; }
           const ct = (fr.headers.get("content-type") ?? "").toLowerCase();
           if (ct.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(name)) docs.push(imageAsExtracted(bytes, name));
           else docs.push(pdfAsExtracted(bytes, name));
@@ -617,9 +621,14 @@ app.post("*", async (c) => {
       } catch (e) {
         console.error("screenTask parse failed:", e);
         const detail = String((e as Error).message ?? "").slice(0, 220);
+        // name the prime suspect so "remove the largest attachment" is actionable
+        // (team 2026-09-18: the old message left them guessing)
+        const sizeOf = (d: Extracted) => d.kind === "pdf" ? (d as { dataBase64: string }).dataBase64.length
+          : d.kind === "images" ? (d as { pngs: string[] }).pngs.reduce((a, p) => a + p.length, 0) : 0;
+        const biggest = readable.slice().sort((a, b) => sizeOf(b) - sizeOf(a))[0];
         return j(headers, 502, {
           error: "parse_failed",
-          message: `Document reading failed${detail ? ` (${detail})` : ""}. If this mentions pages or size, remove the largest attachment and rerun; otherwise try again in a minute.`,
+          message: `Document reading failed${detail ? ` (${detail})` : ""}. The read was already retried once, so this is usually one problem file: remove the largest attachment${biggest ? ` ("${biggest.name}")` : ""} and rerun, or try again in a few minutes.`,
         });
       }
       // Buildium application record is the deterministic source for the

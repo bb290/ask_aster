@@ -10,58 +10,40 @@ tags: [turn-over, step-5]
 created_but_never_updated: false
 ---
 
-Send the Move Out Notification email to the owner immediately after the Move Out Inspection is attached.
+Send from: Leasing@sagareus.com
 
+Status (2026-09-19): the Turn Over field tool will send this notification automatically once the keybox migration completes; launch is targeted for next week. Until then this is the manual template, and it stays the manual backup after launch.
 
-:::tip
-**Anyone can send the Move Out Notification.** If the Turn Over Coordinator knows the move-out has been completed and the inspection is attached, they can send the notification directly -- no need to wait for the Leasing Team.
-
-:::
-
-
----
-
-### When This Runs
-
-Immediately after [4 — Attach | Move Out Inspection](4-attach-move-out-inspection.md) is complete. Sent on every move-out regardless of what is happening with the property:
-
-* Sagareus Managed Turn Over
-* Owner Managed Turn Over
-* Property Offloading / Selling
-
-
----
-
-### Send Move Out Notification
-
-Use the email template below to notify the owner.
-
-**Send from:** Leasing@sagareus.com
-
-Once sent, mark task complete.
-
-
----
-
-##### Email Template - Move Out Notification
-
-> **Subject:** Move Out // \[Property Address\]
+> **Subject:** Move Out // [Abbreviated Address]
 >
-> **CC:** Leasing Agent, Turn Over Coordinator & reporting@sagareus.com
+> **CC:** Leasing Agent, listings@sagareus.com
 >
-> **Attachment:** Move-out inspection report
+> **Attachment:** Move Out Inspection report
 >
-> 
-> Hi \[Owner Name\],
+> Hi [Owner Name],
 >
-> 
-> Sagareus has possession of the unit and the Move Out Inspection is complete -- see attached.
+> Sagareus has possession of the unit.
 >
-> 
-> **Keybox Access**
+> - Key box code: [code]
+> - Move Out Inspection attached.
 >
-> * Location: \[Keybox Location\]
-> * Code: \[Keybox Code\]
+> **Work in Progress**
 >
-> 
-> **Next Steps** The Turn Over Coordinator is preparing your Turn Over Plan and will send an update within 48 hours.
+> Our vendor has been dispatched to complete the following:
+>
+> - Replace Locks; Leave 3 keys
+> - Repair / Replace Smoke & CO Detectors
+> - Provide 2 estimates
+>
+> **Estimates Pending**
+>
+> We've requested estimates for the repairs / damages + optional upgrades identified by our leasing team.
+>
+> We'll negotiate & approve on your behalf, not to exceed the authorization amount.
+>
+> - Estimate 1 - Required Repairs | Necessary repairs or replacements to bring unit back to Rent Ready Standard. Vendor instructed to repair wherever possible, replacement as needed.
+> - Estimate 2 - Optional Upgrades | When feasible & appropriate, Sagareus recommends 1-3 upgrades per turn over to remain competitive, demand market rent, and attract the most qualified applicants.
+>
+> Thank you,
+> Sagareus Leasing Team
+> listings@sagareus.com

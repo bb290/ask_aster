@@ -95,6 +95,9 @@ app.post("*", async (c) => {
   const bathrooms = num(body.bathrooms, 0, 20);
   const squareFootage = num(body.squareFootage, 100, 50000);
   const maxRadius = num(body.maxRadius, 0.5, 25);
+  // bedroom RANGE (team 2026-09-16): bedroomsMin/bedroomsMax filter the comp set
+  const bedMin = num(body.bedroomsMin, 0, 20);
+  const bedMax = num(body.bedroomsMax, 0, 20);
 
   const today = new Date().toISOString().slice(0, 10);
   const ip = (c.req.header("x-forwarded-for") ?? "unknown").split(",")[0].trim();
@@ -108,7 +111,7 @@ app.post("*", async (c) => {
   }
 
   // v7: bedroom-exact comp filter when bedrooms is specified (v6: sweep merged + DOM noise filter)
-  const cacheKey = [address.toLowerCase(), propertyType, bedrooms ?? "", bathrooms ?? "", squareFootage ?? "", maxRadius ?? "", "v7"].join("|");
+  const cacheKey = [address.toLowerCase(), propertyType, bedrooms ?? "", bathrooms ?? "", squareFootage ?? "", maxRadius ?? "", bedMin ?? "", bedMax ?? "", "v8"].join("|");
   const { data: cacheRow } = await supabase
     .from("rentcast_cache").select("payload, created_at").eq("cache_key", cacheKey).maybeSingle();
 
@@ -168,7 +171,15 @@ app.post("*", async (c) => {
   // a subject attribute, not a comp filter, so near-miss comps ride along; when
   // the caller specifies bedrooms, every comp must match exactly. Unknown-bedroom
   // comps drop too - a comp we can't verify isn't a comp.
-  const bedOk = (b: unknown) => bedrooms === undefined || Number(b) === bedrooms;
+  // range wins over the single exact-match bedrooms param when provided
+  const bedOk = (b: unknown) => {
+    const n = Number(b);
+    if (bedMin !== undefined || bedMax !== undefined) {
+      if (!Number.isFinite(n)) return false;
+      return (bedMin === undefined || n >= bedMin) && (bedMax === undefined || n <= bedMax);
+    }
+    return bedrooms === undefined || n === bedrooms;
+  };
 
   // Trim to exactly what the widget needs; never pass the raw payload through.
   const payload = {
@@ -181,6 +192,7 @@ app.post("*", async (c) => {
       bedrooms: x.bedrooms ?? null,
       bathrooms: x.bathrooms ?? null,
       squareFootage: x.squareFootage ?? null,
+      propertyType: x.propertyType ?? null,
       distance: x.distance ?? null,
       daysOld: x.daysOld ??
         (x.lastSeenDate ? Math.max(0, Math.round((Date.now() - Date.parse(String(x.lastSeenDate))) / 86400000)) : null),
@@ -203,6 +215,7 @@ app.post("*", async (c) => {
   {
     try {
       const lqs = new URLSearchParams({ address, status: "Active", limit: "100", radius: String(maxRadius ?? 1) });
+      if (propertyType) lqs.set("propertyType", propertyType); // sweep respects a requested type (team 2026-09-16)
       // the sweep pulled EVERY active listing regardless of bedrooms until 2026-09-13;
       // filter at the source so the 100-listing budget isn't spent on wrong sizes
       if (bedrooms !== undefined) lqs.set("bedrooms", String(bedrooms));
@@ -230,6 +243,7 @@ app.post("*", async (c) => {
             bedrooms: x.bedrooms ?? null,
             bathrooms: x.bathrooms ?? null,
             squareFootage: x.squareFootage ?? null,
+            propertyType: x.propertyType ?? null,
             distance: dist(Number(x.latitude), Number(x.longitude)),
             daysOld: x.lastSeenDate ? Math.max(0, Math.round((Date.now() - Date.parse(String(x.lastSeenDate))) / 86400000)) : 0,
             status: x.status ?? "Active",

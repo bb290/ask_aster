@@ -457,6 +457,27 @@ const OB_ADJ_SECTION = "1217553095980495";
 // subtasks lsRequest creates. While any is open, Modify and Approve are mutually
 // exclusive (Brittany 2026-09-02): the plan on screen is not the plan the owner
 // wants, so approvals pause until the team makes the change and re-sends.
+// A re-approved (overwritten) plan REPLACES the bot's old pinned plan comment
+// instead of stacking a second one (team 2026-09-15): delete previous comments
+// whose text starts with the given prefix before posting the fresh block.
+async function obReplacePlanComment(taskGid0: string, prefix0: string): Promise<void> {
+  try {
+    let offP = "";
+    for (let pgP = 0; pgP < 15; pgP++) {
+      const rP = await fetch(`${ASANA}/tasks/${taskGid0}/stories?limit=100&opt_fields=type,text${offP ? `&offset=${encodeURIComponent(offP)}` : ""}`,
+        { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+      const jP = await rP.json().catch(() => ({}));
+      if (!rP.ok) break;
+      for (const sP of (jP.data ?? []) as Array<{ gid: string; type: string; text?: string }>) {
+        if (sP.type === "comment" && String(sP.text ?? "").trimStart().startsWith(prefix0)) {
+          await fetch(`${ASANA}/stories/${sP.gid}`, { method: "DELETE", headers: { "Authorization": `Bearer ${ASANA_PAT}` } }).catch(() => null);
+        }
+      }
+      offP = jP.next_page?.offset ?? "";
+      if (!offP) break;
+    }
+  } catch { /* old comment stays; the new one still posts */ }
+}
 async function obOpenMods(gid: string): Promise<string[]> {
   const subs = await asana("GET", `/tasks/${gid}/subtasks?limit=100&opt_fields=name,completed`);
   return ((subs ?? []) as Array<{ name: string; completed?: boolean }>)
@@ -1659,15 +1680,21 @@ app.post("/onboard-proxy", async (c) => {
         // Listing Plan note rides inside the (agent-hidden) Comps Data JSON; surface
         // just the note to the page, like turnNote (Brittany 2026-08-27)
         let planNote = "";
+        let turnManaged = "";
         try {
           const cdRaw = String(((t.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>).find((f) => /comps data/i.test(String(f.name)))?.display_value ?? "");
-          if (cdRaw) { const cdj = JSON.parse(cdRaw); planNote = scrub(String(cdj?.planNote ?? "")).slice(0, 800); }
+          if (cdRaw) {
+            const cdj = JSON.parse(cdRaw);
+            planNote = scrub(String(cdj?.planNote ?? "")).slice(0, 800);
+            // Owner Managed Turn Over flag rides here too (team 2026-09-15)
+            if (String(cdj?.turnManaged ?? "") === "owner") turnManaged = "owner";
+          }
         } catch { /* no note */ }
         // open change requests pause the approve buttons on the page; best-effort
         // here because lsAccept/lsApprove enforce the same gate server-side
         let pendingMods: string[] = [];
         try { pendingMods = await obOpenMods(hit.gid); } catch { /* view stays usable */ }
-        return j(headers, 200, { ok: true, address: hit.address, fields, team, approval, dates, metrics, unitSettings, turn, turnNote: turnRaw.slice(0, 2000), planNote, planStatus: psVal, approvals: apprOut, revision: { req: rnV.req, resp: rnV.resp, d: rnV.d }, pendingMods, lastUpdated: String(t.modified_at ?? "").slice(0, 10), createdAt: String(t.created_at ?? "").slice(0, 10) });
+        return j(headers, 200, { ok: true, address: hit.address, fields, team, approval, dates, metrics, unitSettings, turn, turnNote: turnRaw.slice(0, 2000), planNote, turnManaged, planStatus: psVal, approvals: apprOut, revision: { req: rnV.req, resp: rnV.resp, d: rnV.d }, pendingMods, lastUpdated: String(t.modified_at ?? "").slice(0, 10), createdAt: String(t.created_at ?? "").slice(0, 10) });
       }
 
       // lsDraft: the Draft Listing section — photos, listing description, and the
@@ -2040,6 +2067,7 @@ app.post("/onboard-proxy", async (c) => {
             if (toTask) {
               // pinned comment, not a description block (Brittany 2026-08-19) — same shape as the LU one
               const block = `--- Turn Over Plan (approved ${day5}${vr2.isTeam ? " by team lead" : ""}) ---\n` + summary + `\n\nLeasing Plan: ${url5}` + (prioBlock ? `\n${prioBlock}` : "");
+              await obReplacePlanComment(toTask.gid, "--- Turn Over Plan (approved");
               const toStory = await asana("POST", `/tasks/${toTask.gid}/stories`, { text: block });
               if (toStory?.gid) { await asana("PUT", `/stories/${toStory.gid}`, { is_pinned: true }).catch(() => null); fanNotes.push("turnover comment pinned"); }
 
@@ -2116,6 +2144,7 @@ app.post("/onboard-proxy", async (c) => {
                 await asana("PUT", `/tasks/${war.gid}`, { notes: obBlockMerge(String(curW.notes ?? ""), "Leasing Plan", block) });
                 fanNotes.push("weekly activity report updated");
               } else fanNotes.push("no weekly activity report subtask");
+              await obReplacePlanComment(lu5.gid, "--- Leasing Plan (approved");
               const story = await asana("POST", `/tasks/${lu5.gid}/stories`, { text: block });
               if (story?.gid) { await asana("PUT", `/stories/${story.gid}`, { is_pinned: true }).catch(() => null); fanNotes.push("lu comment pinned"); }
 

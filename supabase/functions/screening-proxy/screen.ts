@@ -229,7 +229,7 @@ export interface ParsedHousehold {
   };
 }
 
-export async function parseDocuments(docs: Extracted[], contextText: string): Promise<ParsedHousehold> {
+async function parseBatch(docs: Extracted[], contextText: string, allowEmpty = false): Promise<ParsedHousehold> {
   if (!OR_KEY) throw new Error("openrouter_not_configured");
   type Part = { type: "text"; text: string } | { type: "image_url"; image_url: { url: string } };
   const parts: Part[] = [];
@@ -274,22 +274,36 @@ export async function parseDocuments(docs: Extracted[], contextText: string): Pr
     if (errInBody) throw new Error(`openrouter: ${String(errInBody).slice(0, 200)}`);
     return String((jr as { choices?: { message?: { content?: unknown } }[] })?.choices?.[0]?.message?.content ?? "").trim();
   }
+  // "Provider returned error" (openrouter 400/5xx) is usually a transient
+  // upstream reject with nothing wrong on our side: one retry after a beat
+  // clears most of them (team report 2026-09-18, no pages/size mentioned)
+  const callWithRetry = async (nudge?: string): Promise<string> => {
+    try { return await callModel(nudge); }
+    catch (e) {
+      if (/^Error: openrouter (400|5\d\d)/.test(String(e))) {
+        await new Promise((res) => setTimeout(res, 1500));
+        return await callModel(nudge);
+      }
+      throw e;
+    }
+  };
   const clean = (raw: string) => raw.replace(/^```(json)?/i, "").replace(/```$/, "").trim();
   let parsed: ParsedHousehold;
   try {
-    parsed = JSON.parse(clean(await callModel())) as ParsedHousehold;
+    parsed = JSON.parse(clean(await callWithRetry())) as ParsedHousehold;
   } catch (e) {
     if (String(e).startsWith("Error: openrouter")) throw e;
     // Output was not valid JSON (often truncation on huge packets): one retry
     // asking for tighter output.
     try {
-      parsed = JSON.parse(clean(await callModel("Your previous output was not valid JSON. Return ONLY the JSON object, no commentary, and keep managerFlags to at most 6 short items per applicant."))) as ParsedHousehold;
+      parsed = JSON.parse(clean(await callWithRetry("Your previous output was not valid JSON. Return ONLY the JSON object, no commentary, and keep managerFlags to at most 6 short items per applicant."))) as ParsedHousehold;
     } catch (e2) {
       if (String(e2).startsWith("Error: openrouter")) throw e2;
       throw new Error("parse_not_json");
     }
   }
-  if (!Array.isArray(parsed.applicants) || !parsed.applicants.length) throw new Error("parse_no_applicants");
+  if (!Array.isArray(parsed.applicants)) parsed.applicants = [];
+  if (!parsed.applicants.length && !allowEmpty) throw new Error("parse_no_applicants");
   parsed.warnings = Array.isArray(parsed.warnings) ? parsed.warnings.map(String) : [];
   parsed.integrity = parsed.integrity ?? {};
   parsed.applicationInfo = parsed.applicationInfo ?? {};
@@ -308,6 +322,84 @@ export async function parseDocuments(docs: Extracted[], contextText: string): Pr
     }
   }
   return parsed;
+}
+
+// The provider ceiling is roughly 100 PDF pages / 32MB per request; no cap of
+// ours can lift that. Big application packets are instead SPLIT into batches
+// under a conservative budget, each batch is read separately, and the results
+// merge by applicant name (Brittany 2026-09-18: step 2 kept 400ing on large
+// packets). Disjoint batches mean incomes never double-count.
+const BATCH_BUDGET = 14 * 1024 * 1024; // base64 chars per model call
+function docSize(d: Extracted): number {
+  if (d.kind === "pdf") return (d as { dataBase64: string }).dataBase64.length;
+  if (d.kind === "images") return (d as { pngs: string[] }).pngs.reduce((a, pg) => a + pg.length, 0);
+  if (d.kind === "text") return (d as { text: string }).text.length;
+  return 0;
+}
+export async function parseDocuments(docs: Extracted[], contextText: string): Promise<ParsedHousehold> {
+  const batches: Extracted[][] = [];
+  let cur: Extracted[] = [];
+  let curSz = 0;
+  for (const d of docs) {
+    const s = docSize(d);
+    if (cur.length && curSz + s > BATCH_BUDGET) { batches.push(cur); cur = []; curSz = 0; }
+    cur.push(d);
+    curSz += s;
+  }
+  if (cur.length) batches.push(cur);
+  if (batches.length <= 1) return await parseBatch(docs, contextText);
+  const parts: ParsedHousehold[] = [];
+  for (let i = 0; i < batches.length; i++) {
+    parts.push(await parseBatch(
+      batches[i],
+      contextText + `\nNOTE: this is batch ${i + 1} of ${batches.length}; the other documents are being read separately, so documents missing HERE are not missing from the application and need no warning.`,
+      true,
+    ));
+  }
+  const merged = mergeParsed(parts);
+  if (!merged.applicants.length) throw new Error("parse_no_applicants");
+  merged.warnings.push(`Large packet: documents were read in ${batches.length} batches and merged by applicant name. Double-check per-applicant figures against the documents.`);
+  return merged;
+}
+function mergeParsed(parts: ParsedHousehold[]): ParsedHousehold {
+  const out: ParsedHousehold = { applicants: [], warnings: [], applicationInfo: {}, integrity: {} };
+  const norm = (s: unknown) => String(s ?? "").toLowerCase().replace(/[^a-z ]/g, "").replace(/\s+/g, " ").trim();
+  type Anyi = Record<string, unknown>;
+  for (const p of parts) {
+    for (const a of (p.applicants ?? [])) {
+      const an = norm((a as unknown as Anyi).name);
+      const hit = an ? out.applicants.find((b) => norm((b as unknown as Anyi).name) === an) : undefined;
+      if (!hit) { out.applicants.push(a); continue; }
+      const h = hit as unknown as Anyi, x = a as unknown as Anyi;
+      h.incomes = [...(Array.isArray(h.incomes) ? h.incomes as unknown[] : []), ...(Array.isArray(x.incomes) ? x.incomes as unknown[] : [])];
+      if (h.equifax == null && x.equifax != null) h.equifax = x.equifax;
+      const ha = (h.adverse ?? {}) as Anyi, xa = (x.adverse ?? {}) as Anyi;
+      for (const k of Object.keys(xa)) {
+        const v = xa[k];
+        if (typeof v === "boolean") ha[k] = Boolean(ha[k]) || v;
+        else if (k === "tradelineCount") ha[k] = Math.max(Number(ha[k]) || 0, Number(v) || 0);
+        else if (ha[k] == null || ha[k] === "" || ha[k] === "none") { if (v != null && v !== "") ha[k] = v; }
+      }
+      h.adverse = ha;
+      h.managerFlags = [...(Array.isArray(h.managerFlags) ? h.managerFlags as unknown[] : []), ...(Array.isArray(x.managerFlags) ? x.managerFlags as unknown[] : [])];
+    }
+    out.warnings.push(...(p.warnings ?? []));
+    const ai = p.applicationInfo ?? {};
+    out.applicationInfo = {
+      desiredMoveInDate: out.applicationInfo?.desiredMoveInDate || ai.desiredMoveInDate,
+      pets: out.applicationInfo?.pets || ai.pets,
+    };
+    const ig = p.integrity ?? {};
+    for (const k of ["documentation", "aiImageSigns", "employerAddress", "previousAddress"] as const) {
+      const nx = ig[k];
+      if (!nx) continue;
+      const curC = out.integrity![k];
+      out.integrity![k] = curC
+        ? { ok: (curC.ok !== false) && (nx.ok !== false), notes: [curC.notes, nx.notes].filter(Boolean).join(" | ").slice(0, 500) }
+        : nx;
+    }
+  }
+  return out;
 }
 
 // ------------------------------------------------------------- report
