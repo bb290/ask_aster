@@ -3293,7 +3293,9 @@ app.post("*", async (c) => {
       const subject = String(body.subject ?? "").trim().slice(0, 250);
       const textBody = String(body.textBody ?? "").slice(0, 40000);
       const htmlBody = String(body.htmlBody ?? "").slice(0, 80000);
+      const fromAddr = String(body.from ?? "").trim().toLowerCase();
       if (!/^[^@\s]+@sagareus\.com$/.test(userEmail)) return j(headers, 400, { error: "bad_user" });
+      if (fromAddr && !/^[^@\s]+@sagareus\.com$/.test(fromAddr)) return j(headers, 400, { error: "bad_from" });
       if (!subject || !textBody) return j(headers, 400, { error: "missing_fields" });
       try {
         const sa = JSON.parse(saRaw) as { client_email: string; private_key: string };
@@ -3332,6 +3334,10 @@ app.post("*", async (c) => {
         const subj = /^[\x20-\x7e]*$/.test(subject) ? subject : `=?UTF-8?B?${b64mime(subject)}?=`;
         const bnd = "sagab" + crypto.randomUUID().replace(/-/g, "").slice(0, 16);
         const mime = [
+          // From: a send-as alias of the impersonated user (the weekly reports go
+          // out as listings@; every agent has the alias configured). Gmail silently
+          // falls back to the user's own address when the alias is missing.
+          ...(fromAddr ? [`From: ${fromAddr}`] : []),
           `To: ${toAddr}`,
           "Cc: listings@sagareus.com",
           `Subject: ${subj}`,
