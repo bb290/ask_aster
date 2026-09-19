@@ -3351,16 +3351,24 @@ app.post("*", async (c) => {
           `--${bnd}--`,
           "",
         ].join("\r\n");
-        const dRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/drafts", {
+        // send:true = send immediately from the inspector (Brittany 2026-09-19: the
+        // tool preview IS the human review; staff forget a second button). Same
+        // scope covers both. Otherwise a draft is created as before.
+        const doSend = body.send === true;
+        const rawMsg = b64u(new TextEncoder().encode(mime));
+        const gRes = await fetch(doSend
+          ? "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+          : "https://gmail.googleapis.com/gmail/v1/users/me/drafts", {
           method: "POST", headers: { "Authorization": `Bearer ${tok.access_token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ message: { raw: b64u(new TextEncoder().encode(mime)) } }),
+          body: JSON.stringify(doSend ? { raw: rawMsg } : { message: { raw: rawMsg } }),
         });
-        const dj = await dRes.json().catch(() => ({}));
-        if (!dRes.ok) return j(headers, 200, { ok: false, error: "gmail_draft_failed", detail: String(dj?.error?.message ?? dRes.status).slice(0, 200) });
+        const dj = await gRes.json().catch(() => ({}));
+        if (!gRes.ok) return j(headers, 200, { ok: false, error: doSend ? "gmail_send_failed" : "gmail_draft_failed", detail: String(dj?.error?.message ?? gRes.status).slice(0, 200) });
         return j(headers, 200, {
           ok: true,
-          draftId: String(dj.id ?? ""),
-          gmailUrl: `https://mail.google.com/mail/?authuser=${encodeURIComponent(userEmail)}#drafts`,
+          sent: doSend,
+          draftId: doSend ? "" : String(dj.id ?? ""),
+          gmailUrl: `https://mail.google.com/mail/?authuser=${encodeURIComponent(userEmail)}${doSend ? "#sent" : "#drafts"}`,
         });
       } catch (e) {
         return j(headers, 200, { ok: false, error: "gmail_error", detail: String((e as Error)?.message ?? e).slice(0, 200) });
