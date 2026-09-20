@@ -1419,6 +1419,25 @@ ${SIG}`,
       }
     }
 
+    // ---------- feedback: passthrough to site-visit-proxy plFeedback ----------
+    // The sandbox bench on /wt files its Team Feedback under the same dev task
+    // and bench label as the live /work-bench button.
+    if (action === "feedback") {
+      const svKey = Deno.env.get("SITE_VISIT_KEY") ?? "";
+      const base = (Deno.env.get("SUPABASE_URL") ?? "").replace(/\/$/, "");
+      if (!svKey || !base) return j(headers, 502, { error: "unconfigured", message: "Feedback relay not configured." });
+      try {
+        const r0 = await fetch(`${base}/functions/v1/site-visit-proxy`, {
+          method: "POST", headers: { "Content-Type": "application/json", "x-sv-key": svKey },
+          body: JSON.stringify({ action: "plFeedback", bench: "Screen + Sign", text: String((body as Record<string, unknown>).text ?? "").slice(0, 4000) }),
+        });
+        const j0 = await r0.json().catch(() => ({}));
+        return j(headers, r0.ok ? 200 : r0.status, j0 as Record<string, unknown>);
+      } catch {
+        return j(headers, 502, { error: "feedback_failed", message: "Could not send the feedback." });
+      }
+    }
+
     // ---------- mailUsers / mailSend: passthrough to site-visit-proxy ----------
     // REUSE, DON'T REBUILD: the Gmail service-account machinery (moUsers roster,
     // moDraft multipart send) lives in site-visit-proxy. Secrets are project
