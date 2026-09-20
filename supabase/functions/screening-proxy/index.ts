@@ -110,6 +110,25 @@ async function setStatus_(gid: string, optionGids: string[]) {
     if (bare && wanted !== cur.name) await asanaCall("PUT", `/tasks/${gid}`, { name: wanted });
   } catch { /* prefix sync is best-effort */ }
 }
+// ---- Screen + Sign v2 application fields (created 2026-09-20, Brittany-approved) ----
+const F_HOUSEHOLD_SIZE = "1218658174503778";
+const F_MEDIAN_CREDIT = "1218658616135258";
+const F_QUAL_INCOME = "1218658506648570";
+const PF_FIELDS = {
+  income: { field: "1218658224776608", pass: "1218658224776609", fail: "1218658224776610" },
+  credit: { field: "1218658224776895", pass: "1218658224776896", fail: "1218658224776897" },
+  rentalhx: { field: "1218658224776674", pass: "1218658224776675", fail: "1218658224776676" },
+} as const;
+// Listing Settings fields the criteria card reads (tiers are sunset; the
+// property's criteria ARE Min Credit / Min Income on its LS task)
+const LS_PROJECT_ID = "1217446710785429";
+const UNIT_ID_FIELD = "1213183515622826";
+const LS_MIN_CREDIT = "1217446728640049";
+const LS_MIN_INCOME = "1217446770195125";
+const LS_CURRENT_RENT = "1218160030285805";
+const LS_STARTING_RENT = "1217446589856415";
+// Status stages that put an application on the Conditionally Approved holding list
+const COND_STATUSES: readonly string[] = [STATUS.condSec8, STATUS.condOwnerException, STATUS.pendingCosigner, STATUS.pendingAddlDocs, STATUS.pendingLandlordBalance];
 // Decision -> destination section in Leasing | Pending Applications:
 //   approved as-is / negotiate / owner-exception / other -> Approved
 //   approved pending Section 8                            -> Pending Docs / Co-Signer / Sec 8
@@ -676,6 +695,17 @@ app.post("*", async (c) => {
 
       const asOf = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10); // Seattle-ish
       const result = underwrite({ applicants: parsed.applicants, asOf });
+
+      // v2 (2026-09-20): mirror the machine figures onto the application task's
+      // fields so the Manager Review criteria card reads them. Overwritten on
+      // every Generate; manager-editable in Asana afterwards. Best-effort.
+      try {
+        const qiSum = (result.applicants ?? []).reduce((s, a) => s + (Number(a.qualifyingMonthly) || 0), 0);
+        const cfW: Record<string, number> = {};
+        if (result.medianCredit != null) cfW[F_MEDIAN_CREDIT] = Math.round(Number(result.medianCredit));
+        if (qiSum > 0) cfW[F_QUAL_INCOME] = Math.round(qiSum);
+        if (Object.keys(cfW).length) await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: cfW });
+      } catch { /* the card falls back to blank fields */ }
 
       const integrityFlags: string[] = [];
       for (const s of skipped) {
@@ -1280,6 +1310,94 @@ ${SIG}`,
       }
     }
 
+    // ---------- mgrCriteria: everything the review criteria card needs ----------
+    // App-task figures (median credit, qualifying income, household size, the
+    // pass/fail verdicts) plus the PROPERTY's criteria read live from Listing
+    // Settings (Min Credit / Min Income; tiers are sunset) via the application's
+    // parent LU -> Unit ID -> LS exact search. Everything best-effort: a missing
+    // link renders a partial card, never an error.
+    if (action === "mgrCriteria") {
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid) return j(headers, 400, { error: "bad_task_url" });
+      try {
+        const t = await asanaCall("GET", `/tasks/${gid}?opt_fields=name,parent.gid,parent.name,custom_fields.gid,custom_fields.number_value,custom_fields.enum_value.name`) as {
+          name?: string; parent?: { gid?: string; name?: string } | null;
+          custom_fields?: { gid?: string; number_value?: number | null; enum_value?: { name?: string } | null }[];
+        };
+        const cf = t.custom_fields ?? [];
+        const num = (fid: string) => { const f = cf.find((x) => x.gid === fid); return f?.number_value ?? null; };
+        const en = (fid: string) => cf.find((x) => x.gid === fid)?.enum_value?.name ?? "";
+        const out = {
+          ok: true,
+          medianCredit: num(F_MEDIAN_CREDIT),
+          qualIncome: num(F_QUAL_INCOME),
+          householdSize: num(F_HOUSEHOLD_SIZE),
+          passFail: { income: en(PF_FIELDS.income.field), credit: en(PF_FIELDS.credit.field), rentalhx: en(PF_FIELDS.rentalhx.field) },
+          minCredit: "", minIncome: "", listedRent: null as number | null, lsUrl: "", address: "",
+        };
+        const luGid = t.parent?.gid ?? "";
+        if (luGid) {
+          out.address = String(t.parent?.name ?? "").replace(/^LU \|\s*/i, "").trim();
+          try {
+            const lu = await asanaCall("GET", `/tasks/${luGid}?opt_fields=custom_fields.name,custom_fields.display_value`) as { custom_fields?: { name?: string; display_value?: string | null }[] };
+            const uid = String((lu.custom_fields ?? []).find((f) => /unit id/i.test(String(f.name ?? "")))?.display_value ?? "").replace(/\D/g, "");
+            if (uid) {
+              const hits = (await asanaCall("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LS_PROJECT_ID}&custom_fields.${UNIT_ID_FIELD}.value=${uid}&opt_fields=name,permalink_url,custom_fields.gid,custom_fields.display_value,custom_fields.number_value`)) as { gid?: string; permalink_url?: string; custom_fields?: { gid?: string; display_value?: string | null; number_value?: number | null }[] }[];
+              const ls = hits?.[0];
+              if (ls) {
+                const lcf = ls.custom_fields ?? [];
+                const lstr = (fid: string) => String(lcf.find((x) => x.gid === fid)?.display_value ?? "").trim();
+                const lnum = (fid: string) => { const f = lcf.find((x) => x.gid === fid); return f?.number_value ?? null; };
+                out.minCredit = lstr(LS_MIN_CREDIT);
+                out.minIncome = lstr(LS_MIN_INCOME);
+                out.listedRent = lnum(LS_CURRENT_RENT) ?? lnum(LS_STARTING_RENT);
+                out.lsUrl = ls.permalink_url ?? "";
+              }
+            }
+          } catch { /* criteria best-effort */ }
+        }
+        return j(headers, 200, out);
+      } catch (e) {
+        console.error("mgrCriteria failed:", e);
+        return j(headers, 502, { error: "asana_failed", message: "Could not load the criteria." });
+      }
+    }
+
+    // ---------- condQueue: the Conditionally Approved holding list ----------
+    // Open tasks in Leasing | Pending Applications whose Status carries any
+    // conditional stage. The leasing assistants chase outstanding documents
+    // from this list; the manager re-decides a row when the condition clears.
+    if (action === "condQueue") {
+      try {
+        const rows: { gid: string; name: string; url: string; due: string; status: { name: string; color: string }[] }[] = [];
+        let offset = "";
+        for (let page = 0; page < 4; page++) {
+          const res = await fetch(
+            `${ASANA}/projects/${PENDING_APPS_PROJECT}/tasks?limit=100&opt_fields=name,permalink_url,due_on,completed,custom_fields.gid,custom_fields.multi_enum_values.gid,custom_fields.multi_enum_values.name,custom_fields.multi_enum_values.color${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+            { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
+          );
+          const json = await res.json().catch(() => ({})) as { data?: { gid?: string; name?: string; permalink_url?: string; due_on?: string; completed?: boolean; custom_fields?: { gid?: string; multi_enum_values?: { gid?: string; name?: string; color?: string }[] }[] }[]; next_page?: { offset?: string } | null };
+          if (!res.ok) throw new Error(`asana condQueue page ${page}`);
+          for (const t of json.data ?? []) {
+            if (t.completed) continue;
+            const mv = (t.custom_fields ?? []).find((c) => c.gid === STATUS_FIELD)?.multi_enum_values ?? [];
+            if (!mv.some((v) => COND_STATUSES.includes(v.gid ?? ""))) continue;
+            rows.push({
+              gid: t.gid ?? "", name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "",
+              status: mv.map((v) => ({ name: v.name ?? "", color: v.color ?? "" })).filter((v) => v.name),
+            });
+          }
+          offset = json.next_page?.offset ?? "";
+          if (!offset) break;
+        }
+        return j(headers, 200, { queue: rows });
+      } catch (e) {
+        console.error("condQueue failed:", e);
+        return j(headers, 502, { error: "asana_failed", message: "Could not load the holding list." });
+      }
+    }
+
     // ---------- decide: manager decision -> comment with email draft, assign Mary, due today ----------
     if (action === "decide") {
       const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
@@ -1290,14 +1408,28 @@ ${SIG}`,
       const optionsList = (Array.isArray((body as { options?: unknown }).options) ? (body as { options: unknown[] }).options : []).map(String);
       const text = String((body as { text?: unknown }).text ?? "").slice(0, 2000);
       const mgrComment = String((body as { comment?: unknown }).comment ?? "").slice(0, 3000);
-      if (!DECISION_OPTIONS[decision]) return j(headers, 400, { error: "bad_decision" });
-      if (decision === "insufficient" && !optionsList.length && !option) return j(headers, 400, { error: "bad_option", message: "Check at least one item." });
+      // v2 Conditionally Approved (Brittany 2026-09-20): a fourth decision that
+      // reuses the EXISTING templates (sec8 -> approved/section8, cosigner and
+      // docs -> insufficient/*) and parks the application on the holding list
+      // via its Status stage. Automated conditional flows wait for v3.
+      const isConditional = String(decision) === "conditional";
+      const CONDITIONAL_MAP: Record<string, { decision: Decision; option: string; status: string }> = {
+        sec8: { decision: "approved" as Decision, option: "section8", status: STATUS.condSec8 },
+        cosigner: { decision: "insufficient" as Decision, option: "cosigner", status: STATUS.pendingCosigner },
+        docs: { decision: "insufficient" as Decision, option: "docs", status: STATUS.pendingAddlDocs },
+      };
+      if (isConditional && !CONDITIONAL_MAP[option]) {
+        return j(headers, 400, { error: "bad_option", message: "Pick a conditional option first. Nothing was changed." });
+      }
+      const effDecision: Decision = isConditional ? CONDITIONAL_MAP[option].decision : decision;
+      if (!DECISION_OPTIONS[effDecision]) return j(headers, 400, { error: "bad_decision" });
+      if (!isConditional && decision === "insufficient" && !optionsList.length && !option) return j(headers, 400, { error: "bad_option", message: "Check at least one item." });
       // Validate the option BEFORE the try: buildDecision throws bad_option, and
       // the old catch dressed that up as "Asana did not accept the update" even
       // though nothing had been written (Brittany 2026-08-30: reads as the tool
       // randomly breaking). Multi-select insufficient may send only options[].
-      const effOption = option || (decision === "insufficient" ? (optionsList[0] ?? "") : "");
-      if (!DECISION_OPTIONS[decision].some((o) => o.key === effOption)) {
+      const effOption = (isConditional ? CONDITIONAL_MAP[option].option : option) || (effDecision === "insufficient" ? (optionsList[0] ?? "") : "");
+      if (!DECISION_OPTIONS[effDecision].some((o) => o.key === effOption)) {
         return j(headers, 400, { error: "bad_option", message: "Pick a decision option first. Nothing was changed." });
       }
 
@@ -1322,7 +1454,8 @@ ${SIG}`,
         const firsts = names.split(/[+,/]|\band\b/).map((n) => n.trim().split(/\s+/)[0]).filter(Boolean);
         const applicantFirst = firsts.join(" and ");
 
-        const built = buildDecision({ decision, option: effOption, options: optionsList, text, comment: mgrComment, applicantFirst, address });
+        const built = buildDecision({ decision: effDecision, option: effOption, options: isConditional ? [] : optionsList, text, comment: mgrComment, applicantFirst, address });
+        const headlineOut = isConditional ? `Conditionally Approved - ${built.headline}` : built.headline;
 
         // Recipients: Buildium group members via the Applicant ID field,
         // falling back to emails in the task description.
@@ -1345,12 +1478,12 @@ ${SIG}`,
         const emailOut = { subject: built.email.subject, body: built.email.body, to: toEmails, cc: "leasing@sagareus.com" };
 
         if (previewOnly) {
-          return j(headers, 200, { preview: true, headline: built.headline, email: emailOut });
+          return j(headers, 200, { preview: true, headline: headlineOut, email: emailOut });
         }
 
         const MARY = { gid: "1203402971273034", name: "Mary Galvez" };
         const dueOn = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
-        const comment = `MANAGER DECISION: ${built.headline}
+        const comment = `MANAGER DECISION: ${headlineOut}
 Assigned to ${MARY.name}, due ${dueOn}. Send the email below from leasing@sagareus.com (draft only; review before sending).
 
 EMAIL DRAFT
@@ -1362,17 +1495,36 @@ ${built.email.body}`;
         await asanaCall("PUT", `/tasks/${gid}`, { assignee: MARY.gid, due_on: dueOn });
         // Move to the matching stage section (addProject moves within the
         // project when already homed, and homes the task when not).
-        const destSection = decision === "declined" ? SEC_COMPLETE
-          : decision === "insufficient" ? SEC_PENDING_DOCS
-          : option === "section8" ? SEC_PENDING_DOCS
+        const destSection = effDecision === "declined" ? SEC_COMPLETE
+          : (isConditional || effDecision === "insufficient" || effOption === "section8") ? SEC_PENDING_DOCS
           : SEC_APPROVED;
         let moved = true;
         try {
           await asanaCall("POST", `/tasks/${gid}/addProject`, { project: PENDING_APPS_PROJECT, section: destSection });
         } catch { moved = false; }
+        // v2 (plan 2026-09-20): Status is written on EVERY decision, and pass/fail
+        // verdicts land on their fields when the manager set them on the card.
+        const pfIn = ((body as { passFail?: Record<string, unknown> }).passFail ?? {}) as Record<string, unknown>;
+        const pfWrites: Record<string, string> = {};
+        for (const [k, cfg] of Object.entries(PF_FIELDS)) {
+          const v = String(pfIn[k] ?? "").toLowerCase();
+          if (v === "pass") pfWrites[cfg.field] = cfg.pass;
+          else if (v === "fail") pfWrites[cfg.field] = cfg.fail;
+        }
+        if (Object.keys(pfWrites).length) await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: pfWrites }).catch(() => {});
+        const statusGid = isConditional ? CONDITIONAL_MAP[option].status
+          : effDecision === "declined" ? STATUS.declined
+          : effDecision === "insufficient" ? (effOption === "cosigner" ? STATUS.pendingCosigner
+            : effOption === "landlord_balance" ? STATUS.pendingLandlordBalance
+            : effOption === "pet_policy" ? STATUS.exceptionPet
+            : STATUS.pendingAddlDocs)
+          : effOption === "section8" ? STATUS.condSec8
+          : effOption === "owner_exception" ? STATUS.condOwnerException
+          : "";
+        if (statusGid) await setStatus_(gid, [statusGid]);
         const destName = destSection === SEC_COMPLETE ? "Complete" : destSection === SEC_PENDING_DOCS ? "Pending Docs / Co-Signer / Sec 8" : "Approved";
         return j(headers, 200, {
-          decided: true, headline: built.headline,
+          decided: true, headline: headlineOut,
           assignee: MARY.name, due: dueOn,
           moved, section: destName,
           email: emailOut,
