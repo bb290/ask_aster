@@ -83,6 +83,28 @@ const STATUS_NAME: Record<string, string> = {
   [STATUS.declined]: "Declined",
   [STATUS.onHold]: "On Hold",
 };
+// New single-select Status DROPDOWN (Brittany created it 2026-09-20; options
+// populated to match the workflow). Written alongside the multi-select on
+// every transition until the multi-select retires.
+const STATUS2_FIELD = "1218663431960583";
+const STATUS2: Record<string, string> = {
+  [STATUS.pendingShowing]: "1218663295804891",
+  [STATUS.pendingApps]: "1218663432373710",
+  [STATUS.pendingIncomeDocs]: "1218663431960584",
+  [STATUS.complete]: "1218663318816594",
+  [STATUS.pendingEnhanced]: "1218663295715903",
+  [STATUS.pendingMgr]: "1218663431960587",
+  [STATUS.approved]: "1218663431960585",
+  [STATUS.condSec8]: "1218663502335171",
+  [STATUS.condOwnerException]: "1218663318816597",
+  [STATUS.pendingCosigner]: "1218663345966377",
+  [STATUS.pendingAddlDocs]: "1218663432392120",
+  [STATUS.pendingLandlordBalance]: "1218663295821865",
+  [STATUS.approvedLeaseSent]: "1218663431960586",
+  [STATUS.leaseSigned]: "1218663432372366",
+  [STATUS.declined]: "1218663432392831",
+  [STATUS.onHold]: "1218663345967452",
+};
 // Every status name plus every legacy prefix the automation or staff ever used
 const PREFIX_TOKENS = [
   ...Object.values(STATUS_NAME),
@@ -107,6 +129,8 @@ export function stripStatusPrefix(name: string): string {
 // prefix IS the status list, uppercased, pipe-joined (Brittany, 2026-08-08).
 async function setStatus_(gid: string, optionGids: string[]) {
   await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: { [STATUS_FIELD]: optionGids } }).catch(() => {});
+  const s2 = STATUS2[optionGids[0] ?? ""];
+  if (s2) await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: { [STATUS2_FIELD]: s2 } }).catch(() => {});
   try {
     const cur = await asanaCall("GET", `/tasks/${gid}?opt_fields=name`) as { name?: string };
     const bare = stripStatusPrefix(cur.name ?? "");
