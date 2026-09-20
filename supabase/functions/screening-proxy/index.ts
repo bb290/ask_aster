@@ -54,7 +54,8 @@ const STATUS = {
   pendingMgr: "1217294173155626",
   condSec8: "1217294173155627",
   condOwnerException: "1217294173155628",
-  approvedLeaseSent: "1217294173155629",
+  approved: "1218662867653596", // added 2026-09-20 (team feedback: Approved split from Lease Sent)
+  approvedLeaseSent: "1217294173155629", // renamed "Lease Sent" 2026-09-20
   leaseSigned: "1217294173155640",
   pendingCosigner: "1217294173155630",
   pendingAddlDocs: "1217294173155631",
@@ -72,7 +73,8 @@ const STATUS_NAME: Record<string, string> = {
   [STATUS.pendingMgr]: "Pending Mgr Review",
   [STATUS.condSec8]: "Conditionally Approved - Pending Sec 8",
   [STATUS.condOwnerException]: "Conditionally Approved - Pending Owner Policy exception",
-  [STATUS.approvedLeaseSent]: "Approved - Lease Sent",
+  [STATUS.approved]: "Approved",
+  [STATUS.approvedLeaseSent]: "Lease Sent",
   [STATUS.leaseSigned]: "Lease Signed",
   [STATUS.pendingCosigner]: "Pending - Co-Signer",
   [STATUS.pendingAddlDocs]: "Pending - Add'l Income Docs",
@@ -85,6 +87,7 @@ const STATUS_NAME: Record<string, string> = {
 const PREFIX_TOKENS = [
   ...Object.values(STATUS_NAME),
   "WAITING ON ADD'L APPS", "Pending Mgr Review", "ADDITIONAL DOCS NEEDED",
+  "Approved - Lease Sent",
   "APPROVED", "REJECTED", "DECLINED", "LEASE SENT", "CO-SIGNER NEEDED",
   "PENDING SEC 8", "Additional Docs Needed",
 ].sort((a, b) => b.length - a.length);
@@ -2018,11 +2021,10 @@ ${built.email.body}`;
           : effDecision === "declined" ? STATUS.declined
           : effDecision === "insufficient" ? (effOption === "cosigner" ? STATUS.pendingCosigner
             : effOption === "landlord_balance" ? STATUS.pendingLandlordBalance
-            : effOption === "pet_policy" ? STATUS.exceptionPet
-            : STATUS.pendingAddlDocs)
+            : STATUS.pendingAddlDocs) // Exception options disabled 2026-09-20
           : effOption === "section8" ? STATUS.condSec8
           : effOption === "owner_exception" ? STATUS.condOwnerException
-          : "";
+          : STATUS.approved; // plain approvals write Approved (team feedback 2026-09-20)
         if (statusGid) await setStatus_(gid, [statusGid]);
         const destName = destSection === SEC_COMPLETE ? "Complete" : destSection === SEC_PENDING_DOCS ? "Pending Docs / Co-Signer / Sec 8" : "Approved";
         return j(headers, 200, {
