@@ -180,6 +180,7 @@ async function leaseContext(gid: string) {
     luGid: t.parent?.gid ?? "", address: "", tacoma: false, flatFee: null as number | null,
     listedRent: null as number | null, securityDeposit: null as number | null,
     lastMonthRent: "", petRent: null as number | null, petPolicy: "", concessions: "", lsUrl: "",
+    unitId: "",
   };
   if (ctx.luGid) {
     try {
@@ -189,6 +190,7 @@ async function leaseContext(gid: string) {
       ctx.tacoma = /tacoma/i.test(String(lu.name ?? ""));
       ctx.flatFee = lcf.find((x) => x.gid === LU_FLAT_FEE)?.number_value ?? null;
       const uid = String(lcf.find((f) => /unit id/i.test(String(f.name ?? "")))?.display_value ?? "").replace(/\D/g, "");
+      ctx.unitId = uid;
       if (uid) {
         const hits = (await asanaCall("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LS_PROJECT_ID}&custom_fields.${UNIT_ID_FIELD}.value=${uid}&opt_fields=name,permalink_url,custom_fields.gid,custom_fields.display_value,custom_fields.number_value`)) as { permalink_url?: string; custom_fields?: { gid?: string; display_value?: string | null; number_value?: number | null }[] }[];
         const ls = hits?.[0];
@@ -1387,6 +1389,200 @@ ${SIG}`,
       } catch (e) {
         console.error("mgrQueue failed:", e);
         return j(headers, 502, { error: "asana_failed", message: "Could not load the review queue. Try again in a minute." });
+      }
+    }
+
+    // ---------- mailUsers / mailSend: passthrough to site-visit-proxy ----------
+    // REUSE, DON'T REBUILD: the Gmail service-account machinery (moUsers roster,
+    // moDraft multipart send) lives in site-visit-proxy. Secrets are project
+    // wide, so this forwards with the site-visit key instead of duplicating the
+    // JWT/MIME code. Applicant mail goes From leasing@sagareus.com, cc leasing@.
+    if (action === "mailUsers" || action === "mailSend") {
+      const svKey = Deno.env.get("SITE_VISIT_KEY") ?? "";
+      const base = (Deno.env.get("SUPABASE_URL") ?? "").replace(/\/$/, "");
+      if (!svKey || !base) return j(headers, 200, { ok: false, error: "gmail_unconfigured" });
+      const b = body as Record<string, unknown>;
+      const fwd = action === "mailUsers" ? { action: "moUsers" } : {
+        action: "moDraft",
+        userEmail: String(b.userEmail ?? ""),
+        from: "leasing@sagareus.com",
+        cc: "leasing@sagareus.com",
+        to: String(b.to ?? ""),
+        send: b.send === true,
+        subject: String(b.subject ?? ""),
+        textBody: String(b.textBody ?? ""),
+        htmlBody: String(b.htmlBody ?? ""),
+      };
+      try {
+        const r0 = await fetch(`${base}/functions/v1/site-visit-proxy`, {
+          method: "POST", headers: { "Content-Type": "application/json", "x-sv-key": svKey },
+          body: JSON.stringify(fwd),
+        });
+        const j0 = await r0.json().catch(() => ({}));
+        return j(headers, r0.ok ? 200 : r0.status, j0 as Record<string, unknown>);
+      } catch (e) {
+        console.error("mail passthrough failed:", e);
+        return j(headers, 200, { ok: false, error: "gmail_error" });
+      }
+    }
+
+    // ---------- enterMoveIn: the signed lease becomes a Buildium lease ----------
+    // Gate: the PandaDoc document must be completed (all signatures). Writes:
+    // 1) Buildium lease (fixed term, tenants from the application, rent schedule
+    //    and deposit best-effort; a payment plan swaps the upfront deposit for
+    //    split deposit + last-month installment charges per the SOP),
+    // 2) delist the unit, 3) LU Lease Signed + Move in Date (flips the unit to
+    // Move In Pending; it rides Execute + Adapt until moved in), 4) Block EFT
+    // subtask on the LU assigned to Mary due today, 5) application to Complete
+    // with Status Lease Signed. Every partial failure lands in notes[].
+    if (action === "enterMoveIn") {
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid) return j(headers, 400, { error: "bad_task_url" });
+      try {
+        const ctx = await leaseContext(gid);
+        if (!ctx.leaseDocId) return j(headers, 400, { error: "no_doc", message: "No lease document on this application; use Mark Signed for manual flows." });
+        const r0 = await fetch(`${PD}/documents/${ctx.leaseDocId}/details`, { headers: pdH });
+        const d0 = await r0.json().catch(() => ({})) as { status?: string; date_completed?: string };
+        if (!r0.ok || d0.status !== "document.completed") {
+          return j(headers, 400, { error: "not_completed", message: `The lease is ${String(d0.status ?? "unreadable").replace("document.", "")}, not completed. Enter Move In unlocks when every signature is in.` });
+        }
+        const leaseSigned = String(d0.date_completed ?? "").slice(0, 10) || new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+        const start = ctx.leaseStart;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(start)) return j(headers, 400, { error: "no_start", message: "No Lease Start Date on the application." });
+        const term = ctx.termMonths ?? 12;
+        const end = new Date(Date.parse(start + "T12:00:00Z") + Math.round(term / 12 * 364) * 86400000).toISOString().slice(0, 10);
+        const rent = ctx.approvedRent ?? ctx.listedRent;
+        const deposit = ctx.securityDeposit ?? (rent != null ? Math.round(rent) - 100 : null);
+        const lastMonth = ctx.tacoma ? null : (rent != null ? Math.round(rent) : null);
+        const planMonths = ctx.paymentPlanMonths != null && ctx.paymentPlanMonths >= 2 ? Math.min(6, Math.round(ctx.paymentPlanMonths)) : 0;
+        const namesList = ctx.names.split(",").map((x) => x.trim()).filter(Boolean);
+        const emailsList = ctx.emails.split(/[,;\s]+/).map((x) => x.trim()).filter((x) => /@/.test(x));
+        const notes: string[] = [];
+        // ---- 1. Buildium lease ----
+        let leaseId: number | null = null;
+        if (!ctx.unitId) notes.push("No Unit ID on the LU: Buildium lease NOT created, enter it by hand.");
+        else if (rent == null) notes.push("No rent on file: Buildium lease NOT created, enter it by hand.");
+        else {
+          const tenants = namesList.map((full, i) => {
+            const parts = full.split(/\s+/);
+            const last = parts.length > 1 ? parts.pop() ?? "" : full;
+            return { FirstName: parts.join(" ") || full, LastName: last, Email: emailsList[i] ?? undefined };
+          });
+          const firstOfNext = (() => {
+            const d = new Date(start + "T12:00:00Z");
+            return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 1)).toISOString().slice(0, 10);
+          })();
+          const basePayload: Record<string, unknown> = {
+            LeaseType: "Fixed", UnitId: Number(ctx.unitId),
+            LeaseFromDate: start, LeaseToDate: end,
+            SendWelcomeEmail: false, Tenants: tenants,
+          };
+          const fullPayload: Record<string, unknown> = {
+            ...basePayload,
+            Rent: { Cycle: "Monthly", Charges: [{ Amount: Math.round(rent), NextDueDate: firstOfNext, Memo: "Rent" }] },
+          };
+          if (!planMonths && deposit != null) fullPayload.SecurityDeposit = { Amount: Math.round(deposit) };
+          const mk = async (payload: Record<string, unknown>) => {
+            const r1 = await fetch(`${BUILDIUM}/leases`, { method: "POST", headers: { ...BH, "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+            const t1 = await r1.text().catch(() => "");
+            return { ok: r1.ok, status: r1.status, body: t1 };
+          };
+          let res1 = await mk(fullPayload);
+          if (!res1.ok) {
+            notes.push(`Buildium rejected the full lease payload (${res1.status}: ${res1.body.slice(0, 140)}); retried without rent/deposit schedules.`);
+            res1 = await mk(basePayload);
+          }
+          if (res1.ok) {
+            try { leaseId = (JSON.parse(res1.body) as { Id?: number }).Id ?? null; } catch { leaseId = null; }
+            notes.push(`Buildium lease created${leaseId ? ` (id ${leaseId})` : ""}: ${start} to ${end}${rent != null ? ` at $${Math.round(rent).toLocaleString("en-US")}/mo` : ""}.`);
+          } else {
+            notes.push(`Buildium lease NOT created (${res1.status}: ${res1.body.slice(0, 160)}). Enter it by hand.`);
+          }
+          // ---- 4 (stage 4). payment plan: split deposit + last month charges ----
+          if (leaseId && planMonths) {
+            try {
+              const gl = await bGetAll(`/glaccounts`) as { Id?: number; Name?: string }[];
+              const find = (re: RegExp) => gl.find((g) => re.test(String(g.Name ?? "")))?.Id ?? null;
+              const glDep = find(/security\s*deposit/i);
+              const glLast = find(/last\s*month|prepaid\s*rent/i);
+              if (!glDep || (lastMonth != null && !glLast)) {
+                notes.push("Payment plan NOT entered: security deposit / last month GL accounts not found by name. Enter the split charges by hand.");
+              } else {
+                const perDep = deposit != null ? Math.round(deposit / planMonths) : 0;
+                const perLast = lastMonth != null ? Math.round(lastMonth / planMonths) : 0;
+                let entered = 0;
+                for (let i = 1; i <= planMonths; i++) {
+                  const d = new Date(start + "T12:00:00Z");
+                  const due = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + i, 1)).toISOString().slice(0, 10);
+                  const lines: { GlAccountId: number; Amount: number }[] = [];
+                  if (perDep) lines.push({ GlAccountId: glDep, Amount: perDep });
+                  if (perLast && glLast) lines.push({ GlAccountId: glLast, Amount: perLast });
+                  for (const ln of lines) {
+                    const rc = await fetch(`${BUILDIUM}/leases/${leaseId}/charges`, {
+                      method: "POST", headers: { ...BH, "Content-Type": "application/json" },
+                      body: JSON.stringify({ Date: due, Memo: `Payment plan ${i}/${planMonths}: ${ln.GlAccountId === glDep ? "security deposit" : "last month rent"}`, Lines: [ln] }),
+                    });
+                    if (rc.ok) entered++;
+                  }
+                }
+                notes.push(`Payment plan entered: ${entered} split charges over ${planMonths} months (deposit ${perDep ? `$${perDep.toLocaleString("en-US")}/mo` : "none"}, last month ${perLast ? `$${perLast.toLocaleString("en-US")}/mo` : "none"}). Verify the ledger.`);
+              }
+            } catch {
+              notes.push("Payment plan NOT entered (Buildium error). Enter the split charges by hand.");
+            }
+          }
+          // ---- 2. delist ----
+          try {
+            const rd = await fetch(`${BUILDIUM}/rentals/units/${encodeURIComponent(ctx.unitId)}/listing`, { method: "DELETE", headers: BH });
+            notes.push(rd.ok || rd.status === 404 ? "Unit delisted in Buildium." : `Delist failed (${rd.status}); delist by hand.`);
+          } catch { notes.push("Delist failed; delist by hand."); }
+        }
+        // ---- 3. LU writes (same only-ever-sets convention as signUpdate) ----
+        const moveIn = start;
+        if (ctx.luGid) {
+          try {
+            const luFull = await asanaCall("GET", `/tasks/${ctx.luGid}?opt_fields=custom_fields.gid,custom_fields.name,custom_fields.type`) as { custom_fields?: { gid: string; name?: string; type?: string }[] };
+            const lcf2 = luFull.custom_fields ?? [];
+            const writeField = async (re: RegExp, label: string, iso: string) => {
+              const f = lcf2.find((x) => re.test(String(x.name ?? "")));
+              if (!f) { notes.push(`no ${label} field on the LU task`); return; }
+              const val = f.type === "date" ? { date: iso } : iso;
+              try { await asanaCall("PUT", `/tasks/${ctx.luGid}`, { custom_fields: { [f.gid]: val } }); }
+              catch {
+                try { await asanaCall("PUT", `/tasks/${ctx.luGid}`, { custom_fields: { [f.gid]: iso } }); }
+                catch { notes.push(`could not write ${label}`); }
+              }
+            };
+            await writeField(/lease signed/i, "Lease Signed", leaseSigned);
+            await writeField(/move in date/i, "Move in Date", moveIn);
+            notes.push(`LU updated: Lease Signed ${leaseSigned}, Move in Date ${moveIn} (unit now Move In Pending on the Execute bench).`);
+            // ---- 4. Block EFT subtask to Mary, due today (Brittany 2026-09-20) ----
+            const MARY_GID = "1203402971273034";
+            const today = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+            await asanaCall("POST", `/tasks`, {
+              name: `Block EFT / Credit Card | ${ctx.address}`,
+              parent: ctx.luGid, assignee: MARY_GID, due_on: today,
+              notes: `Move-in funds are cashier's check or money order only. In Buildium: Financials > Payment Settings > Override payment methods, disallow EFT and credit card until the move-in funds are deposited, then the Resident Account Manager unblocks.\nCreated by Enter Move In (Screen + Sign bench).`,
+            });
+            notes.push("Block EFT subtask created on the LU, assigned to Mary, due today.");
+          } catch { notes.push("LU writes or the Block EFT subtask failed; check the LU task."); }
+        } else notes.push("No LU task matched; write Lease Signed / Move in Date by hand.");
+        // ---- 5. application close-out ----
+        try {
+          await asanaCall("POST", `/tasks/${gid}/addProject`, { project: PENDING_APPS_PROJECT, section: SEC_COMPLETE });
+          await asanaCall("PUT", `/tasks/${gid}`, { completed: true });
+          notes.push("Application filed to Complete.");
+        } catch { notes.push("Could not file the application to Complete."); }
+        await setStatus_(gid, [STATUS.leaseSigned]);
+        const summary = `ENTER MOVE IN (Screen + Sign bench)\n${notes.join("\n")}`;
+        await asanaCall("POST", `/tasks/${gid}/stories`, { text: summary }).catch(() => {});
+        if (ctx.luGid) await asanaCall("POST", `/tasks/${ctx.luGid}/stories`, { text: summary }).catch(() => {});
+        signqCache = null;
+        return j(headers, 200, { ok: true, leaseId, leaseSigned, moveIn, notes });
+      } catch (e) {
+        console.error("enterMoveIn failed:", e);
+        return j(headers, 502, { error: "movein_failed", message: "Enter Move In failed partway; read the task comments before retrying." });
       }
     }
 
