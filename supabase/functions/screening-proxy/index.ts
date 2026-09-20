@@ -2094,8 +2094,17 @@ ${built.email.body}`;
     // rentals scope).
     if (action === "signQueue") {
       if (signqCache && Date.now() - signqCache.at < 2 * 60 * 1000) return j(headers, 200, signqCache.data);
-      const secTasks = (await asanaCall("GET", `/sections/${SEC_APPROVED}/tasks?limit=100&opt_fields=name,permalink_url,completed,modified_at`)) as Array<{ gid: string; name: string; permalink_url?: string; completed?: boolean; modified_at?: string }>;
-      const open = (secTasks ?? []).filter((t) => !t.completed).slice(0, 40);
+      // Approved + Lease Sent + Move In Pending sections: Brittany's Asana rules
+      // (2026-09-20) mirror the Status dropdown into sections, so sent leases
+      // move out of Approved and the bench must keep seeing them.
+      const SIGN_SECTIONS = [SEC_APPROVED, "1217174552914951", "1217174739448130"];
+      const seenSign = new Set<string>();
+      const secTasks: Array<{ gid: string; name: string; permalink_url?: string; completed?: boolean; modified_at?: string }> = [];
+      for (const sec of SIGN_SECTIONS) {
+        const st0 = (await asanaCall("GET", `/sections/${sec}/tasks?limit=100&opt_fields=name,permalink_url,completed,modified_at`).catch(() => [])) as Array<{ gid: string; name: string; permalink_url?: string; completed?: boolean; modified_at?: string }>;
+        for (const t of st0 ?? []) if (t.gid && !seenSign.has(t.gid)) { seenSign.add(t.gid); secTasks.push(t); }
+      }
+      const open = secTasks.filter((t) => !t.completed).slice(0, 60);
       const luTasks = await openLuTasks().catch(() => [] as Array<{ gid: string; name: string; address: string }>);
       const rows: Array<Record<string, unknown>> = [];
       const work = open.map((t) => async () => {
