@@ -61,6 +61,7 @@ const STATUS = {
   pendingLandlordBalance: "1217294173155632",
   exceptionPet: "1217294173155633",
   declined: "1217294173155636",
+  onHold: "1217294173155639",
 } as const;
 const STATUS_NAME: Record<string, string> = {
   [STATUS.pendingShowing]: "Pending Showing",
@@ -78,6 +79,7 @@ const STATUS_NAME: Record<string, string> = {
   [STATUS.pendingLandlordBalance]: "Pending - Balanced Owed to Landlord",
   [STATUS.exceptionPet]: "Exception: Pet Policy",
   [STATUS.declined]: "Declined",
+  [STATUS.onHold]: "On Hold",
 };
 // Every status name plus every legacy prefix the automation or staff ever used
 const PREFIX_TOKENS = [
@@ -129,6 +131,84 @@ const LS_CURRENT_RENT = "1218160030285805";
 const LS_STARTING_RENT = "1217446589856415";
 // Status stages that put an application on the Conditionally Approved holding list
 const COND_STATUSES: readonly string[] = [STATUS.condSec8, STATUS.condOwnerException, STATUS.pendingCosigner, STATUS.pendingAddlDocs, STATUS.pendingLandlordBalance];
+// ---- v2 stage 2: lease negotiation fields + PandaDoc ----
+const F_APPLICANT_EMAILS = "1218658616141558";
+const F_APPLICANT_NAMES = "1218658174527268";
+const F_DESIRED_START = "1218658616145008";
+const F_LEASE_START = "1218658616145235";
+const F_TERM_MONTHS = "1218658506629868";
+const F_APPROVED_RENT = "1218658166425654";
+const F_PETS_MOVEIN = "1218658166425716";
+const F_PAYMENT_PLAN = "1218658174540220";
+const F_LEASE_DOC_ID = "1218658616146387";
+const F_LEASE_CANCEL = "1218658166414542";
+const CANCEL_OPTS: Record<string, { gid: string; label: string }> = {
+  another_property: { gid: "1218658166414543", label: "Chose Another Property" },
+  price: { gid: "1218658166414544", label: "Price" },
+  move_in_date: { gid: "1218658166414545", label: "Move In Date" },
+  term: { gid: "1218658166414546", label: "Term" },
+  pet_policy: { gid: "1218658166414547", label: "Pet Policy" },
+  other: { gid: "1218658166414548", label: "Other" },
+};
+const LS_SECURITY_DEPOSIT = "1217515853935577";
+const LS_LAST_MONTH = "1217446710797252";
+const LS_PET_RENT = "1217450345262256";
+const LS_PET_POLICY = "1217446589255794";
+const LS_CONCESSIONS = "1217446589879104";
+const LU_FLAT_FEE = "1214959218211026";
+const PD = "https://api.pandadoc.com/public/v1";
+const PD_KEY = Deno.env.get("PANDADOC_API_KEY") ?? "";
+const pdH = { "Authorization": `API-Key ${PD_KEY}`, "Content-Type": "application/json" };
+// One walk for everything the lease form and send need: application fields,
+// the parent LU (address, flat fee), and the LS task (rent, deposit, terms).
+async function leaseContext(gid: string) {
+  const t = await asanaCall("GET", `/tasks/${gid}?opt_fields=name,permalink_url,parent.gid,parent.name,custom_fields.gid,custom_fields.number_value,custom_fields.text_value,custom_fields.display_value,custom_fields.enum_value.name`) as {
+    name?: string; permalink_url?: string; parent?: { gid?: string; name?: string } | null;
+    custom_fields?: { gid?: string; number_value?: number | null; text_value?: string | null; display_value?: string | null; enum_value?: { name?: string } | null }[];
+  };
+  const cf = t.custom_fields ?? [];
+  const num = (fid: string) => { const f = cf.find((x) => x.gid === fid); return f?.number_value ?? null; };
+  const str = (fid: string) => String(cf.find((x) => x.gid === fid)?.display_value ?? cf.find((x) => x.gid === fid)?.text_value ?? "").trim();
+  const ctx = {
+    appName: t.name ?? "", appUrl: t.permalink_url ?? "",
+    names: str(F_APPLICANT_NAMES), emails: str(F_APPLICANT_EMAILS),
+    desiredStart: str(F_DESIRED_START).slice(0, 10), leaseStart: str(F_LEASE_START).slice(0, 10),
+    termMonths: num(F_TERM_MONTHS), approvedRent: num(F_APPROVED_RENT),
+    pets: str(F_PETS_MOVEIN), paymentPlanMonths: num(F_PAYMENT_PLAN),
+    leaseDocId: str(F_LEASE_DOC_ID),
+    householdSize: num(F_HOUSEHOLD_SIZE),
+    luGid: t.parent?.gid ?? "", address: "", tacoma: false, flatFee: null as number | null,
+    listedRent: null as number | null, securityDeposit: null as number | null,
+    lastMonthRent: "", petRent: null as number | null, petPolicy: "", concessions: "", lsUrl: "",
+  };
+  if (ctx.luGid) {
+    try {
+      const lu = await asanaCall("GET", `/tasks/${ctx.luGid}?opt_fields=name,custom_fields.gid,custom_fields.name,custom_fields.number_value,custom_fields.display_value`) as { name?: string; custom_fields?: { gid?: string; name?: string; number_value?: number | null; display_value?: string | null }[] };
+      const lcf = lu.custom_fields ?? [];
+      ctx.address = String(lu.name ?? "").replace(/^LU \|\s*/i, "").split(" - ")[0].trim();
+      ctx.tacoma = /tacoma/i.test(String(lu.name ?? ""));
+      ctx.flatFee = lcf.find((x) => x.gid === LU_FLAT_FEE)?.number_value ?? null;
+      const uid = String(lcf.find((f) => /unit id/i.test(String(f.name ?? "")))?.display_value ?? "").replace(/\D/g, "");
+      if (uid) {
+        const hits = (await asanaCall("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LS_PROJECT_ID}&custom_fields.${UNIT_ID_FIELD}.value=${uid}&opt_fields=name,permalink_url,custom_fields.gid,custom_fields.display_value,custom_fields.number_value`)) as { permalink_url?: string; custom_fields?: { gid?: string; display_value?: string | null; number_value?: number | null }[] }[];
+        const ls = hits?.[0];
+        if (ls) {
+          const scf = ls.custom_fields ?? [];
+          const lnum = (fid: string) => { const f = scf.find((x) => x.gid === fid); return f?.number_value ?? null; };
+          const lstr = (fid: string) => String(scf.find((x) => x.gid === fid)?.display_value ?? "").trim();
+          ctx.listedRent = lnum(LS_CURRENT_RENT) ?? lnum(LS_STARTING_RENT);
+          ctx.securityDeposit = lnum(LS_SECURITY_DEPOSIT);
+          ctx.lastMonthRent = lstr(LS_LAST_MONTH);
+          ctx.petRent = lnum(LS_PET_RENT);
+          ctx.petPolicy = lstr(LS_PET_POLICY);
+          ctx.concessions = lstr(LS_CONCESSIONS);
+          ctx.lsUrl = ls.permalink_url ?? "";
+        }
+      }
+    } catch { /* partial context renders a partial form */ }
+  }
+  return ctx;
+}
 // Decision -> destination section in Leasing | Pending Applications:
 //   approved as-is / negotiate / owner-exception / other -> Approved
 //   approved pending Section 8                            -> Pending Docs / Co-Signer / Sec 8
@@ -1307,6 +1387,232 @@ ${SIG}`,
       } catch (e) {
         console.error("mgrQueue failed:", e);
         return j(headers, 502, { error: "asana_failed", message: "Could not load the review queue. Try again in a minute." });
+      }
+    }
+
+    // ---------- leaseForm: prefill for the v2 lease terms panel ----------
+    if (action === "leaseForm") {
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid) return j(headers, 400, { error: "bad_task_url" });
+      try {
+        const ctx = await leaseContext(gid);
+        return j(headers, 200, { ok: true, ...ctx, pdConfigured: !!PD_KEY });
+      } catch (e) {
+        console.error("leaseForm failed:", e);
+        return j(headers, 502, { error: "asana_failed", message: "Could not load the lease form." });
+      }
+    }
+
+    // ---------- leaseSend: create + send the PandaDoc lease ----------
+    // Template selected by NAME: "Current Sagareus Lease (N resident)" so yearly
+    // revisions never break the tooling. Reviewer (listings@) signs first; the
+    // document flows to the residents automatically after the reviewer completes.
+    if (action === "leaseSend") {
+      if (!PD_KEY) return j(headers, 200, { ok: false, error: "pandadoc_unconfigured" });
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid) return j(headers, 400, { error: "bad_task_url" });
+      const terms = ((body as { terms?: Record<string, unknown> }).terms ?? {}) as Record<string, unknown>;
+      const s = (k: string) => String(terms[k] ?? "").trim();
+      const n = (k: string) => { const v = Number(terms[k]); return Number.isFinite(v) ? v : null; };
+      const namesList = s("names").split(",").map((x) => x.trim()).filter(Boolean);
+      const emailsList = s("emails").split(/[,;\s]+/).map((x) => x.trim()).filter((x) => /@/.test(x));
+      if (!namesList.length) return j(headers, 400, { error: "bad_terms", message: "Enter the resident names (comma separated) first." });
+      if (emailsList.length < namesList.length) return j(headers, 400, { error: "bad_terms", message: `Enter ${namesList.length} resident email(s), in the same order as the names.` });
+      if (namesList.length > 5) return j(headers, 400, { error: "bad_terms", message: "Templates cover 1-5 residents; draft 6+ by hand in PandaDoc." });
+      const leaseStart = s("leaseStart"), leaseEnd = s("leaseEnd");
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(leaseStart) || !/^\d{4}-\d{2}-\d{2}$/.test(leaseEnd)) {
+        return j(headers, 400, { error: "bad_terms", message: "Pick the lease start date first." });
+      }
+      const rent = n("rent");
+      if (!rent || rent < 100) return j(headers, 400, { error: "bad_terms", message: "Enter the rent first." });
+      try {
+        const ctx = await leaseContext(gid);
+        const wanted = `current sagareus lease (${namesList.length} resident)`;
+        let tplId = "";
+        let page = 1;
+        while (!tplId && page <= 4) {
+          const r0 = await fetch(`${PD}/templates?count=100&page=${page}&q=${encodeURIComponent("Current Sagareus Lease")}`, { headers: pdH });
+          const j0 = await r0.json().catch(() => ({})) as { results?: { id?: string; name?: string }[] };
+          if (!r0.ok) return j(headers, 502, { error: "pandadoc_failed", message: "PandaDoc did not answer for the template list." });
+          for (const t of j0.results ?? []) {
+            if (String(t.name ?? "").trim().toLowerCase().replace(/\s+/g, " ") === wanted) { tplId = t.id ?? ""; break; }
+          }
+          if ((j0.results ?? []).length < 100) break;
+          page++;
+        }
+        if (!tplId) return j(headers, 400, { error: "no_template", message: `No PandaDoc template named "Current Sagareus Lease (${namesList.length} resident)".` });
+        const money = (v: number | null) => v == null ? "" : `$${Math.round(v).toLocaleString("en-US")}`;
+        const deposit = n("deposit"), lastMonth = n("lastMonth"), petRent = n("petRent"), flatFee = n("flatFee") ?? ctx.flatFee, prorated = n("prorated"), rentCredit = n("rentCredit");
+        const totalRent = rent + (petRent ?? 0) + (flatFee ?? 0);
+        const depPlusLast = (deposit ?? 0) + (lastMonth ?? 0);
+        const totalMoveIn = depPlusLast + (prorated ?? 0);
+        const zip = (ctx.address.match(/\b(\d{5})(?:-\d{4})?\s*$/) ?? [])[1] ?? "";
+        const tokens: { name: string; value: string }[] = [
+          { name: "Property Address", value: ctx.address },
+          { name: "Zip", value: zip },
+          { name: "Rent", value: money(rent) },
+          { name: "Total Rent", value: money(totalRent) },
+          { name: "Refundable Deposit", value: money(deposit) },
+          { name: "Last Month Rent", value: lastMonth != null ? money(lastMonth) : "Not collected" },
+          { name: "Lease Start Date", value: leaseStart },
+          { name: "Lease End Date", value: leaseEnd },
+          { name: "Prorated 1st mo rent", value: money(prorated) },
+          { name: "Prorated rent due", value: "Within 48 hours of lease signing" },
+          { name: "Total Move-in", value: money(totalMoveIn) },
+          { name: "deposit + last month rent $", value: money(depPlusLast) },
+          { name: "Flat Fee Utility Charge", value: flatFee != null ? money(flatFee) : "" },
+          { name: "Pet Rent", value: petRent != null ? money(petRent) : "" },
+          { name: "Pets at Move-In (# type)", value: s("pets") },
+          { name: "Rent Credit", value: rentCredit != null ? money(rentCredit) : "" },
+          { name: "OPTIONAL | General Addendum Terms", value: s("generalAddendum") },
+        ];
+        namesList.forEach((full, i) => {
+          const parts = full.split(/\s+/);
+          const last = parts.length > 1 ? parts.pop() ?? "" : "";
+          tokens.push({ name: `Resident ${i + 1}.FirstName`, value: parts.join(" ") || full });
+          tokens.push({ name: `Resident ${i + 1}.LastName`, value: last });
+        });
+        const recipients = [
+          { email: "listings@sagareus.com", role: "Reviewer" },
+          ...namesList.map((full, i) => {
+            const parts = full.split(/\s+/);
+            const last = parts.length > 1 ? parts.pop() ?? "" : "";
+            return { email: emailsList[i], first_name: parts.join(" ") || full, last_name: last, role: `Resident ${i + 1}` };
+          }),
+        ];
+        const mk = await fetch(`${PD}/documents`, {
+          method: "POST", headers: pdH,
+          body: JSON.stringify({ name: `Lease | ${ctx.address || ctx.appName}`, template_uuid: tplId, recipients, tokens, metadata: { asana_task: gid } }),
+        });
+        const doc = await mk.json().catch(() => ({})) as { id?: string; status?: string; detail?: unknown };
+        if (!mk.ok || !doc.id) {
+          console.error("pandadoc create failed:", JSON.stringify(doc).slice(0, 500));
+          return j(headers, 502, { error: "pandadoc_failed", message: "PandaDoc refused to create the document. Nothing was sent." });
+        }
+        // creation is async: wait for document.draft before sending
+        let status = doc.status ?? "";
+        for (let i = 0; i < 12 && status !== "document.draft"; i++) {
+          await new Promise((r) => setTimeout(r, 1500));
+          const g0 = await fetch(`${PD}/documents/${doc.id}`, { headers: pdH });
+          status = ((await g0.json().catch(() => ({}))) as { status?: string }).status ?? status;
+        }
+        if (status !== "document.draft") {
+          return j(headers, 200, { ok: false, error: "pandadoc_processing", docId: doc.id, message: "The document is still processing in PandaDoc; open it there to send." });
+        }
+        const snd = await fetch(`${PD}/documents/${doc.id}/send`, {
+          method: "POST", headers: pdH,
+          body: JSON.stringify({ subject: `Your Lease | ${ctx.address}`, message: "Please review, complete, and sign.", silent: false }),
+        });
+        if (!snd.ok) {
+          const st = await snd.text().catch(() => "");
+          console.error("pandadoc send failed:", st.slice(0, 300));
+          return j(headers, 200, { ok: false, error: "pandadoc_send_failed", docId: doc.id, message: "Created but not sent; open PandaDoc to send it." });
+        }
+        // record everything on the application task
+        const writes: Record<string, unknown> = {
+          [F_LEASE_DOC_ID]: doc.id,
+          [F_APPROVED_RENT]: Math.round(rent),
+          [F_APPLICANT_NAMES]: namesList.join(", "),
+          [F_APPLICANT_EMAILS]: emailsList.slice(0, namesList.length).join(", "),
+        };
+        if (n("termMonths") != null) writes[F_TERM_MONTHS] = Math.round(n("termMonths") as number);
+        if (n("paymentPlanMonths") != null) writes[F_PAYMENT_PLAN] = Math.round(n("paymentPlanMonths") as number);
+        if (s("pets")) writes[F_PETS_MOVEIN] = s("pets");
+        await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: { [F_LEASE_START]: { date: leaseStart } } }).catch(async () => {
+          await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: { [F_LEASE_START]: leaseStart } }).catch(() => {});
+        });
+        await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: writes }).catch(() => {});
+        await setStatus_(gid, [STATUS.approvedLeaseSent]);
+        await asanaCall("POST", `/tasks/${gid}/stories`, {
+          text: `LEASE SENT (Screen + Sign bench)\nPandaDoc: Lease | ${ctx.address}\nTemplate: Current Sagareus Lease (${namesList.length} resident)\nStart ${leaseStart} to ${leaseEnd} at ${money(rent)}/mo. Deposit ${money(deposit)}${lastMonth != null ? `, last month ${money(lastMonth)}` : ", no last month (Tacoma)"}.\nReviewer listings@sagareus.com signs first, then: ${namesList.map((nm, i) => `${nm} <${emailsList[i]}>`).join(", ")}\nDocument expires after 72 hours unsigned.`,
+        }).catch(() => {});
+        return j(headers, 200, { ok: true, docId: doc.id, template: `Current Sagareus Lease (${namesList.length} resident)` });
+      } catch (e) {
+        console.error("leaseSend failed:", e);
+        return j(headers, 502, { error: "lease_send_failed", message: "Lease send failed. Check PandaDoc before retrying: the document may exist unsent." });
+      }
+    }
+
+    // ---------- leaseSession: embedded Reviewer session for the workbench ----------
+    if (action === "leaseSession") {
+      if (!PD_KEY) return j(headers, 200, { ok: false, error: "pandadoc_unconfigured" });
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid) return j(headers, 400, { error: "bad_task_url" });
+      try {
+        const t = await asanaCall("GET", `/tasks/${gid}?opt_fields=custom_fields.gid,custom_fields.text_value,custom_fields.display_value`) as { custom_fields?: { gid?: string; text_value?: string | null; display_value?: string | null }[] };
+        const docId = String((t.custom_fields ?? []).find((x) => x.gid === F_LEASE_DOC_ID)?.display_value ?? "").trim();
+        if (!docId) return j(headers, 400, { error: "no_doc", message: "No lease document on this application yet." });
+        const r0 = await fetch(`${PD}/documents/${docId}/session`, {
+          method: "POST", headers: pdH,
+          body: JSON.stringify({ recipient: "listings@sagareus.com", lifetime: 3600 }),
+        });
+        const j0 = await r0.json().catch(() => ({})) as { id?: string };
+        if (!r0.ok || !j0.id) return j(headers, 502, { error: "pandadoc_failed", message: "Could not open the reviewer session; open the document in PandaDoc instead." });
+        return j(headers, 200, { ok: true, docId, sessionUrl: `https://app.pandadoc.com/s/${j0.id}` });
+      } catch (e) {
+        console.error("leaseSession failed:", e);
+        return j(headers, 502, { error: "pandadoc_failed", message: "Could not open the reviewer session." });
+      }
+    }
+
+    // ---------- leaseStatus: live document + recipient state, 72-hour math ----------
+    if (action === "leaseStatus") {
+      if (!PD_KEY) return j(headers, 200, { ok: false, error: "pandadoc_unconfigured" });
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid) return j(headers, 400, { error: "bad_task_url" });
+      try {
+        const t = await asanaCall("GET", `/tasks/${gid}?opt_fields=custom_fields.gid,custom_fields.display_value`) as { custom_fields?: { gid?: string; display_value?: string | null }[] };
+        const docId = String((t.custom_fields ?? []).find((x) => x.gid === F_LEASE_DOC_ID)?.display_value ?? "").trim();
+        if (!docId) return j(headers, 200, { ok: true, docId: "", status: "" });
+        const r0 = await fetch(`${PD}/documents/${docId}/details`, { headers: pdH });
+        const d0 = await r0.json().catch(() => ({})) as { status?: string; date_sent?: string; date_completed?: string; recipients?: { email?: string; role?: string; has_completed?: boolean }[] };
+        if (!r0.ok) return j(headers, 200, { ok: true, docId, status: "unknown" });
+        const sentAt = d0.date_sent ?? "";
+        const hours = sentAt ? Math.floor((Date.now() - Date.parse(sentAt)) / 3600000) : null;
+        return j(headers, 200, {
+          ok: true, docId, status: d0.status ?? "", sentAt,
+          completedAt: d0.date_completed ?? "",
+          hoursSinceSent: hours, stale: hours != null && hours >= 72 && d0.status !== "document.completed",
+          recipients: (d0.recipients ?? []).map((r) => ({ email: r.email ?? "", role: r.role ?? "", done: !!r.has_completed })),
+        });
+      } catch (e) {
+        console.error("leaseStatus failed:", e);
+        return j(headers, 502, { error: "pandadoc_failed", message: "Could not read the lease status." });
+      }
+    }
+
+    // ---------- leaseCancel: void + record the reason ----------
+    // The reason lands in the Lease Cancellation field (reportable) and the
+    // application goes to On Hold; the PandaDoc void is best-effort since the
+    // 72-hour expiration ends the document either way.
+    if (action === "leaseCancel") {
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid) return j(headers, 400, { error: "bad_task_url" });
+      const reason = String((body as { reason?: unknown }).reason ?? "");
+      const opt = CANCEL_OPTS[reason];
+      if (!opt) return j(headers, 400, { error: "bad_reason", message: "Pick a cancellation reason first." });
+      try {
+        const t = await asanaCall("GET", `/tasks/${gid}?opt_fields=custom_fields.gid,custom_fields.display_value`) as { custom_fields?: { gid?: string; display_value?: string | null }[] };
+        const docId = String((t.custom_fields ?? []).find((x) => x.gid === F_LEASE_DOC_ID)?.display_value ?? "").trim();
+        let voided = false;
+        if (docId && PD_KEY) {
+          try {
+            const r0 = await fetch(`${PD}/documents/${docId}/status`, { method: "POST", headers: pdH, body: JSON.stringify({ status: 2 }) });
+            voided = r0.ok;
+          } catch { /* expiration handles it */ }
+        }
+        await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: { [F_LEASE_CANCEL]: opt.gid } }).catch(() => {});
+        await setStatus_(gid, [STATUS.onHold]);
+        await asanaCall("POST", `/tasks/${gid}/stories`, { text: `LEASE CANCELED (Screen + Sign bench)\nReason: ${opt.label}\n${voided ? "PandaDoc document voided." : "PandaDoc void not confirmed; the 72-hour expiration ends the document."}` }).catch(() => {});
+        return j(headers, 200, { ok: true, voided, reason: opt.label });
+      } catch (e) {
+        console.error("leaseCancel failed:", e);
+        return j(headers, 502, { error: "cancel_failed", message: "Could not record the cancellation." });
       }
     }
 
