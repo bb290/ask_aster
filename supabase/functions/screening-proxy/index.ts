@@ -67,7 +67,7 @@ const STATUS = {
 const STATUS_NAME: Record<string, string> = {
   [STATUS.pendingShowing]: "Pending Showing",
   [STATUS.pendingApps]: "Pending App(s)",
-  [STATUS.pendingIncomeDocs]: "Pending Income Docs",
+  [STATUS.pendingIncomeDocs]: "Pending - Income Docs",
   [STATUS.complete]: "Complete",
   [STATUS.pendingEnhanced]: "Pending Enhanced Review",
   [STATUS.pendingMgr]: "Pending Mgr Review",
@@ -78,7 +78,7 @@ const STATUS_NAME: Record<string, string> = {
   [STATUS.leaseSigned]: "Lease Signed",
   [STATUS.pendingCosigner]: "Pending - Co-Signer",
   [STATUS.pendingAddlDocs]: "Pending - Add'l Income Docs",
-  [STATUS.pendingLandlordBalance]: "Pending - Balanced Owed to Landlord",
+  [STATUS.pendingLandlordBalance]: "Pending - Balance Owed to Landlord",
   [STATUS.exceptionPet]: "Exception: Pet Policy",
   [STATUS.declined]: "Declined",
   [STATUS.onHold]: "On Hold",
@@ -109,6 +109,7 @@ const STATUS2: Record<string, string> = {
 const PREFIX_TOKENS = [
   ...Object.values(STATUS_NAME),
   "WAITING ON ADD'L APPS", "Pending Mgr Review", "ADDITIONAL DOCS NEEDED",
+  "Pending Income Docs", "Pending - Balanced Owed to Landlord",
   "Approved - Lease Sent",
   "APPROVED", "REJECTED", "DECLINED", "LEASE SENT", "CO-SIGNER NEEDED",
   "PENDING SEC 8", "Additional Docs Needed",
@@ -1864,6 +1865,26 @@ ${SIG}`,
       }
     }
 
+    // ---------- setAppStatus: the bench's editable Status pill ----------
+    // Writes the Status dropdown (+ title prefix via setStatus_); Brittany's
+    // Asana rules then move the task to the matching section, and the queues
+    // (which read sections) follow. One field drives the board.
+    if (action === "setAppStatus") {
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid) return j(headers, 400, { error: "bad_task_url" });
+      const want = String((body as { statusGid?: unknown }).statusGid ?? "");
+      const oldGid = Object.keys(STATUS2).find((k) => STATUS2[k] === want) ?? "";
+      if (!oldGid) return j(headers, 400, { error: "bad_status", message: "Pick a status first." });
+      try {
+        await setStatus_(gid, [oldGid]);
+        return j(headers, 200, { ok: true, name: STATUS_NAME[oldGid] ?? "" });
+      } catch (e) {
+        console.error("setAppStatus failed:", e);
+        return j(headers, 502, { error: "status_failed", message: "Could not save the status." });
+      }
+    }
+
     // ---------- mgrCriteria: everything the review criteria card needs ----------
     // App-task figures (median credit, qualifying income, household size, the
     // pass/fail verdicts) plus the PROPERTY's criteria read live from Listing
@@ -2107,7 +2128,7 @@ ${built.email.body}`;
       const seenSign = new Set<string>();
       const secTasks: Array<{ gid: string; name: string; permalink_url?: string; completed?: boolean; modified_at?: string }> = [];
       for (const sec of SIGN_SECTIONS) {
-        const st0 = (await asanaCall("GET", `/sections/${sec}/tasks?limit=100&opt_fields=name,permalink_url,completed,modified_at`).catch(() => [])) as Array<{ gid: string; name: string; permalink_url?: string; completed?: boolean; modified_at?: string }>;
+        const st0 = (await asanaCall("GET", `/sections/${sec}/tasks?limit=100&opt_fields=name,permalink_url,completed,modified_at,custom_fields.gid,custom_fields.enum_value.name,custom_fields.enum_value.color`).catch(() => [])) as Array<{ gid: string; name: string; permalink_url?: string; completed?: boolean; modified_at?: string; custom_fields?: { gid?: string; enum_value?: { name?: string; color?: string } | null }[] }>;
         for (const t of st0 ?? []) if (t.gid && !seenSign.has(t.gid)) { seenSign.add(t.gid); secTasks.push(t); }
       }
       const open = secTasks.filter((t) => !t.completed).slice(0, 60);
@@ -2144,8 +2165,10 @@ ${built.email.body}`;
             }
           } catch { /* LU detail is best-effort; the row still renders */ }
         }
+        const evS = ((t as { custom_fields?: { gid?: string; enum_value?: { name?: string; color?: string } | null }[] }).custom_fields ?? []).find((c) => c.gid === STATUS2_FIELD)?.enum_value;
         rows.push({
           gid: t.gid, name: t.name, url: t.permalink_url ?? `https://app.asana.com/0/0/${t.gid}`,
+          status: evS?.name ? [{ name: evS.name, color: evS.color ?? "" }] : [],
           names, address, approvedAround: (t.modified_at ?? "").slice(0, 10),
           luGid: lu?.gid ?? "", luName: lu?.name ?? "", luUrl: lu ? `https://app.asana.com/0/0/${lu.gid}` : "",
           leaseSigned, moveInDate, unitId, buildiumUrl,
