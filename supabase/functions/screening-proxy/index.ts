@@ -128,7 +128,9 @@ export function stripStatusPrefix(name: string): string {
 // Sets the Status field AND rewrites the title prefix to match it: the
 // prefix IS the status list, uppercased, pipe-joined (Brittany, 2026-08-08).
 async function setStatus_(gid: string, optionGids: string[]) {
-  await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: { [STATUS_FIELD]: optionGids } }).catch(() => {});
+  // the multi-select Status was DELETED (Brittany 2026-09-20); the dropdown is
+  // the one Status field. optionGids stay in the old vocabulary and map through
+  // STATUS2 so every caller keeps working unchanged.
   const s2 = STATUS2[optionGids[0] ?? ""];
   if (s2) await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: { [STATUS2_FIELD]: s2 } }).catch(() => {});
   try {
@@ -158,6 +160,8 @@ const LS_CURRENT_RENT = "1218160030285805";
 const LS_STARTING_RENT = "1217446589856415";
 // Status stages that put an application on the Conditionally Approved holding list
 const COND_STATUSES: readonly string[] = [STATUS.condSec8, STATUS.condOwnerException, STATUS.pendingCosigner, STATUS.pendingAddlDocs, STATUS.pendingLandlordBalance];
+// dropdown option gids for the same five conditional stages
+const COND_STATUSES2: readonly string[] = ["1218663502335171", "1218663318816597", "1218663345966377", "1218663432392120", "1218663295821865"];
 // ---- v2 stage 2: lease negotiation fields + PandaDoc ----
 const F_APPLICANT_EMAILS = "1218658616141558";
 const F_APPLICANT_NAMES = "1218658174527268";
@@ -1142,13 +1146,14 @@ app.post("*", async (c) => {
         let offset = "";
         for (let page = 0; page < 5; page++) {
           const res = await fetch(
-            `${ASANA}/sections/1217174650640615/tasks?completed=false&limit=100&opt_fields=name,permalink_url,due_on,custom_fields.gid,custom_fields.multi_enum_values.name,custom_fields.multi_enum_values.color${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+            `${ASANA}/sections/1217174650640615/tasks?completed=false&limit=100&opt_fields=name,permalink_url,due_on,custom_fields.gid,custom_fields.enum_value.name,custom_fields.enum_value.color${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
             { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
           );
-          const json = await res.json().catch(() => ({})) as { data?: { name?: string; permalink_url?: string; due_on?: string; custom_fields?: { gid?: string; multi_enum_values?: { name?: string }[] }[] }[]; next_page?: { offset?: string } | null };
+          const json = await res.json().catch(() => ({})) as { data?: { name?: string; permalink_url?: string; due_on?: string; custom_fields?: { gid?: string; enum_value?: { name?: string; color?: string } | null }[] }[]; next_page?: { offset?: string } | null };
           if (!res.ok) throw new Error(`asana new-section page ${page}`);
           for (const t of json.data ?? []) {
-            const st = ((t.custom_fields ?? []).find((c) => c.gid === STATUS_FIELD)?.multi_enum_values ?? []).map((v: { name?: string; color?: string }) => ({ name: v.name ?? "", color: v.color ?? "" })).filter((v: { name: string }) => v.name);
+            const ev = (t.custom_fields ?? []).find((c) => c.gid === STATUS2_FIELD)?.enum_value;
+            const st = ev?.name ? [{ name: ev.name, color: ev.color ?? "" }] : [];
             out.push({ name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "", status: st } as never);
           }
           offset = json.next_page?.offset ?? "";
@@ -1394,15 +1399,16 @@ ${SIG}`,
           let offset = "";
           for (let page = 0; page < 5; page++) {
             const res = await fetch(
-              `${ASANA}${path}?completed=false&limit=100&opt_fields=name,permalink_url,due_on,custom_fields.gid,custom_fields.multi_enum_values.name,custom_fields.multi_enum_values.color${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+              `${ASANA}${path}?completed=false&limit=100&opt_fields=name,permalink_url,due_on,custom_fields.gid,custom_fields.enum_value.name,custom_fields.enum_value.color${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
               { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
             );
-            const json = await res.json().catch(() => ({})) as { data?: { gid?: string; name?: string; permalink_url?: string; due_on?: string; custom_fields?: { gid?: string; multi_enum_values?: { name?: string }[] }[] }[]; next_page?: { offset?: string } | null };
+            const json = await res.json().catch(() => ({})) as { data?: { gid?: string; name?: string; permalink_url?: string; due_on?: string; custom_fields?: { gid?: string; enum_value?: { name?: string; color?: string } | null }[] }[]; next_page?: { offset?: string } | null };
             if (!res.ok) throw new Error(`asana ${path} page ${page}`);
             for (const t of json.data ?? []) {
               if (t.gid && !seen.has(t.gid) && filter(t.name ?? "")) {
                 seen.add(t.gid);
-                const st = ((t.custom_fields ?? []).find((c) => c.gid === STATUS_FIELD)?.multi_enum_values ?? []).map((v: { name?: string; color?: string }) => ({ name: v.name ?? "", color: v.color ?? "" })).filter((v: { name: string }) => v.name);
+                const ev = (t.custom_fields ?? []).find((c) => c.gid === STATUS2_FIELD)?.enum_value;
+                const st = ev?.name ? [{ name: ev.name, color: ev.color ?? "" }] : [];
                 out.push({ name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "", status: st as never });
               }
             }
@@ -1922,18 +1928,18 @@ ${SIG}`,
         let offset = "";
         for (let page = 0; page < 4; page++) {
           const res = await fetch(
-            `${ASANA}/projects/${PENDING_APPS_PROJECT}/tasks?limit=100&opt_fields=name,permalink_url,due_on,completed,custom_fields.gid,custom_fields.multi_enum_values.gid,custom_fields.multi_enum_values.name,custom_fields.multi_enum_values.color${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+            `${ASANA}/projects/${PENDING_APPS_PROJECT}/tasks?limit=100&opt_fields=name,permalink_url,due_on,completed,custom_fields.gid,custom_fields.enum_value.gid,custom_fields.enum_value.name,custom_fields.enum_value.color${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
             { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
           );
-          const json = await res.json().catch(() => ({})) as { data?: { gid?: string; name?: string; permalink_url?: string; due_on?: string; completed?: boolean; custom_fields?: { gid?: string; multi_enum_values?: { gid?: string; name?: string; color?: string }[] }[] }[]; next_page?: { offset?: string } | null };
+          const json = await res.json().catch(() => ({})) as { data?: { gid?: string; name?: string; permalink_url?: string; due_on?: string; completed?: boolean; custom_fields?: { gid?: string; enum_value?: { gid?: string; name?: string; color?: string } | null }[] }[]; next_page?: { offset?: string } | null };
           if (!res.ok) throw new Error(`asana condQueue page ${page}`);
           for (const t of json.data ?? []) {
             if (t.completed) continue;
-            const mv = (t.custom_fields ?? []).find((c) => c.gid === STATUS_FIELD)?.multi_enum_values ?? [];
-            if (!mv.some((v) => COND_STATUSES.includes(v.gid ?? ""))) continue;
+            const ev = (t.custom_fields ?? []).find((c) => c.gid === STATUS2_FIELD)?.enum_value;
+            if (!ev || !COND_STATUSES2.includes(ev.gid ?? "")) continue;
             rows.push({
               gid: t.gid ?? "", name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "",
-              status: mv.map((v) => ({ name: v.name ?? "", color: v.color ?? "" })).filter((v) => v.name),
+              status: [{ name: ev.name ?? "", color: ev.color ?? "" }],
             });
           }
           offset = json.next_page?.offset ?? "";
