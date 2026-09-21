@@ -1969,14 +1969,45 @@ ${SIG}`,
       const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
       if (!gid) return j(headers, 400, { error: "bad_task_url" });
       try {
-        const atts = (await asanaCall("GET", `/tasks/${gid}/attachments?opt_fields=name,view_url,permanent_url,created_at`)) as Array<{ name?: string; view_url?: string; permanent_url?: string; created_at?: string }>;
+        const atts = (await asanaCall("GET", `/tasks/${gid}/attachments?opt_fields=name,view_url,permanent_url,download_url,created_at`)) as Array<{ name?: string; view_url?: string; permanent_url?: string; download_url?: string; created_at?: string }>;
+        const kindOf = (n: string) => /\.pdf$/i.test(n) ? "pdf" : /\.(png|jpe?g|gif|webp|heic)$/i.test(n) ? "image" : "other";
         return j(headers, 200, {
           ok: true,
-          docs: (atts ?? []).map((a) => ({ name: a.name ?? "attachment", url: a.view_url || a.permanent_url || "", date: (a.created_at ?? "").slice(0, 10) })).filter((a) => a.url),
+          // download_url is short-lived (minutes): the overlay fetches this fresh
+          // on open and re-fetches if a preview dies
+          docs: (atts ?? []).map((a) => ({
+            name: a.name ?? "attachment",
+            url: a.view_url || a.permanent_url || "",
+            dl: a.download_url ?? "",
+            kind: kindOf(a.name ?? ""),
+            date: (a.created_at ?? "").slice(0, 10),
+          })).filter((a) => a.url || a.dl),
         });
       } catch (e) {
         console.error("mgrDocs failed:", e);
         return j(headers, 502, { error: "asana_failed", message: "Could not load the documents." });
+      }
+    }
+
+    // ---------- docReview: per-document verdict from the review overlay ----------
+    if (action === "docReview") {
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid) return j(headers, 400, { error: "bad_task_url" });
+      const doc = String((body as { doc?: unknown }).doc ?? "").slice(0, 200);
+      const verdict = String((body as { verdict?: unknown }).verdict ?? "");
+      const comment = String((body as { comment?: unknown }).comment ?? "").trim().slice(0, 2000);
+      const head = verdict === "accepted" ? "REVIEWED + ACCEPTED"
+        : verdict === "insufficient" ? "INSUFFICIENT"
+        : verdict === "comment" ? "COMMENT" : "";
+      if (!doc || !head) return j(headers, 400, { error: "bad_verdict" });
+      if (verdict === "comment" && !comment) return j(headers, 400, { error: "bad_verdict", message: "Write the comment first." });
+      try {
+        await asanaCall("POST", `/tasks/${gid}/stories`, { text: `DOC REVIEW | ${doc}: ${head}${comment ? `\n${comment}` : ""}\n(Screen + Sign bench, Manager Review)` });
+        return j(headers, 200, { ok: true });
+      } catch (e) {
+        console.error("docReview failed:", e);
+        return j(headers, 502, { error: "asana_failed", message: "Could not save the verdict." });
       }
     }
 
