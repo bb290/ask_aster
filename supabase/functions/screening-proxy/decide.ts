@@ -28,7 +28,7 @@ export interface DecideInput {
 
 export const DECISION_OPTIONS: Record<Decision, { key: string; label: string; needsText?: boolean }[]> = {
   approved: [
-    { key: "as_is", label: "Approved as is - please send lease" },
+    { key: "as_is", label: "Approved as-is" },
     { key: "negotiate", label: "Approved - negotiate terms", needsText: true },
     { key: "owner_exception", label: "Sagareus approved - pending owner policy exception" },
     { key: "section8", label: "Sagareus approved - pending Section 8 approval" },

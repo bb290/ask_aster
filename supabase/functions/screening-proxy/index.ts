@@ -105,9 +105,30 @@ const STATUS2: Record<string, string> = {
   [STATUS.declined]: "1218663432392831",
   [STATUS.onHold]: "1218663345967452",
 };
+// Dropdown option gid -> name; the pill and title prefixes speak this vocabulary
+const STATUS2_NAME: Record<string, string> = {
+  "1218663295804891": "Pending Showing",
+  "1218663432373710": "Pending App(s)",
+  "1218685241682741": "Pending App Fee",
+  "1218663431960584": "Pending - Income Docs",
+  "1218663318816594": "Complete",
+  "1218663295715903": "Pending Enhanced Review",
+  "1218663431960587": "Pending Mgr Review",
+  "1218663431960585": "Approved",
+  "1218663502335171": "Conditionally Approved - Pending Sec 8",
+  "1218663318816597": "Conditionally Approved - Pending Owner Policy exception",
+  "1218663345966377": "Pending - Co-Signer",
+  "1218663432392120": "Pending - Add'l Income Docs",
+  "1218663295821865": "Pending - Balance Owed to Landlord",
+  "1218663431960586": "Lease Sent",
+  "1218663432372366": "Lease Signed",
+  "1218663432392831": "Declined",
+  "1218663345967452": "On Hold",
+};
 // Every status name plus every legacy prefix the automation or staff ever used
 const PREFIX_TOKENS = [
   ...Object.values(STATUS_NAME),
+  ...Object.values(STATUS2_NAME),
   "WAITING ON ADD'L APPS", "Pending Mgr Review", "ADDITIONAL DOCS NEEDED",
   "Pending Income Docs", "Pending - Balanced Owed to Landlord",
   "Approved - Lease Sent",
@@ -1865,6 +1886,38 @@ ${SIG}`,
       }
     }
 
+    // ---------- mgrDocs: the application's attachments for manager review ----------
+    if (action === "mgrDocs") {
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid) return j(headers, 400, { error: "bad_task_url" });
+      try {
+        const atts = (await asanaCall("GET", `/tasks/${gid}/attachments?opt_fields=name,view_url,permanent_url,created_at`)) as Array<{ name?: string; view_url?: string; permanent_url?: string; created_at?: string }>;
+        return j(headers, 200, {
+          ok: true,
+          docs: (atts ?? []).map((a) => ({ name: a.name ?? "attachment", url: a.view_url || a.permanent_url || "", date: (a.created_at ?? "").slice(0, 10) })).filter((a) => a.url),
+        });
+      } catch (e) {
+        console.error("mgrDocs failed:", e);
+        return j(headers, 502, { error: "asana_failed", message: "Could not load the documents." });
+      }
+    }
+
+    // ---------- mgrDocsConfirm: stamp the manager's document review ----------
+    if (action === "mgrDocsConfirm") {
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid) return j(headers, 400, { error: "bad_task_url" });
+      try {
+        const todayC = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+        await asanaCall("POST", `/tasks/${gid}/stories`, { text: `MANAGER DOCUMENT REVIEW ${todayC}\nProof of income, credit reports, and rental history reviewed against the source documents (Screen + Sign bench).` });
+        return j(headers, 200, { ok: true });
+      } catch (e) {
+        console.error("mgrDocsConfirm failed:", e);
+        return j(headers, 502, { error: "asana_failed", message: "Could not post the confirmation." });
+      }
+    }
+
     // ---------- setAppStatus: the bench's editable Status pill ----------
     // Writes the Status dropdown (+ title prefix via setStatus_); Brittany's
     // Asana rules then move the task to the matching section, and the queues
@@ -1874,11 +1927,17 @@ ${SIG}`,
       const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
       if (!gid) return j(headers, 400, { error: "bad_task_url" });
       const want = String((body as { statusGid?: unknown }).statusGid ?? "");
-      const oldGid = Object.keys(STATUS2).find((k) => STATUS2[k] === want) ?? "";
-      if (!oldGid) return j(headers, 400, { error: "bad_status", message: "Pick a status first." });
+      const name2 = STATUS2_NAME[want] ?? "";
+      if (!name2) return j(headers, 400, { error: "bad_status", message: "Pick a status first." });
       try {
-        await setStatus_(gid, [oldGid]);
-        return j(headers, 200, { ok: true, name: STATUS_NAME[oldGid] ?? "" });
+        await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: { [STATUS2_FIELD]: want } });
+        try {
+          const cur = await asanaCall("GET", `/tasks/${gid}?opt_fields=name`) as { name?: string };
+          const bare = stripStatusPrefix(cur.name ?? "");
+          const wanted = bare ? `${name2.toUpperCase()} | ${bare}` : cur.name ?? "";
+          if (bare && wanted !== cur.name) await asanaCall("PUT", `/tasks/${gid}`, { name: wanted });
+        } catch { /* prefix sync is best-effort */ }
+        return j(headers, 200, { ok: true, name: name2 });
       } catch (e) {
         console.error("setAppStatus failed:", e);
         return j(headers, 502, { error: "status_failed", message: "Could not save the status." });
@@ -1903,8 +1962,11 @@ ${SIG}`,
         const cf = t.custom_fields ?? [];
         const num = (fid: string) => { const f = cf.find((x) => x.gid === fid); return f?.number_value ?? null; };
         const en = (fid: string) => cf.find((x) => x.gid === fid)?.enum_value?.name ?? "";
+        const t2 = await asanaCall("GET", `/tasks/${gid}?opt_fields=custom_fields.gid,custom_fields.display_value`) as { custom_fields?: { gid?: string; display_value?: string | null }[] };
+        const desiredStart = String((t2.custom_fields ?? []).find((x) => x.gid === F_DESIRED_START)?.display_value ?? "").slice(0, 10);
         const out = {
           ok: true,
+          desiredStart,
           medianCredit: num(F_MEDIAN_CREDIT),
           qualIncome: num(F_QUAL_INCOME),
           householdSize: num(F_HOUSEHOLD_SIZE),
