@@ -951,6 +951,7 @@ app.post("*", async (c) => {
       // task AND the property's Turn Over task (excluding template subtasks), plus the
       // latest site-visit checklist comment.
       let recentSubtasks: string[] = [];
+      let weekApplications: number | null = null;
       let siteVisitNote = "";
       let siteVisitDate = "";
       let inspectionPdfUrl = "";
@@ -970,6 +971,21 @@ app.post("*", async (c) => {
       try {
         const subs = await asana("GET", `/tasks/${taskGid}/subtasks?limit=100&opt_fields=name,created_at,assignee.name,due_on`);
         recentSubtasks = (subs ?? []).filter(recentOnly).map(fmtSub());
+        // Applications submitted in the reporting period, counted from the LU's
+        // Application subtasks (team 2026-09-20: agents are not always aware an
+        // application came in, so the WAR count prefills from the record). Same
+        // Monday-anchored week the report names: Tuesday through Monday.
+        try {
+          const sea = new Date(now - 7 * 3600 * 1000);
+          const dow = (sea.getUTCDay() + 6) % 7; // days since Monday
+          const mondayUtc = Date.UTC(sea.getUTCFullYear(), sea.getUTCMonth(), sea.getUTCDate() - dow);
+          const periodStart = mondayUtc - 6 * 86400000 + 7 * 3600 * 1000; // Tuesday 00:00 Seattle
+          const periodEndExcl = mondayUtc + 86400000 + 7 * 3600 * 1000;   // Tuesday 00:00 after the Monday
+          weekApplications = ((subs ?? []) as Array<{ name?: string; created_at?: string }>)
+            .filter((s) => /application/i.test(String(s.name ?? "")) && !TEMPLATE.test(String(s.name ?? "")))
+            .filter((s) => { const ts = Date.parse(String(s.created_at ?? "")); return ts >= periodStart && ts < periodEndExcl; })
+            .length;
+        } catch { /* the input stays manual */ }
         const insp = findInspectionSub((subs ?? []) as Array<{ gid: string; name: string }>);
         if (insp) {
           const stories = (await allStories(insp.gid, "type,text,created_at")) as Array<{ type: string; text?: string; created_at?: string }>;
@@ -1007,6 +1023,7 @@ app.post("*", async (c) => {
 
       return j(headers, 200, {
         recentSubtasks,
+        weekApplications,
         siteVisitNote,
         siteVisitDate,
         inspectionPdfUrl,
