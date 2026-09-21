@@ -1128,6 +1128,8 @@ app.post("*", async (c) => {
     // Active listings = open LU/TP/PreLease with a List Date on or before today and no
     // Lease Signed. Team lead joins from Listing Settings by Unit ID; the WAR subtask's
     // due date is the weekly heartbeat (overdue or missing = red pill on the bench).
+    // Occupied units join early when listed (2026-09-09) or when their Listing
+    // Settings plan is approved / has a Target List Date (2026-09-21).
     if (action === "execQueue") {
       if (execCache && Date.now() - execCache.at < 2 * 60 * 1000) return j(headers, 200, execCache.payload as Record<string, unknown>);
       const todayQ = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
@@ -1143,6 +1145,40 @@ app.post("*", async (c) => {
       // Completed tasks stay only while their Move in Date is still ahead.
       const sinceQ = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
       const MI_F = "1213183520317831"; // 🙌 Move in Date
+      // Listing Settings index (Unit ID join first, normalized-address fallback
+      // for fresh-cycle LU tasks with no Unit ID yet - 2026-08-27, 1151 N 94th
+      // #31): team lead + Target List Date for the queue columns, and Plan
+      // Status for the gate below. Built BEFORE the LU scan because the gate
+      // needs it: an occupied unit whose plan is approved (or has a Target List
+      // Date) belongs on the bench so Go Live is reachable before vacancy
+      // (Brittany 2026-09-21, unit 387050: Team Lead Approved plan, target list
+      // 9/23, invisible until 9/30 move-out under the old vacancy-or-listed
+      // rule - Go Live stamps List Date, but only from a bench row, deadlock).
+      const lsIdx: Record<string, { teamLead: string; lsGid: string; targetListDate: string; planStatus: string }> = {};
+      const lsAddrIdx: Record<string, { teamLead: string; lsGid: string; targetListDate: string; planStatus: string }> = {};
+      try {
+        let offL = "";
+        for (let pg = 0; pg < 15; pg++) {
+          const r1 = await fetch(`${ASANA}/projects/1217446710785429/tasks?limit=100&opt_fields=name,custom_fields.gid,custom_fields.display_value${offL ? `&offset=${encodeURIComponent(offL)}` : ""}`,
+            { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+          const j1 = await r1.json().catch(() => ({}));
+          for (const t of (j1.data ?? []) as Array<{ gid: string; name: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>) {
+            const cfL = t.custom_fields ?? [];
+            const entry = {
+              teamLead: String(cfL.find((f) => f.gid === "1217446711292696")?.display_value ?? "").trim(),
+              lsGid: t.gid,
+              targetListDate: String(cfL.find((f) => f.gid === "1217515135889617")?.display_value ?? "").slice(0, 10),
+              planStatus: String(cfL.find((f) => f.gid === "1217569409567702")?.display_value ?? "").trim(),
+            };
+            const uidL = String(cfL.find((f) => f.gid === "1213183515622826")?.display_value ?? "").trim();
+            if (uidL) lsIdx[uidL] = entry;
+            const addrL = String(t.name).replace(/^listing\s*\|\s*/i, "").trim();
+            if (addrL) lsAddrIdx[normAddr(addrL)] = entry;
+          }
+          offL = j1.next_page?.offset ?? "";
+          if (!offL) break;
+        }
+      } catch { /* index stays empty: gate falls back to vacancy-or-listed, lead column blank */ }
       for (let pg = 0; pg < 12; pg++) {
         const r0 = await fetch(`${ASANA}/projects/${LEASING_LU_PROJECT}/tasks?completed_since=${sinceQ}&limit=100&opt_fields=name,completed,assignee.name,custom_fields.gid,custom_fields.name,custom_fields.display_value${offQ ? `&offset=${encodeURIComponent(offQ)}` : ""}`,
           { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
@@ -1187,9 +1223,18 @@ app.post("*", async (c) => {
           // listing needs the weekly loop even before move out. Everything else
           // still requires vacancy.
           const listedEarly = /^\d{4}-\d{2}-\d{2}$/.test(String(cfQ.find((f) => f.gid === LD_F)?.display_value ?? "").slice(0, 10));
+          // ... and so do occupied units whose Listing Settings plan is approved
+          // or carries a Target List Date (Brittany 2026-09-21, unit 387050):
+          // the plan says list early, so the bench must show the row for Go
+          // Live before vacancy. Plan Status Draft/Sent/Rejected/Offload does
+          // not qualify; Revised counts (it is the approved-plan unlock state).
+          const lsHitQ = (unitIdQ && lsIdx[unitIdQ]) || lsAddrIdx[normAddr(address)];
+          const planReady = !!lsHitQ && (
+            ["accepted", "team lead approved", "revised"].includes(lsHitQ.planStatus.toLowerCase()) ||
+            /^\d{4}-\d{2}-\d{2}$/.test(lsHitQ.targetListDate));
           // completed tasks already passed the Move In Pending gate above and can
           // be pre-move-out (PreLease signed early), so vacancy is not required
-          if (!t.completed && !vacant && !(listedEarly && !leaseSigned)) continue;
+          if (!t.completed && !vacant && !(listedEarly && !leaseSigned) && !planReady) continue;
           const occupiedUntil = !vacant && /^\d{4}-\d{2}-\d{2}$/.test(moSched) && moSched > todayQ ? moSched : "";
           // Do Not List (Brittany 2026-08-27): owner selling / self-listing / moving
           // back in / other. Stays visible at the bottom of the queue for awareness,
@@ -1224,7 +1269,11 @@ app.post("*", async (c) => {
           const cycleStart = state === "leasing" ? listDate : (moDoneAll || moSched);
           const cycleDays = /^\d{4}-\d{2}-\d{2}$/.test(cycleStart)
             ? Math.floor((Date.parse(todayQ + "T12:00:00Z") - Date.parse(cycleStart + "T12:00:00Z")) / 86400000) : null;
-          const modOverdue = doNotList || (cycleDays != null && cycleDays <= 6) ? false
+          // occupied AND unlisted (the plan-ready rows the gate now admits):
+          // owes no MOD and no WAR until it is listed or vacant - the row is
+          // there for Go Live, not the weekly loop
+          const preListing = !vacant && !listed && !leaseSigned;
+          const modOverdue = doNotList || preListing || (cycleDays != null && cycleDays <= 6) ? false
             : (!modDate || Math.floor((Date.parse(todayQ + "T12:00:00Z") - Date.parse(modDate + "T12:00:00Z")) / 86400000) >= 7);
           rows.push({ gid: t.gid, url: `https://app.asana.com/0/0/${t.gid}`, address, unitId, teamLead: "", lsGid: "", listDate, state, doNotList, dom, moveOut: /^\d{4}-\d{2}-\d{2}$/.test(moSched) ? moSched : (moDoneAll || null), occupiedUntil, modDate, modOverdue, firstWeek: state === "leasing" && dom != null && dom <= 6, updDate, signedDate: leaseSigned && /^\d{4}-\d{2}-\d{2}$/.test(lsdQ) ? lsdQ : "", warGid: "", warDue: null, warMissing: null });
         }
@@ -1236,40 +1285,15 @@ app.post("*", async (c) => {
       // heartbeat BEFORE the cap: a missing-WAR listing at low DOM must not be cut
       // (Brittany 2026-08-26: missing reports sort to the top of the queue)
       const queue = rows.slice(0, 150);
-      // team lead from Listing Settings: Unit ID join first, normalized-address
-      // fallback for fresh-cycle LU tasks that have no Unit ID yet (2026-08-27,
-      // 1151 N 94th #31)
-      try {
-        const lsIdx: Record<string, { teamLead: string; lsGid: string; targetListDate?: string }> = {};
-        const lsAddrIdx: Record<string, { teamLead: string; lsGid: string; targetListDate?: string }> = {};
-        let offL = "";
-        for (let pg = 0; pg < 15; pg++) {
-          const r1 = await fetch(`${ASANA}/projects/1217446710785429/tasks?limit=100&opt_fields=name,custom_fields.gid,custom_fields.display_value${offL ? `&offset=${encodeURIComponent(offL)}` : ""}`,
-            { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
-          const j1 = await r1.json().catch(() => ({}));
-          for (const t of (j1.data ?? []) as Array<{ gid: string; name: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>) {
-            const cfL = t.custom_fields ?? [];
-            const entry = {
-              teamLead: String(cfL.find((f) => f.gid === "1217446711292696")?.display_value ?? "").trim(),
-              lsGid: t.gid,
-              targetListDate: String(cfL.find((f) => f.gid === "1217515135889617")?.display_value ?? "").slice(0, 10),
-            };
-            const uidL = String(cfL.find((f) => f.gid === "1213183515622826")?.display_value ?? "").trim();
-            if (uidL) lsIdx[uidL] = entry;
-            const addrL = String(t.name).replace(/^listing\s*\|\s*/i, "").trim();
-            if (addrL) lsAddrIdx[normAddr(addrL)] = entry;
-          }
-          offL = j1.next_page?.offset ?? "";
-          if (!offL) break;
-        }
-        queue.forEach((q) => {
-          const hitL = (q.unitId && lsIdx[q.unitId]) || lsAddrIdx[normAddr(q.address)];
-          if (hitL) { q.teamLead = hitL.teamLead; q.lsGid = hitL.lsGid; q.targetListDate = /^\d{4}-\d{2}-\d{2}$/.test(hitL.targetListDate ?? "") ? hitL.targetListDate : ""; }
-          // NO fallback to the LU assignee (Brittany 2026-09-18): a blank lead
-          // renders as an assign dropdown on the bench instead, and the pick
-          // writes to (or creates) the Listing Settings task via execSetLead
-        });
-      } catch { /* team lead column stays blank */ }
+      // team lead + Target List Date from the Listing Settings index built
+      // above the gate
+      queue.forEach((q) => {
+        const hitL = (q.unitId && lsIdx[q.unitId]) || lsAddrIdx[normAddr(q.address)];
+        if (hitL) { q.teamLead = hitL.teamLead; q.lsGid = hitL.lsGid; q.targetListDate = /^\d{4}-\d{2}-\d{2}$/.test(hitL.targetListDate) ? hitL.targetListDate : ""; }
+        // NO fallback to the LU assignee (Brittany 2026-09-18): a blank lead
+        // renders as an assign dropdown on the bench instead, and the pick
+        // writes to (or creates) the Listing Settings task via execSetLead
+      });
       // WAR subtask per listing, concurrency 5, fail-soft
       for (let i = 0; i < queue.length; i += 5) {
         await Promise.all(queue.slice(i, i + 5).map(async (q) => {
@@ -1278,11 +1302,12 @@ app.post("*", async (c) => {
             const w = ((subs ?? []) as Array<{ gid: string; name: string; due_on?: string | null; completed?: boolean }>)
               .find((s) => !s.completed && /weekly activity report/i.test(s.name)) ??
               ((subs ?? []) as Array<{ gid: string; name: string; due_on?: string | null }>).find((s) => /weekly activity report/i.test(s.name));
+            const noWarQ = q.firstWeek || q.doNotList || (q.state === "turnover" && q.occupiedUntil); // occupied pre-listing: no WAR owed yet
             if (w) {
               q.warGid = w.gid;
               q.warDue = w.due_on ?? null;
-              q.warMissing = (q.firstWeek || q.doNotList) ? false : (!w.due_on || String(w.due_on) < todayQ);
-            } else q.warMissing = (q.firstWeek || q.doNotList) ? false : true; // no subtask: nothing is being reported
+              q.warMissing = noWarQ ? false : (!w.due_on || String(w.due_on) < todayQ);
+            } else q.warMissing = noWarQ ? false : true; // no subtask: nothing is being reported
           } catch { q.warMissing = null; }
         }));
       }
