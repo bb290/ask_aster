@@ -1334,6 +1334,85 @@ app.post("*", async (c) => {
       return j(headers, 200, await buildWarQueue() as unknown as Record<string, unknown>);
     }
 
+    // ---------- execDelist: take a live listing off market (team 2026-09-21) ----------
+    // Delists the unit in Buildium, clears the LU's List Date (the queue, WAR,
+    // and DOM logic all key on it; Go Live re-stamps it at relist so DOM
+    // restarts), comments on the LU @mentioning the leasing agent, and routes
+    // by reason: repairs / reset DOM / selling park the task in Temporarily
+    // Off Market reassigned to the Team Lead (due = relist date); offloading
+    // marks the LU complete.
+    if (action === "execDelist") {
+      const luGidD = String(body.taskGid ?? "").replace(/\D/g, "");
+      const uidD = String(body.unitId ?? "").replace(/\D/g, "");
+      const reasonD = String(body.reason ?? "");
+      const relistD = String(body.relistDate ?? "").slice(0, 10);
+      const REASONS: Record<string, string> = {
+        repairs: "Additional repairs / upgrades",
+        reset_dom: "Reset DOM",
+        selling: "Owner selling",
+        offloading: "Offloading property",
+        other: "Other",
+      };
+      if (!luGidD) return j(headers, 400, { error: "missing_fields" });
+      if (!REASONS[reasonD]) return j(headers, 400, { error: "bad_reason", message: "Pick a delist reason." });
+      if (relistD && !/^\d{4}-\d{2}-\d{2}$/.test(relistD)) return j(headers, 400, { error: "bad_date", message: "Re-list date must be YYYY-MM-DD." });
+      const notesD: string[] = [];
+      if (uidD) {
+        try {
+          const BHD = { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET, "Content-Type": "application/json" };
+          const rd = await fetch(`https://api.buildium.com/v1/rentals/units/${uidD}/listing`, { method: "DELETE", headers: BHD });
+          notesD.push(rd.ok || rd.status === 404 ? "Unit delisted in Buildium." : `Buildium delist failed (${rd.status}); delist by hand.`);
+        } catch { notesD.push("Buildium delist failed; delist by hand."); }
+      } else notesD.push("No Unit ID; delist in Buildium by hand.");
+      const LD_FD = "1213182838328964"; // List Date
+      let agentD = "", addressD = "", oldList = "";
+      try {
+        const luT = await asana("GET", `/tasks/${luGidD}?opt_fields=name,assignee.gid,custom_fields.gid,custom_fields.display_value`) as { name?: string; assignee?: { gid?: string } | null; custom_fields?: Array<{ gid: string; display_value: string | null }> };
+        addressD = addressFromTaskName(String(luT.name ?? "")) || String(luT.name ?? "");
+        agentD = String(luT.assignee?.gid ?? "");
+        oldList = String((luT.custom_fields ?? []).find((f) => f.gid === LD_FD)?.display_value ?? "").slice(0, 10);
+        await asana("PUT", `/tasks/${luGidD}`, { custom_fields: { [LD_FD]: null } });
+        notesD.push(`List Date cleared${oldList ? ` (was ${oldList})` : ""}; Go Live re-stamps it at relist, so DOM restarts.`);
+      } catch { notesD.push("Could not clear the List Date; clear it by hand."); }
+      const parkedD = ["repairs", "reset_dom", "selling"].includes(reasonD);
+      if (parkedD) {
+        try {
+          const secsD = ((await asana("GET", `/projects/${LEASING_LU_PROJECT}/sections?limit=100&opt_fields=name`)) ?? []) as Array<{ gid: string; name: string }>;
+          let offD = secsD.find((s0) => /temporarily off market/i.test(String(s0.name)));
+          if (!offD) offD = await asana("POST", `/projects/${LEASING_LU_PROJECT}/sections`, { name: "Temporarily Off Market" }) as { gid: string; name: string };
+          await asana("POST", `/tasks/${luGidD}/addProject`, { project: LEASING_LU_PROJECT, section: offD.gid });
+          notesD.push("Moved to Temporarily Off Market.");
+        } catch { notesD.push("Could not move the task to Temporarily Off Market."); }
+        try {
+          let leadGidD = "";
+          if (uidD) {
+            const hitsD = ((await asana("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=1217446710785429&custom_fields.1213183515622826.value=${uidD}&opt_fields=custom_fields.gid,custom_fields.people_value.gid`)) ?? []) as Array<{ custom_fields?: Array<{ gid: string; people_value?: Array<{ gid: string }> }> }>;
+            leadGidD = String((hitsD[0]?.custom_fields ?? []).find((f) => f.gid === "1217446711292696")?.people_value?.[0]?.gid ?? "");
+          }
+          const putD: Record<string, unknown> = {};
+          if (leadGidD) putD.assignee = leadGidD;
+          if (relistD) putD.due_on = relistD;
+          if (Object.keys(putD).length) {
+            await asana("PUT", `/tasks/${luGidD}`, putD);
+            notesD.push(`${leadGidD ? "Reassigned to the Team Lead" : "Assignee unchanged (no Team Lead found)"}${relistD ? `; due ${relistD} (relist)` : ""}.`);
+          } else notesD.push("No Team Lead found on Listing Settings; assignee unchanged.");
+        } catch { notesD.push("Could not reassign / set the relist due date."); }
+      }
+      if (reasonD === "offloading") {
+        try { await asana("PUT", `/tasks/${luGidD}`, { completed: true }); notesD.push("LU task marked complete (offloading)."); }
+        catch { notesD.push("Could not complete the LU task."); }
+      }
+      try {
+        const mentionD = agentD ? `<a data-asana-gid="${agentD}"/> ` : "";
+        const bodyD = `DELISTED (Execute + Adapt bench)\nReason: ${REASONS[reasonD]}${relistD ? `\nRe-list date: ${relistD}` : ""}${oldList ? `\nWas listed since ${oldList}` : ""}\n${notesD.join("\n")}`;
+        await asana("POST", `/tasks/${luGidD}/stories`, { html_text: `<body>${mentionD}${bodyD}</body>` })
+          .catch(async () => { await asana("POST", `/tasks/${luGidD}/stories`, { text: bodyD }); });
+      } catch { /* comment is best-effort */ }
+      execCache = null;
+      warqCache = null;
+      return j(headers, 200, { ok: true, reason: REASONS[reasonD], notes: notesD, address: addressD });
+    }
+
     if (action === "execLateWars") {
       // one accountability task listing every late WAR, grouped by agent, in
       // Aster's Audits - the write-up starting point (Brittany 2026-08-27)
