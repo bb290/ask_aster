@@ -952,6 +952,7 @@ app.post("*", async (c) => {
       // latest site-visit checklist comment.
       let recentSubtasks: string[] = [];
       let weekApplications: number | null = null;
+      let weekApplicationTasks: { name: string; url: string }[] = [];
       let siteVisitNote = "";
       let siteVisitDate = "";
       let inspectionPdfUrl = "";
@@ -981,10 +982,16 @@ app.post("*", async (c) => {
           const mondayUtc = Date.UTC(sea.getUTCFullYear(), sea.getUTCMonth(), sea.getUTCDate() - dow);
           const periodStart = mondayUtc - 6 * 86400000 + 7 * 3600 * 1000; // Tuesday 00:00 Seattle
           const periodEndExcl = mondayUtc + 86400000 + 7 * 3600 * 1000;   // Tuesday 00:00 after the Monday
-          weekApplications = ((subs ?? []) as Array<{ name?: string; created_at?: string }>)
+          const weekApps = ((subs ?? []) as Array<{ gid?: string; name?: string; created_at?: string }>)
             .filter((s) => /application/i.test(String(s.name ?? "")) && !TEMPLATE.test(String(s.name ?? "")))
-            .filter((s) => { const ts = Date.parse(String(s.created_at ?? "")); return ts >= periodStart && ts < periodEndExcl; })
-            .length;
+            .filter((s) => { const ts = Date.parse(String(s.created_at ?? "")); return ts >= periodStart && ts < periodEndExcl; });
+          weekApplications = weekApps.length;
+          // named + linked so the agent sees who applied and where it came from
+          // (team 2026-09-20); links open inside Leasing | Screen + Sign
+          weekApplicationTasks = weekApps.map((s) => ({
+            name: String(s.name ?? "").split("|").pop()!.trim().slice(0, 120),
+            url: `https://app.asana.com/1/${WORKSPACE}/project/1217174650640596/task/${s.gid ?? ""}`,
+          }));
         } catch { /* the input stays manual */ }
         const insp = findInspectionSub((subs ?? []) as Array<{ gid: string; name: string }>);
         if (insp) {
@@ -1024,6 +1031,7 @@ app.post("*", async (c) => {
       return j(headers, 200, {
         recentSubtasks,
         weekApplications,
+        weekApplicationTasks,
         siteVisitNote,
         siteVisitDate,
         inspectionPdfUrl,
