@@ -462,6 +462,7 @@ async function jobGet(id: string): Promise<Record<string, unknown> | null> {
 const SEC_APPROVED = "1217174603997588";
 const SEC_PENDING_DOCS = "1217174650703534";
 const SEC_COMPLETE = "1217174603984367";
+const SEC_MOVEIN_PENDING = "1217174739448130";
 const ASANA = "https://app.asana.com/api/1.0";
 const BUILDIUM = "https://api.buildium.com/v1";
 const BH = { "x-buildium-client-id": B_ID, "x-buildium-client-secret": B_SECRET };
@@ -1717,14 +1718,23 @@ ${SIG}`,
               notes: `Move-in funds are cashier's check or money order only. In Buildium: Financials > Payment Settings > Override payment methods, disallow EFT and credit card until the move-in funds are deposited, then the Resident Account Manager unblocks.\nCreated by Enter Move In (Screen + Sign bench).`,
             });
             notes.push("Block EFT subtask created on the LU, assigned to Mary, due today.");
+            // signing ends the leasing cycle: the LU/TP/PreLease task completes
+            // here (Brittany 2026-09-21). The Execute bench still shows it as
+            // Move In Pending while the Move in Date is ahead (completed
+            // pass-through, 2026-09-10 rule).
+            try {
+              await asanaCall("PUT", `/tasks/${ctx.luGid}`, { completed: true });
+              notes.push("LU task marked complete (leasing cycle done).");
+            } catch { notes.push("Could not complete the LU task; close it by hand."); }
           } catch { notes.push("LU writes or the Block EFT subtask failed; check the LU task."); }
         } else notes.push("No LU task matched; write Lease Signed / Move in Date by hand.");
-        // ---- 5. application close-out ----
+        // ---- 5. application to Move In Pending, still OPEN ----
+        // The application stays open until the tenant actually moves in
+        // (Brittany 2026-09-21); only the section and Status move here.
         try {
-          await asanaCall("POST", `/tasks/${gid}/addProject`, { project: PENDING_APPS_PROJECT, section: SEC_COMPLETE });
-          await asanaCall("PUT", `/tasks/${gid}`, { completed: true });
-          notes.push("Application filed to Complete.");
-        } catch { notes.push("Could not file the application to Complete."); }
+          await asanaCall("POST", `/tasks/${gid}/addProject`, { project: PENDING_APPS_PROJECT, section: SEC_MOVEIN_PENDING });
+          notes.push("Application moved to Move In Pending; it stays open until move in.");
+        } catch { notes.push("Could not move the application to Move In Pending."); }
         await setStatus_(gid, [STATUS.leaseSigned]);
         const summary = `ENTER MOVE IN (Screen + Sign bench)\n${notes.join("\n")}`;
         await asanaCall("POST", `/tasks/${gid}/stories`, { text: summary }).catch(() => {});
@@ -2378,10 +2388,13 @@ ${built.email.body}`;
       return j(headers, 200, data);
     }
 
-    // ---------- signUpdate: record the signed lease on the LU + close out the application ----------
+    // ---------- signUpdate: record the signed lease on the LU + route the application ----------
     // Writes only ever SET fields, never clear them (shared with the whole
     // leasing pipeline: Lease Signed flips the unit to pre-move-in in the
-    // Execute bench, WAR queue, and site-visit logic).
+    // Execute bench, WAR queue, and site-visit logic). Signing completes the
+    // LU task (cycle done); the application stays OPEN in Move In Pending
+    // until move in (Brittany 2026-09-21). Only the no-LU escape hatch still
+    // closes the application outright.
     if (action === "signUpdate") {
       const appGid = String((body as { taskGid?: unknown }).taskGid ?? "").trim();
       const luGid = String((body as { luGid?: unknown }).luGid ?? "").trim();
@@ -2417,22 +2430,43 @@ ${built.email.body}`;
         };
         if (leaseSigned) await writeField(/lease signed/i, "Lease Signed", leaseSigned);
         if (moveInDate) await writeField(/move in date/i, "Move in Date", moveInDate);
+        // signing ends the leasing cycle: complete the LU/TP/PreLease task
+        // (Brittany 2026-09-21); the Execute bench keeps it visible as Move In
+        // Pending while the Move in Date is ahead
+        if (leaseSigned) {
+          try {
+            await asanaCall("PUT", `/tasks/${luGid}`, { completed: true });
+            written.push("LU task completed");
+          } catch { notes.push("could not complete the LU task"); }
+        }
       }
       let movedToComplete = false;
+      let movedToPending = false;
       if (appGid && complete) {
-        try {
-          await asanaCall("POST", `/tasks/${appGid}/addProject`, { project: PENDING_APPS_PROJECT, section: SEC_COMPLETE });
-          await asanaCall("PUT", `/tasks/${appGid}`, { completed: true });
-          movedToComplete = true;
-        } catch { notes.push("could not move the application to Complete"); }
+        if (luGid) {
+          // normal signing: the application stays OPEN in Move In Pending
+          // until the tenant actually moves in (Brittany 2026-09-21)
+          try {
+            await asanaCall("POST", `/tasks/${appGid}/addProject`, { project: PENDING_APPS_PROJECT, section: SEC_MOVEIN_PENDING });
+            movedToPending = true;
+          } catch { notes.push("could not move the application to Move In Pending"); }
+          await setStatus_(appGid, [STATUS.leaseSigned]).catch(() => null);
+        } else {
+          // no LU matched: the file-away escape hatch keeps closing the task
+          try {
+            await asanaCall("POST", `/tasks/${appGid}/addProject`, { project: PENDING_APPS_PROJECT, section: SEC_COMPLETE });
+            await asanaCall("PUT", `/tasks/${appGid}`, { completed: true });
+            movedToComplete = true;
+          } catch { notes.push("could not move the application to Complete"); }
+        }
       }
-      const summary = `LEASE SIGNED (Screen + Sign bench)\n${written.length ? written.join("\n") : "No LU fields written."}${movedToComplete ? "\nApplication moved to Complete." : ""}`;
-      if (written.length || movedToComplete) {
+      const summary = `LEASE SIGNED (Screen + Sign bench)\n${written.length ? written.join("\n") : "No LU fields written."}${movedToComplete ? "\nApplication moved to Complete." : ""}${movedToPending ? "\nApplication moved to Move In Pending; open until move in." : ""}`;
+      if (written.length || movedToComplete || movedToPending) {
         if (appGid) await asanaCall("POST", `/tasks/${appGid}/stories`, { text: summary }).catch(() => null);
         if (luGid) await asanaCall("POST", `/tasks/${luGid}/stories`, { text: summary }).catch(() => null);
       }
       signqCache = null;
-      return j(headers, 200, { ok: true, written, movedToComplete, notes });
+      return j(headers, 200, { ok: true, written, movedToComplete, movedToPending, notes });
     }
 
     // ---------- submitReport: post the (possibly edited) report + route for review ----------
