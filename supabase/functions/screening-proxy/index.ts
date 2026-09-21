@@ -124,7 +124,14 @@ const STATUS2_NAME: Record<string, string> = {
   "1218663432372366": "Lease Signed",
   "1218663432392831": "Declined",
   "1218663345967452": "On Hold",
+  "1218716506959444": "Leasing Complete, Pending MI",
+  "1218716498458224": "Cancelled",
 };
+// Dropdown-native statuses with no old-vocabulary equivalent (team 2026-09-21):
+// Leasing Complete = lease signed + Buildium entered, waiting on the physical
+// move in; Cancelled = the applicant withdrew (task files to Complete, closed).
+const ST2_LEASING_DONE = "1218716506959444";
+const ST2_CANCELLED = "1218716498458224";
 // Every status name plus every legacy prefix the automation or staff ever used
 const PREFIX_TOKENS = [
   ...Object.values(STATUS_NAME),
@@ -160,6 +167,18 @@ async function setStatus_(gid: string, optionGids: string[]) {
     const bare = stripStatusPrefix(cur.name ?? "");
     const prefix = optionGids.map((g) => (STATUS_NAME[g] ?? "").toUpperCase()).filter(Boolean).join(" | ");
     const wanted = prefix ? `${prefix} | ${bare}` : bare;
+    if (bare && wanted !== cur.name) await asanaCall("PUT", `/tasks/${gid}`, { name: wanted });
+  } catch { /* prefix sync is best-effort */ }
+}
+// setStatus2_: like setStatus_ but takes the DROPDOWN option gid directly, for
+// the dropdown-native statuses that never existed in the old vocabulary
+async function setStatus2_(gid: string, opt2: string) {
+  await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: { [STATUS2_FIELD]: opt2 } }).catch(() => {});
+  try {
+    const cur = await asanaCall("GET", `/tasks/${gid}?opt_fields=name`) as { name?: string };
+    const bare = stripStatusPrefix(cur.name ?? "");
+    const nm = (STATUS2_NAME[opt2] ?? "").toUpperCase();
+    const wanted = nm && bare ? `${nm} | ${bare}` : cur.name ?? "";
     if (bare && wanted !== cur.name) await asanaCall("PUT", `/tasks/${gid}`, { name: wanted });
   } catch { /* prefix sync is best-effort */ }
 }
@@ -628,6 +647,38 @@ async function openLuTasks(): Promise<Array<{ gid: string; name: string; address
 
 // Best LU parent for a Buildium address: exact normalized match, else same
 // street number with at most one unmatched token.
+// Recently COMPLETED LU/TP/PreLease tasks (90 days): signing completes the LU
+// now (2026-09-21), so the sign/move-in queues must still match it - an open
+// application on a closed cycle is normal, not "No Lease Up task matched"
+let doneLuCache: { at: number; tasks: Array<{ gid: string; name: string; address: string }> } | null = null;
+async function doneLuTasks(): Promise<Array<{ gid: string; name: string; address: string }>> {
+  if (doneLuCache && Date.now() - doneLuCache.at < 2 * 60 * 1000) return doneLuCache.tasks;
+  const out: Array<{ gid: string; name: string; address: string }> = [];
+  const since = new Date(Date.now() - 90 * 86400000).toISOString().slice(0, 10);
+  let offset = "";
+  for (let page = 0; page < 12; page++) {
+    const res = await fetch(
+      `${ASANA}/projects/${LEASING_LU_PROJECT}/tasks?completed_since=${since}&limit=100&opt_fields=name,completed${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+      { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
+    );
+    const json = await res.json().catch(() => ({})) as {
+      data?: Array<{ gid: string; name: string; completed?: boolean }>;
+      next_page?: { offset?: string } | null;
+    };
+    if (!res.ok) break;
+    for (const t of json.data ?? []) {
+      if (!t.completed) continue;
+      if (!/^(LU|TP|PreLease)\s*\|/i.test(t.name)) continue;
+      const address = addressFromTaskName(t.name);
+      if (!address || address.includes("<")) continue;
+      out.push({ gid: t.gid, name: t.name, address });
+    }
+    offset = json.next_page?.offset ?? "";
+    if (!offset) break;
+  }
+  doneLuCache = { at: Date.now(), tasks: out };
+  return out;
+}
 function matchLu(tasks: Array<{ gid: string; name: string; address: string }>, target: string):
   { hit?: { gid: string; name: string; address: string }; near: string[] } {
   const t = addrTokens(target);
@@ -1735,7 +1786,9 @@ ${SIG}`,
           await asanaCall("POST", `/tasks/${gid}/addProject`, { project: PENDING_APPS_PROJECT, section: SEC_MOVEIN_PENDING });
           notes.push("Application moved to Move In Pending; it stays open until move in.");
         } catch { notes.push("Could not move the application to Move In Pending."); }
-        await setStatus_(gid, [STATUS.leaseSigned]);
+        // Leasing Complete, Pending MI (team 2026-09-21): lease signed AND
+        // Buildium entered - only the physical move in remains
+        await setStatus2_(gid, ST2_LEASING_DONE);
         const summary = `ENTER MOVE IN (Screen + Sign bench)\n${notes.join("\n")}`;
         await asanaCall("POST", `/tasks/${gid}/stories`, { text: summary }).catch(() => {});
         if (ctx.luGid) await asanaCall("POST", `/tasks/${ctx.luGid}/stories`, { text: summary }).catch(() => {});
@@ -2086,6 +2139,16 @@ ${SIG}`,
           const wanted = bare ? `${name2.toUpperCase()} | ${bare}` : cur.name ?? "";
           if (bare && wanted !== cur.name) await asanaCall("PUT", `/tasks/${gid}`, { name: wanted });
         } catch { /* prefix sync is best-effort */ }
+        // status-driven filing (team 2026-09-21): Cancelled = applicant
+        // withdrew -> Complete section, task closed; Leasing Complete stays
+        // OPEN in Move In Pending until the physical move in
+        if (want === ST2_CANCELLED) {
+          await asanaCall("POST", `/tasks/${gid}/addProject`, { project: PENDING_APPS_PROJECT, section: SEC_COMPLETE }).catch(() => {});
+          await asanaCall("PUT", `/tasks/${gid}`, { completed: true }).catch(() => {});
+        } else if (want === ST2_LEASING_DONE) {
+          await asanaCall("POST", `/tasks/${gid}/addProject`, { project: PENDING_APPS_PROJECT, section: SEC_MOVEIN_PENDING }).catch(() => {});
+        }
+        signqCache = null;
         return j(headers, 200, { ok: true, name: name2 });
       } catch (e) {
         console.error("setAppStatus failed:", e);
@@ -2358,6 +2421,8 @@ ${built.email.body}`;
           names = (parts2[1] ?? "").trim();
         }
         let lu: { gid: string; name: string; address?: string } | null = address ? (matchLu(luTasks, address).hit ?? null) : null;
+        // open LU first; a cycle completed at signing still matches (2026-09-21)
+        if (!lu && address) lu = matchLu(await doneLuTasks().catch(() => []), address).hit ?? null;
         if (!lu && address) lu = await findLuByTypeahead(address).catch(() => null);
         let leaseSigned = "", moveInDate = "", unitId = "", buildiumUrl = "";
         if (lu) {
