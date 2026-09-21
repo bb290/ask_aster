@@ -195,6 +195,10 @@ const F_PETS_MOVEIN = "1218658166425716";
 const F_PAYMENT_PLAN = "1218658174540220";
 const F_LEASE_DOC_ID = "1218658616146387";
 const F_LEASE_CANCEL = "1218658166414542";
+// Review Ready At (created 2026-09-20, Brittany-approved): stamped the FIRST
+// time an application reaches Pending Mgr Review; the review queue sorts by it
+// oldest-first, which is first-in-time lease offering per the Seattle FIT SOP.
+const F_REVIEW_READY = "1218668312828102";
 const CANCEL_OPTS: Record<string, { gid: string; label: string }> = {
   another_property: { gid: "1218658166414543", label: "Chose Another Property" },
   price: { gid: "1218658166414544", label: "Price" },
@@ -263,6 +267,192 @@ async function leaseContext(gid: string) {
     } catch { /* partial context renders a partial form */ }
   }
   return ctx;
+}
+// ---------- runScreenTask: the whole screening pipeline as a callable ----------
+// Shared by the synchronous screenTask action (compat) and the async job
+// (screenStart), because the 150-second gateway cap cannot be raised.
+async function runScreenTask(taskUrl: string): Promise<{ s: number; b: Record<string, unknown> }> {
+  const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+  if (!gid) return { s: 400, b: { error: "bad_task_url", message: "Paste the full Asana task link." } };
+
+  let task: { gid?: string; name?: string; notes?: string; permalink_url?: string; parent?: { gid?: string }; custom_fields?: { name?: string; number_value?: number | null }[] };
+  try {
+    task = await asanaCall("GET", `/tasks/${gid}?opt_fields=name,notes,permalink_url,parent.gid,custom_fields.name,custom_fields.number_value`) as typeof task;
+  } catch {
+    return { s: 404, b: { error: "task_not_found", message: "Could not open that Asana task. Check the link." } };
+  }
+  // Advertised rent from the LU/TP parent's Starting Price field
+  let advertisedRent = "";
+  if (task.parent?.gid) {
+    try {
+      const p = await asanaCall("GET", `/tasks/${task.parent.gid}?opt_fields=custom_fields.name,custom_fields.display_value`) as { custom_fields?: { name?: string; display_value?: string | null }[] };
+      const f = (p.custom_fields ?? []).find((c) => /starting price/i.test(c.name ?? "")) ??
+        (p.custom_fields ?? []).find((c) => /advertised|asking/i.test(c.name ?? ""));
+      if (f?.display_value) advertisedRent = `$${Number(f.display_value).toLocaleString("en-US")}/month`;
+    } catch { /* not on file */ }
+  }
+
+  const atts = (await asanaCall("GET", `/tasks/${gid}/attachments?opt_fields=name,download_url,size&limit=50`)
+    .catch(() => [])) as { gid?: string; name?: string; download_url?: string; size?: number }[];
+  if (!atts?.length) {
+    return { s: 422, b: { error: "no_attachments", message: "The task has no attachments. Attach the credit report and income documents first." } };
+  }
+
+  const skipped: string[] = [];
+  const failures: string[] = [];
+  const docs: Extracted[] = [];
+  let totalBytes = 0;
+  // PDFs pass through to the model natively; no local parsing or
+  // rasterizing. The wasm cascade blew the edge worker's memory/CPU on
+  // real-world scans twice on 2026-08-04; the model reads PDFs itself.
+  for (const a of atts) {
+    const name = a.name ?? "attachment";
+    if (isPriorUnderwritingDoc(name)) { skipped.push(name); continue; }
+    if (!a.download_url) { failures.push(`${name}: no download URL (external link?)`); continue; }
+    if ((a.size ?? 0) > 15 * 1024 * 1024) { failures.push(`${name}: over 15 MB, attach a smaller copy`); continue; }
+    try {
+      const fr = await fetch(a.download_url);
+      if (!fr.ok) { failures.push(`${name}: download ${fr.status}`); continue; }
+      const bytes = new Uint8Array(await fr.arrayBuffer());
+      totalBytes += bytes.byteLength;
+      // 40MB total: parseDocuments batches big packets into multiple model
+      // calls now (2026-09-18), so the run cap is our memory budget, not the
+      // provider's per-request ceiling. Per-file stays 15MB (one file must
+      // still fit a single call).
+      if (totalBytes > 40 * 1024 * 1024) { failures.push(`${name}: total size cap reached, screen it in a second pass`); continue; }
+      const ct = (fr.headers.get("content-type") ?? "").toLowerCase();
+      if (ct.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(name)) docs.push(imageAsExtracted(bytes, name));
+      else docs.push(pdfAsExtracted(bytes, name));
+    } catch {
+      failures.push(`${name}: download failed`);
+    }
+  }
+  for (const d of docs) if (d.kind === "failed") failures.push(`${d.name}: ${(d as { error: string }).error}`);
+  const readable = docs.filter((d) => d.kind !== "failed");
+  if (!readable.length) {
+    return { s: 422, b: { error: "nothing_readable", message: "No attachment could be read. Check the files on the task." } };
+  }
+
+  let parsed;
+  try {
+    parsed = await parseDocuments(
+      readable,
+      `Asana task: "${task.name ?? ""}". Task notes (assistant prep):\n${(task.notes ?? "").slice(0, 3000)}\nApplicant names come from the task name and the documents.`,
+    );
+  } catch (e) {
+    console.error("screenTask parse failed:", e);
+    const detail = String((e as Error).message ?? "").slice(0, 220);
+    // name the prime suspect so "remove the largest attachment" is actionable
+    // (team 2026-09-18: the old message left them guessing)
+    const sizeOf = (d: Extracted) => d.kind === "pdf" ? (d as { dataBase64: string }).dataBase64.length
+      : d.kind === "images" ? (d as { pngs: string[] }).pngs.reduce((a, p) => a + p.length, 0) : 0;
+    const biggest = readable.slice().sort((a, b) => sizeOf(b) - sizeOf(a))[0];
+    return { s: 502, b: {
+      error: "parse_failed",
+      message: `Document reading failed${detail ? ` (${detail})` : ""}. The read was already retried once, so this is usually one problem file: remove the largest attachment${biggest ? ` ("${biggest.name}")` : ""} and rerun, or try again in a few minutes.`,
+    } };
+  }
+  // Buildium application record is the deterministic source for the
+  // snapshot: DesiredMoveInDate and the Animals / Mascotas section beat
+  // model reads of the PDFs (pets flip-flopped between runs otherwise).
+  // The task's Applicant ID field points at the group/applicant.
+  {
+    const refId = (task.custom_fields ?? []).find((c) => /applicant id/i.test(c.name ?? ""))?.number_value;
+    if (refId != null) {
+      try {
+        let memberIds: number[] = [];
+        try {
+          const grp = await bGet(`/applicants/groups/${refId}`) as { Applicants?: { Id?: number }[] };
+          memberIds = (grp.Applicants ?? []).map((m) => m.Id).filter((x): x is number => x != null);
+        } catch { memberIds = [refId]; }
+        const petParts: string[] = [];
+        for (const applicantId of memberIds.slice(0, 6)) {
+          const rec = await bGet(`/applicants/${applicantId}`) as Applicant;
+          const appId = (rec.Applications ?? [])[0]?.Id;
+          if (appId == null) continue;
+          const app = await bGet(`/applicants/${applicantId}/applications/${appId}`) as { Application?: { SectionLabel?: string; SectionResponses?: { SectionFields?: { FieldCategoryType?: string | null; FieldLabel?: string; Value?: string }[] }[] }[] };
+          for (const sec of app.Application ?? []) {
+            const isAnimals = /^animals/i.test(sec.SectionLabel ?? "");
+            for (const resp of sec.SectionResponses ?? []) {
+              for (const f of resp.SectionFields ?? []) {
+                if (f.FieldCategoryType === "DesiredMoveInDate" && f.Value && !parsed.applicationInfo?.desiredMoveInDate) {
+                  parsed.applicationInfo = { ...parsed.applicationInfo, desiredMoveInDate: f.Value.slice(0, 10) };
+                }
+                if (isAnimals && f.Value && f.Value.trim() && !/^(yes|no|none|true|false|0)$/i.test(f.Value.trim())) {
+                  const v = f.Value.trim();
+                  petParts.push(/^\d{1,3}$/.test(v) ? `${v} lbs` : v);
+                }
+              }
+            }
+          }
+        }
+        if (petParts.length) {
+          parsed.applicationInfo = { ...parsed.applicationInfo, pets: petParts.join(", ") };
+        } else if (memberIds.length) {
+          parsed.applicationInfo = { ...parsed.applicationInfo, pets: parsed.applicationInfo?.pets || "None declared on the application" };
+        }
+      } catch { /* model values stand */ }
+    }
+  }
+
+  const asOf = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10); // Seattle-ish
+  const result = underwrite({ applicants: parsed.applicants, asOf });
+
+  // v2 (2026-09-20): mirror the machine figures onto the application task's
+  // fields so the Manager Review criteria card reads them. Overwritten on
+  // every Generate; manager-editable in Asana afterwards. Best-effort.
+  try {
+    const qiSum = (result.applicants ?? []).reduce((s, a) => s + (Number(a.qualifyingMonthly) || 0), 0);
+    const cfW: Record<string, number> = {};
+    if (result.medianCredit != null) cfW[F_MEDIAN_CREDIT] = Math.round(Number(result.medianCredit));
+    if (qiSum > 0) cfW[F_QUAL_INCOME] = Math.round(qiSum);
+    if (Object.keys(cfW).length) await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: cfW });
+  } catch { /* the card falls back to blank fields */ }
+
+  const integrityFlags: string[] = [];
+  for (const s of skipped) {
+    integrityFlags.push(isRestrictedDoc(s)
+      ? `Skipped "${s}" unread. Restricted screening content is not considered.`
+      : `Skipped "${s}" unread. Prior-underwriting reports have known calculation errors; figures re-derived from source documents.`);
+  }
+  for (const f of failures) integrityFlags.push(`Attachment not read: ${f}.`);
+
+  const lastNames = parsed.applicants.map((a) => a.name.split(" ").at(-1) ?? "").join("-").toUpperCase().slice(0, 24);
+  const reportId = `SW-${asOf.replace(/-/g, "")}-${lastNames || gid.slice(-6)}`;
+  const report = renderReport(result, parsed, { reportId, date: asOf, integrityFlags, advertisedRent });
+
+  return { s: 200, b: {
+    report, reportId, result,
+    warnings: parsed.warnings,
+    files: { read: readable.map((d) => d.name), skipped, failed: failures },
+    task: { gid, name: task.name ?? "", url: task.permalink_url ?? taskUrl },
+  } };
+}
+
+// ---------- screening job state in the private screen-jobs bucket ----------
+const SB_URL = (Deno.env.get("SUPABASE_URL") ?? "").replace(/\/$/, "");
+const SB_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+const JOB_BUCKET = "screen-jobs";
+let jobBucketReady = false;
+async function ensureJobBucket() {
+  if (jobBucketReady || !SB_URL || !SB_KEY) return;
+  await fetch(`${SB_URL}/storage/v1/bucket`, {
+    method: "POST", headers: { Authorization: `Bearer ${SB_KEY}`, apikey: SB_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({ id: JOB_BUCKET, name: JOB_BUCKET, public: false }),
+  }).catch(() => {}); // 409 when it already exists
+  jobBucketReady = true;
+}
+async function jobPut(id: string, data: Record<string, unknown>) {
+  await ensureJobBucket();
+  await fetch(`${SB_URL}/storage/v1/object/${JOB_BUCKET}/${id}.json`, {
+    method: "POST", headers: { Authorization: `Bearer ${SB_KEY}`, apikey: SB_KEY, "Content-Type": "application/json", "x-upsert": "true" },
+    body: JSON.stringify(data),
+  });
+}
+async function jobGet(id: string): Promise<Record<string, unknown> | null> {
+  const r = await fetch(`${SB_URL}/storage/v1/object/${JOB_BUCKET}/${id}.json`, { headers: { Authorization: `Bearer ${SB_KEY}`, apikey: SB_KEY } });
+  if (!r.ok) return null;
+  return await r.json().catch(() => null) as Record<string, unknown> | null;
 }
 // Decision -> destination section in Leasing | Pending Applications:
 //   approved as-is / negotiate / owner-exception / other -> Approved
@@ -705,161 +895,40 @@ app.post("*", async (c) => {
     // widget. Writes nothing; submitReport does the writes.
     if (action === "screenTask") {
       const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
-      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
-      if (!gid) return j(headers, 400, { error: "bad_task_url", message: "Paste the full Asana task link." });
+      const r = await runScreenTask(taskUrl);
+      return j(headers, r.s, r.b);
+    }
 
-      let task: { gid?: string; name?: string; notes?: string; permalink_url?: string; parent?: { gid?: string }; custom_fields?: { name?: string; number_value?: number | null }[] };
-      try {
-        task = await asanaCall("GET", `/tasks/${gid}?opt_fields=name,notes,permalink_url,parent.gid,custom_fields.name,custom_fields.number_value`) as typeof task;
-      } catch {
-        return j(headers, 404, { error: "task_not_found", message: "Could not open that Asana task. Check the link." });
-      }
-      // Advertised rent from the LU/TP parent's Starting Price field
-      let advertisedRent = "";
-      if (task.parent?.gid) {
+    // ---------- screenStart / screenPoll: the async screening job ----------
+    // Big packets legitimately outrun the 150-second gateway cap, so Generate
+    // now answers immediately with a jobId, the screening runs as a background
+    // task (EdgeRuntime.waitUntil; wall clock allows what the gateway does
+    // not), and the bench polls screenPoll for the finished draft.
+    if (action === "screenStart") {
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid0 = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid0) return j(headers, 400, { error: "bad_task_url", message: "Paste the full Asana task link." });
+      const jobId = crypto.randomUUID();
+      await jobPut(jobId, { status: "running", startedAt: new Date().toISOString() }).catch(() => {});
+      const run = (async () => {
         try {
-          const p = await asanaCall("GET", `/tasks/${task.parent.gid}?opt_fields=custom_fields.name,custom_fields.display_value`) as { custom_fields?: { name?: string; display_value?: string | null }[] };
-          const f = (p.custom_fields ?? []).find((c) => /starting price/i.test(c.name ?? "")) ??
-            (p.custom_fields ?? []).find((c) => /advertised|asking/i.test(c.name ?? ""));
-          if (f?.display_value) advertisedRent = `$${Number(f.display_value).toLocaleString("en-US")}/month`;
-        } catch { /* not on file */ }
-      }
-
-      const atts = (await asanaCall("GET", `/tasks/${gid}/attachments?opt_fields=name,download_url,size&limit=50`)
-        .catch(() => [])) as { gid?: string; name?: string; download_url?: string; size?: number }[];
-      if (!atts?.length) {
-        return j(headers, 422, { error: "no_attachments", message: "The task has no attachments. Attach the credit report and income documents first." });
-      }
-
-      const skipped: string[] = [];
-      const failures: string[] = [];
-      const docs: Extracted[] = [];
-      let totalBytes = 0;
-      // PDFs pass through to the model natively; no local parsing or
-      // rasterizing. The wasm cascade blew the edge worker's memory/CPU on
-      // real-world scans twice on 2026-08-04; the model reads PDFs itself.
-      for (const a of atts) {
-        const name = a.name ?? "attachment";
-        if (isPriorUnderwritingDoc(name)) { skipped.push(name); continue; }
-        if (!a.download_url) { failures.push(`${name}: no download URL (external link?)`); continue; }
-        if ((a.size ?? 0) > 15 * 1024 * 1024) { failures.push(`${name}: over 15 MB, attach a smaller copy`); continue; }
-        try {
-          const fr = await fetch(a.download_url);
-          if (!fr.ok) { failures.push(`${name}: download ${fr.status}`); continue; }
-          const bytes = new Uint8Array(await fr.arrayBuffer());
-          totalBytes += bytes.byteLength;
-          // 40MB total: parseDocuments batches big packets into multiple model
-          // calls now (2026-09-18), so the run cap is our memory budget, not the
-          // provider's per-request ceiling. Per-file stays 15MB (one file must
-          // still fit a single call).
-          if (totalBytes > 40 * 1024 * 1024) { failures.push(`${name}: total size cap reached, screen it in a second pass`); continue; }
-          const ct = (fr.headers.get("content-type") ?? "").toLowerCase();
-          if (ct.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/i.test(name)) docs.push(imageAsExtracted(bytes, name));
-          else docs.push(pdfAsExtracted(bytes, name));
-        } catch {
-          failures.push(`${name}: download failed`);
+          const r = await runScreenTask(taskUrl);
+          await jobPut(jobId, { status: r.s === 200 ? "done" : "error", code: r.s, result: r.b });
+        } catch (e) {
+          await jobPut(jobId, { status: "error", code: 500, result: { error: "screen_failed", message: String((e as Error)?.message ?? e).slice(0, 200) } }).catch(() => {});
         }
-      }
-      for (const d of docs) if (d.kind === "failed") failures.push(`${d.name}: ${(d as { error: string }).error}`);
-      const readable = docs.filter((d) => d.kind !== "failed");
-      if (!readable.length) {
-        return j(headers, 422, { error: "nothing_readable", message: "No attachment could be read. Check the files on the task." });
-      }
-
-      let parsed;
-      try {
-        parsed = await parseDocuments(
-          readable,
-          `Asana task: "${task.name ?? ""}". Task notes (assistant prep):\n${(task.notes ?? "").slice(0, 3000)}\nApplicant names come from the task name and the documents.`,
-        );
-      } catch (e) {
-        console.error("screenTask parse failed:", e);
-        const detail = String((e as Error).message ?? "").slice(0, 220);
-        // name the prime suspect so "remove the largest attachment" is actionable
-        // (team 2026-09-18: the old message left them guessing)
-        const sizeOf = (d: Extracted) => d.kind === "pdf" ? (d as { dataBase64: string }).dataBase64.length
-          : d.kind === "images" ? (d as { pngs: string[] }).pngs.reduce((a, p) => a + p.length, 0) : 0;
-        const biggest = readable.slice().sort((a, b) => sizeOf(b) - sizeOf(a))[0];
-        return j(headers, 502, {
-          error: "parse_failed",
-          message: `Document reading failed${detail ? ` (${detail})` : ""}. The read was already retried once, so this is usually one problem file: remove the largest attachment${biggest ? ` ("${biggest.name}")` : ""} and rerun, or try again in a few minutes.`,
-        });
-      }
-      // Buildium application record is the deterministic source for the
-      // snapshot: DesiredMoveInDate and the Animals / Mascotas section beat
-      // model reads of the PDFs (pets flip-flopped between runs otherwise).
-      // The task's Applicant ID field points at the group/applicant.
-      {
-        const refId = (task.custom_fields ?? []).find((c) => /applicant id/i.test(c.name ?? ""))?.number_value;
-        if (refId != null) {
-          try {
-            let memberIds: number[] = [];
-            try {
-              const grp = await bGet(`/applicants/groups/${refId}`) as { Applicants?: { Id?: number }[] };
-              memberIds = (grp.Applicants ?? []).map((m) => m.Id).filter((x): x is number => x != null);
-            } catch { memberIds = [refId]; }
-            const petParts: string[] = [];
-            for (const applicantId of memberIds.slice(0, 6)) {
-              const rec = await bGet(`/applicants/${applicantId}`) as Applicant;
-              const appId = (rec.Applications ?? [])[0]?.Id;
-              if (appId == null) continue;
-              const app = await bGet(`/applicants/${applicantId}/applications/${appId}`) as { Application?: { SectionLabel?: string; SectionResponses?: { SectionFields?: { FieldCategoryType?: string | null; FieldLabel?: string; Value?: string }[] }[] }[] };
-              for (const sec of app.Application ?? []) {
-                const isAnimals = /^animals/i.test(sec.SectionLabel ?? "");
-                for (const resp of sec.SectionResponses ?? []) {
-                  for (const f of resp.SectionFields ?? []) {
-                    if (f.FieldCategoryType === "DesiredMoveInDate" && f.Value && !parsed.applicationInfo?.desiredMoveInDate) {
-                      parsed.applicationInfo = { ...parsed.applicationInfo, desiredMoveInDate: f.Value.slice(0, 10) };
-                    }
-                    if (isAnimals && f.Value && f.Value.trim() && !/^(yes|no|none|true|false|0)$/i.test(f.Value.trim())) {
-                      const v = f.Value.trim();
-                      petParts.push(/^\d{1,3}$/.test(v) ? `${v} lbs` : v);
-                    }
-                  }
-                }
-              }
-            }
-            if (petParts.length) {
-              parsed.applicationInfo = { ...parsed.applicationInfo, pets: petParts.join(", ") };
-            } else if (memberIds.length) {
-              parsed.applicationInfo = { ...parsed.applicationInfo, pets: parsed.applicationInfo?.pets || "None declared on the application" };
-            }
-          } catch { /* model values stand */ }
-        }
-      }
-
-      const asOf = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10); // Seattle-ish
-      const result = underwrite({ applicants: parsed.applicants, asOf });
-
-      // v2 (2026-09-20): mirror the machine figures onto the application task's
-      // fields so the Manager Review criteria card reads them. Overwritten on
-      // every Generate; manager-editable in Asana afterwards. Best-effort.
-      try {
-        const qiSum = (result.applicants ?? []).reduce((s, a) => s + (Number(a.qualifyingMonthly) || 0), 0);
-        const cfW: Record<string, number> = {};
-        if (result.medianCredit != null) cfW[F_MEDIAN_CREDIT] = Math.round(Number(result.medianCredit));
-        if (qiSum > 0) cfW[F_QUAL_INCOME] = Math.round(qiSum);
-        if (Object.keys(cfW).length) await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: cfW });
-      } catch { /* the card falls back to blank fields */ }
-
-      const integrityFlags: string[] = [];
-      for (const s of skipped) {
-        integrityFlags.push(isRestrictedDoc(s)
-          ? `Skipped "${s}" unread. Restricted screening content is not considered.`
-          : `Skipped "${s}" unread. Prior-underwriting reports have known calculation errors; figures re-derived from source documents.`);
-      }
-      for (const f of failures) integrityFlags.push(`Attachment not read: ${f}.`);
-
-      const lastNames = parsed.applicants.map((a) => a.name.split(" ").at(-1) ?? "").join("-").toUpperCase().slice(0, 24);
-      const reportId = `SW-${asOf.replace(/-/g, "")}-${lastNames || gid.slice(-6)}`;
-      const report = renderReport(result, parsed, { reportId, date: asOf, integrityFlags, advertisedRent });
-
-      return j(headers, 200, {
-        report, reportId, result,
-        warnings: parsed.warnings,
-        files: { read: readable.map((d) => d.name), skipped, failed: failures },
-        task: { gid, name: task.name ?? "", url: task.permalink_url ?? taskUrl },
-      });
+      })();
+      // deno-lint-ignore no-explicit-any
+      const er = (globalThis as any).EdgeRuntime;
+      if (er?.waitUntil) er.waitUntil(run);
+      return j(headers, 200, { ok: true, jobId });
+    }
+    if (action === "screenPoll") {
+      const jobId = String((body as { jobId?: unknown }).jobId ?? "");
+      if (!/^[0-9a-f-]{36}$/.test(jobId)) return j(headers, 400, { error: "bad_job" });
+      const jb = await jobGet(jobId);
+      if (!jb) return j(headers, 200, { ok: true, status: "running" });
+      return j(headers, 200, { ok: true, ...jb });
     }
 
     // ---------- intake: automated new-application scanner ----------
@@ -1421,17 +1490,19 @@ ${SIG}`,
           let offset = "";
           for (let page = 0; page < 5; page++) {
             const res = await fetch(
-              `${ASANA}${path}?completed=false&limit=100&opt_fields=name,permalink_url,due_on,custom_fields.gid,custom_fields.enum_value.name,custom_fields.enum_value.color${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+              `${ASANA}${path}?completed=false&limit=100&opt_fields=name,permalink_url,due_on,custom_fields.gid,custom_fields.enum_value.name,custom_fields.enum_value.color,custom_fields.date_value${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
               { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
             );
-            const json = await res.json().catch(() => ({})) as { data?: { gid?: string; name?: string; permalink_url?: string; due_on?: string; custom_fields?: { gid?: string; enum_value?: { name?: string; color?: string } | null }[] }[]; next_page?: { offset?: string } | null };
+            const json = await res.json().catch(() => ({})) as { data?: { gid?: string; name?: string; permalink_url?: string; due_on?: string; custom_fields?: { gid?: string; enum_value?: { name?: string; color?: string } | null; date_value?: { date?: string; date_time?: string } | null }[] }[]; next_page?: { offset?: string } | null };
             if (!res.ok) throw new Error(`asana ${path} page ${page}`);
             for (const t of json.data ?? []) {
               if (t.gid && !seen.has(t.gid) && filter(t.name ?? "")) {
                 seen.add(t.gid);
                 const ev = (t.custom_fields ?? []).find((c) => c.gid === STATUS2_FIELD)?.enum_value;
                 const st = ev?.name ? [{ name: ev.name, color: ev.color ?? "" }] : [];
-                out.push({ name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "", status: st as never });
+                const dv = (t.custom_fields ?? []).find((c) => c.gid === F_REVIEW_READY)?.date_value;
+                const ready = dv?.date_time ?? dv?.date ?? "";
+                out.push({ name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "", status: st, reviewReady: ready } as never);
               }
             }
             offset = json.next_page?.offset ?? "";
@@ -1440,6 +1511,12 @@ ${SIG}`,
         };
         await collect(`/sections/${PENDING_MGR_SECTION}/tasks`, () => true);
         await collect(`/sections/${PENDING_APPLICATIONS_SECTION}/tasks`, (n) => /^Pending Mgr Review/i.test(n));
+        // first-in-time: oldest review-ready first; unstamped rows sort last
+        out.sort((a, b) => {
+          const ra = (a as { reviewReady?: string }).reviewReady || "9999";
+          const rb = (b as { reviewReady?: string }).reviewReady || "9999";
+          return ra.localeCompare(rb);
+        });
         return j(headers, 200, { queue: out });
       } catch (e) {
         console.error("mgrQueue failed:", e);
@@ -2331,6 +2408,18 @@ ${built.email.body}`;
         }
         await asanaCall("PUT", `/tasks/${gid}`, { assignee: assignee.gid, due_on: dueOn });
         await setStatus_(gid, [STATUS.pendingMgr]);
+        // first-complete timestamp: fill-blank-only so a revised resubmit never
+        // loses the application's original place in line (FIT)
+        try {
+          const t9 = await asanaCall("GET", `/tasks/${gid}?opt_fields=custom_fields.gid,custom_fields.display_value`) as { custom_fields?: { gid?: string; display_value?: string | null }[] };
+          const cur9 = String((t9.custom_fields ?? []).find((x) => x.gid === F_REVIEW_READY)?.display_value ?? "").trim();
+          if (!cur9) {
+            const nowIso = new Date().toISOString();
+            await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: { [F_REVIEW_READY]: { date_time: nowIso } } }).catch(async () => {
+              await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: { [F_REVIEW_READY]: { date: nowIso.slice(0, 10) } } }).catch(() => {});
+            });
+          }
+        } catch { /* the queue falls back to insertion order */ }
         const cur = { name: (await asanaCall("GET", `/tasks/${gid}?opt_fields=name`) as { name?: string }).name };
         return j(headers, 200, {
           submitted: true,
