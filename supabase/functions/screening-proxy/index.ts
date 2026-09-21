@@ -257,6 +257,7 @@ async function leaseContext(gid: string) {
     listedRent: null as number | null, securityDeposit: null as number | null,
     lastMonthRent: "", petRent: null as number | null, petPolicy: "", concessions: "", lsUrl: "",
     unitId: "",
+    landscaping: "", utilities: "", utilProviders: "", leaseTermsText: "", internetProvider: "",
   };
   if (ctx.luGid) {
     try {
@@ -281,6 +282,15 @@ async function leaseContext(gid: string) {
           ctx.petPolicy = lstr(LS_PET_POLICY);
           ctx.concessions = lstr(LS_CONCESSIONS);
           ctx.lsUrl = ls.permalink_url ?? "";
+          // settings context for the Draft Lease form (Brittany 2026-09-21):
+          // landscaping / utilities / lease terms come off Listing Settings so
+          // the agent verifies against the source, not memory
+          ctx.landscaping = lstr("1217741708866530");   // Landscaping Responsibility
+          ctx.utilities = lstr("1217515337017428");     // Utility Listing Description
+          ctx.utilProviders = lstr("1217921018573269"); // Utility Providers
+          ctx.leaseTermsText = lstr("1217446589881673"); // Lease Terms
+          const netM = ctx.utilities.match(/internet:[^.\n]*\bto\s+([^.\n,;]+)/i);
+          ctx.internetProvider = (netM?.[1] ?? "").trim();
         }
       }
     } catch { /* partial context renders a partial form */ }
