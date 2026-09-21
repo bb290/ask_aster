@@ -1313,7 +1313,7 @@ app.post("*", async (c) => {
       // one accountability task listing every late WAR, grouped by agent, in
       // Aster's Audits - the write-up starting point (Brittany 2026-08-27)
       const wq = await buildWarQueue();
-      const late = (wq.rows as Array<{ address: string; agent: string; state: string; dom: number | null; warDue: string | null; warMissing: boolean | null }>).filter((r) => r.warMissing === true);
+      const late = (wq.rows as Array<{ gid: string; address: string; agent: string; agentGid?: string; state: string; dom: number | null; warDue: string | null; warMissing: boolean | null }>).filter((r) => r.warMissing === true);
       const todayL = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
       if (!late.length) return j(headers, 200, { ok: true, created: false, count: 0, agents: 0, message: "No late weekly activity reports right now." });
       const AUD = "1214497250193277"; // Aster's Audits
@@ -1341,7 +1341,44 @@ app.post("*", async (c) => {
         due_on: todayL,
         notes: L.join("\n"),
       });
-      return j(headers, 200, { ok: true, created: true, count: late.length, agents: Object.keys(by).length, url: `https://app.asana.com/0/0/${tL.gid}` });
+      // Per-agent subtask, assigned + due today, with an @mention comment that
+      // also cc's the property's team lead(s) from Listing Settings
+      // (Brittany 2026-09-21).
+      let subtasksMade = 0;
+      for (const agentName of Object.keys(by).sort()) {
+        const rows9 = by[agentName] as Array<{ gid: string; address: string; agentGid?: string; warDue: string | null; state: string; dom: number | null }>;
+        const agentGid = (rows9.find((r) => r.agentGid)?.agentGid ?? "").replace(/\D/g, "");
+        // team leads for these properties: LU -> Unit ID -> LS Team Lead
+        const leadGids = new Set<string>();
+        for (const r9 of rows9.slice(0, 10)) {
+          try {
+            const lu9 = await asana("GET", `/tasks/${r9.gid}?opt_fields=custom_fields.gid,custom_fields.display_value`) as { custom_fields?: Array<{ gid: string; display_value: string | null }> };
+            const uid9 = String((lu9.custom_fields ?? []).find((f) => f.gid === "1213183515622826")?.display_value ?? "").replace(/\D/g, "");
+            if (!uid9) continue;
+            const hits9 = ((await asana("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=1217446710785429&custom_fields.1213183515622826.value=${uid9}&opt_fields=custom_fields.gid,custom_fields.people_value.gid`)) ?? []) as Array<{ custom_fields?: Array<{ gid: string; people_value?: Array<{ gid: string }> }> }>;
+            for (const p9 of (hits9[0]?.custom_fields ?? []).find((f) => f.gid === "1217446711292696")?.people_value ?? []) {
+              if (p9.gid && p9.gid !== agentGid) leadGids.add(p9.gid);
+            }
+          } catch { /* mention the agent alone */ }
+        }
+        try {
+          const bullets = rows9.map((r) => `\u2022 ${r.address} - ${r.warDue ? "was due " + r.warDue : "never submitted"}`);
+          const sub9 = await asana("POST", "/tasks", {
+            name: "Submit Overdue Activity Report(s)",
+            parent: tL.gid,
+            ...(agentGid ? { assignee: agentGid } : {}),
+            due_on: todayL,
+            notes: `${agentName}: the weekly activity report(s) below are overdue. Submit today from the WAR tool on /field.\n\n${bullets.join("\n")}`,
+          }) as { gid: string };
+          const mention = agentGid ? `<a data-asana-gid="${agentGid}"/>` : agentName;
+          const ccLeads = [...leadGids].map((g) => `<a data-asana-gid="${g}"/>`).join(" ");
+          await asana("POST", `/tasks/${sub9.gid}/stories`, {
+            html_text: `<body>${mention} the weekly activity report(s) on this task are overdue; submit today from the WAR tool.${ccLeads ? `\ncc ${ccLeads}` : ""}</body>`,
+          }).catch(() => null);
+          subtasksMade++;
+        } catch { /* the parent write-up still stands */ }
+      }
+      return j(headers, 200, { ok: true, created: true, count: late.length, agents: Object.keys(by).length, subtasks: subtasksMade, url: `https://app.asana.com/0/0/${tL.gid}` });
     }
 
     // deduped builder shared by warQueue + execLateWars (hoisted; cached 2 min)
