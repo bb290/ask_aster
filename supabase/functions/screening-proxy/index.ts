@@ -1801,6 +1801,9 @@ ${SIG}`,
         }
         if (!tplId) return j(headers, 400, { error: "no_template", message: `No PandaDoc template named "Current Sagareus Lease (${namesList.length} resident)".` });
         const money = (v: number | null) => v == null ? "" : `$${Math.round(v).toLocaleString("en-US")}`;
+        // token values carry NO dollar sign: the template embeds the $ next to
+        // each token, so a $ here rendered doubled (team feedback 2026-09-21)
+        const num = (v: number | null) => v == null ? "" : Math.round(v).toLocaleString("en-US");
         const deposit = n("deposit"), lastMonth = n("lastMonth"), petRent = n("petRent"), flatFee = n("flatFee") ?? ctx.flatFee, prorated = n("prorated"), rentCredit = n("rentCredit");
         const totalRent = rent + (petRent ?? 0) + (flatFee ?? 0);
         const depPlusLast = (deposit ?? 0) + (lastMonth ?? 0);
@@ -1809,20 +1812,21 @@ ${SIG}`,
         const tokens: { name: string; value: string }[] = [
           { name: "Property Address", value: ctx.address },
           { name: "Zip", value: zip },
-          { name: "Rent", value: money(rent) },
-          { name: "Total Rent", value: money(totalRent) },
-          { name: "Refundable Deposit", value: money(deposit) },
-          { name: "Last Month Rent", value: lastMonth != null ? money(lastMonth) : "Not collected" },
+          { name: "Rent", value: num(rent) },
+          { name: "Total Rent", value: num(totalRent) },
+          { name: "Refundable Deposit", value: num(deposit) },
+          { name: "Last Month Rent", value: lastMonth != null ? num(lastMonth) : "Not collected" },
           { name: "Lease Start Date", value: leaseStart },
           { name: "Lease End Date", value: leaseEnd },
-          { name: "Prorated 1st mo rent", value: money(prorated) },
+          { name: "Prorated 1st mo rent", value: num(prorated) },
           { name: "Prorated rent due", value: "Within 48 hours of lease signing" },
-          { name: "Total Move-in", value: money(totalMoveIn) },
-          { name: "deposit + last month rent $", value: money(depPlusLast) },
-          { name: "Flat Fee Utility Charge", value: flatFee != null ? money(flatFee) : "" },
-          { name: "Pet Rent", value: petRent != null ? money(petRent) : "" },
+          { name: "Total Move-in", value: num(totalMoveIn) },
+          { name: "deposit + last month rent $", value: num(depPlusLast) },
+          { name: "Flat Fee Utility Charge", value: flatFee != null ? num(flatFee) : "" },
+          { name: "Pet Rent", value: petRent != null ? num(petRent) : "" },
+          { name: "per pet rent", value: petRent != null ? num(petRent) : "" },
           { name: "Pets at Move-In (# type)", value: s("pets") },
-          { name: "Rent Credit", value: rentCredit != null ? money(rentCredit) : "" },
+          { name: "Rent Credit", value: rentCredit != null ? num(rentCredit) : "" },
           { name: "OPTIONAL | General Addendum Terms", value: s("generalAddendum") },
         ];
         namesList.forEach((full, i) => {
