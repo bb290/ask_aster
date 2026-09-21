@@ -1969,23 +1969,50 @@ ${SIG}`,
       const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
       if (!gid) return j(headers, 400, { error: "bad_task_url" });
       try {
-        const atts = (await asanaCall("GET", `/tasks/${gid}/attachments?opt_fields=name,view_url,permanent_url,download_url,created_at`)) as Array<{ name?: string; view_url?: string; permanent_url?: string; download_url?: string; created_at?: string }>;
+        const atts = (await asanaCall("GET", `/tasks/${gid}/attachments?opt_fields=name,view_url,permanent_url,download_url,created_at`)) as Array<{ gid?: string; name?: string; view_url?: string; permanent_url?: string; download_url?: string; created_at?: string }>;
         const kindOf = (n: string) => /\.pdf$/i.test(n) ? "pdf" : /\.(png|jpe?g|gif|webp|heic)$/i.test(n) ? "image" : "other";
         return j(headers, 200, {
           ok: true,
           // download_url is short-lived (minutes): the overlay fetches this fresh
           // on open and re-fetches if a preview dies
           docs: (atts ?? []).map((a) => ({
+            gid: a.gid ?? "",
             name: a.name ?? "attachment",
             url: a.view_url || a.permanent_url || "",
-            dl: a.download_url ?? "",
             kind: kindOf(a.name ?? ""),
             date: (a.created_at ?? "").slice(0, 10),
-          })).filter((a) => a.url || a.dl),
+          })).filter((a) => a.gid),
         });
       } catch (e) {
         console.error("mgrDocs failed:", e);
         return j(headers, 502, { error: "asana_failed", message: "Could not load the documents." });
+      }
+    }
+
+    // ---------- docFile: stream an attachment's bytes for the overlay preview ----------
+    // Asana's app URLs refuse iframes and the signed download URLs are short
+    // lived, so the overlay previews from a blob fetched through here.
+    if (action === "docFile") {
+      const attGid = String((body as { attGid?: unknown }).attGid ?? "").replace(/\D/g, "");
+      if (!attGid) return j(headers, 400, { error: "bad_attachment" });
+      try {
+        const a = await asanaCall("GET", `/attachments/${attGid}?opt_fields=name,download_url`) as { name?: string; download_url?: string };
+        if (!a.download_url) return j(headers, 404, { error: "no_download", message: "No downloadable file (external link?)." });
+        const fr = await fetch(a.download_url);
+        if (!fr.ok) return j(headers, 502, { error: "fetch_failed", message: "The file store did not answer." });
+        const bytes = new Uint8Array(await fr.arrayBuffer());
+        if (bytes.byteLength > 15 * 1024 * 1024) return j(headers, 413, { error: "too_big", message: "Over 15 MB; open it in Asana instead." });
+        const n = (a.name ?? "").toLowerCase();
+        const ct = n.endsWith(".pdf") ? "application/pdf"
+          : /\.jpe?g$/.test(n) ? "image/jpeg"
+          : n.endsWith(".png") ? "image/png"
+          : n.endsWith(".gif") ? "image/gif"
+          : n.endsWith(".webp") ? "image/webp"
+          : (fr.headers.get("content-type") ?? "application/octet-stream");
+        return new Response(bytes, { status: 200, headers: { ...headers, "Content-Type": ct, "Content-Disposition": "inline" } });
+      } catch (e) {
+        console.error("docFile failed:", e);
+        return j(headers, 502, { error: "asana_failed", message: "Could not fetch the file." });
       }
     }
 
