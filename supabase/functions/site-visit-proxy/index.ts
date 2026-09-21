@@ -1136,7 +1136,7 @@ app.post("*", async (c) => {
       const LD_F = "1213182838328964";  // 💁 List Date
       const UID_F = "1213183515622826"; // Unit ID
       const moIdx = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string>, doneByUid: {} as Record<string, string>, doneByAddr: {} as Record<string, string>, masterByUid: {} as Record<string, string> }));
-      type QRow = { gid: string; url: string; address: string; unitId: string; teamLead: string; lsGid: string; listDate: string; state: string; doNotList: string; dom: number | null; moveOut: string | null; occupiedUntil?: string; modDate: string | null; modOverdue: boolean; firstWeek: boolean; updDate: string | null; signedDate: string; targetListDate?: string; warGid: string; warDue: string | null; warMissing: boolean | null };
+      type QRow = { gid: string; url: string; address: string; unitId: string; teamLead: string; agent: string; lsGid: string; listDate: string; state: string; doNotList: string; dom: number | null; moveOut: string | null; occupiedUntil?: string; modDate: string | null; modOverdue: boolean; firstWeek: boolean; updDate: string | null; signedDate: string; targetListDate?: string; warGid: string; warDue: string | null; warMissing: boolean | null };
       const rows: QRow[] = [];
       let offQ = "";
       // completed_since 90 days back (not "now"): the LU task is COMPLETED at lease
@@ -1275,7 +1275,7 @@ app.post("*", async (c) => {
           const preListing = !vacant && !listed && !leaseSigned;
           const modOverdue = doNotList || preListing || (cycleDays != null && cycleDays <= 6) ? false
             : (!modDate || Math.floor((Date.parse(todayQ + "T12:00:00Z") - Date.parse(modDate + "T12:00:00Z")) / 86400000) >= 7);
-          rows.push({ gid: t.gid, url: `https://app.asana.com/0/0/${t.gid}`, address, unitId, teamLead: "", lsGid: "", listDate, state, doNotList, dom, moveOut: /^\d{4}-\d{2}-\d{2}$/.test(moSched) ? moSched : (moDoneAll || null), occupiedUntil, modDate, modOverdue, firstWeek: state === "leasing" && dom != null && dom <= 6, updDate, signedDate: leaseSigned && /^\d{4}-\d{2}-\d{2}$/.test(lsdQ) ? lsdQ : "", warGid: "", warDue: null, warMissing: null });
+          rows.push({ gid: t.gid, url: `https://app.asana.com/0/0/${t.gid}`, address, unitId, teamLead: "", agent: String(t.assignee?.name ?? ""), lsGid: "", listDate, state, doNotList, dom, moveOut: /^\d{4}-\d{2}-\d{2}$/.test(moSched) ? moSched : (moDoneAll || null), occupiedUntil, modDate, modOverdue, firstWeek: state === "leasing" && dom != null && dom <= 6, updDate, signedDate: leaseSigned && /^\d{4}-\d{2}-\d{2}$/.test(lsdQ) ? lsdQ : "", warGid: "", warDue: null, warMissing: null });
         }
         offQ = j0.next_page?.offset ?? "";
         if (!offQ) break;
