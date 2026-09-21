@@ -1896,7 +1896,7 @@ app.post("*", async (c) => {
       const text = String(body.text ?? "").trim().slice(0, 4000);
       const address = String(body.address ?? "").trim().slice(0, 120);
       if (text.length < 5) return j(headers, 400, { error: "missing_fields" });
-      const SV_DEV_TASK = "1216867978492127";            // "Site Visit" under Field Tools | Bugs & Feature Requests
+      const SV_DEV_TASK = "1216867978492127";            // "Site Visit" under Team Tools | Bugs & Feature Requests (renamed from Field Tools 2026-09-19)
       const BB = "1203784854198936";                     // Brittany
       const todayStr = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
       const sub = await asana("POST", `/tasks/${SV_DEV_TASK}/subtasks`, {
@@ -1917,7 +1917,7 @@ app.post("*", async (c) => {
       if (text.length < 5) return j(headers, 400, { error: "missing_fields" });
       const BB = "1203784854198936";                     // Brittany
       const cfg = action === "plFeedback"
-        ? { task: "1216868072927956", label: "PreListing" }      // "PreListing (Draft Listing & Report)" dev task
+        ? { task: "1216868072927956", label: "PreListing" }      // "Leasing Workbench" dev task (renamed 2026-09-20)
         : { task: "1216868072929681", label: "Turn Over" };      // "Turn Over Complete (Inspection)" dev task
       // bench picker (Brittany 2026-09-18): the one Team Feedback button serves
       // every bench on /work-bench, so the submitter names the bench and the
