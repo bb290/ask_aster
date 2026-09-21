@@ -1858,7 +1858,8 @@ ${SIG}`,
         // each token, so a $ here rendered doubled (team feedback 2026-09-21)
         const num = (v: number | null) => v == null ? "" : Math.round(v).toLocaleString("en-US");
         const deposit = n("deposit"), lastMonth = n("lastMonth"), petRent = n("petRent"), flatFee = n("flatFee") ?? ctx.flatFee, prorated = n("prorated"), rentCredit = n("rentCredit");
-        const totalRent = rent + (petRent ?? 0) + (flatFee ?? 0);
+        const parkingRent = n("parkingRent"), storageRent = n("storageRent");
+        const totalRent = rent + (petRent ?? 0) + (flatFee ?? 0) + (parkingRent ?? 0) + (storageRent ?? 0);
         const depPlusLast = (deposit ?? 0) + (lastMonth ?? 0);
         const totalMoveIn = depPlusLast + (prorated ?? 0);
         const zip = (ctx.address.match(/\b(\d{5})(?:-\d{4})?\s*$/) ?? [])[1] ?? "";
@@ -1879,6 +1880,14 @@ ${SIG}`,
           { name: "Pet Rent", value: petRent != null ? num(petRent) : "" },
           { name: "per pet rent", value: petRent != null ? num(petRent) : "" },
           { name: "Pets at Move-In (# type)", value: s("pets") },
+          { name: "Parking Type(s):", value: s("parkingTypes") },
+          { name: "opt | Assigned Parking Space(s)", value: s("parkingSpaces") },
+          { name: "Parking Rent", value: parkingRent != null ? num(parkingRent) : "" },
+          { name: "Storage Rent", value: storageRent != null ? num(storageRent) : "" },
+          { name: "opt | Storage Description", value: s("storageDesc") },
+          { name: "Mailbox Location", value: s("mailboxLocation") },
+          { name: "opt | Mailbox Number", value: s("mailboxNumber") },
+          { name: "opt | Internet Provider", value: s("internetProvider") },
           { name: "Rent Credit", value: rentCredit != null ? num(rentCredit) : "" },
           { name: "OPTIONAL | General Addendum Terms", value: s("generalAddendum") },
         ];
@@ -2424,7 +2433,7 @@ ${built.email.body}`;
         // open LU first; a cycle completed at signing still matches (2026-09-21)
         if (!lu && address) lu = matchLu(await doneLuTasks().catch(() => []), address).hit ?? null;
         if (!lu && address) lu = await findLuByTypeahead(address).catch(() => null);
-        let leaseSigned = "", moveInDate = "", unitId = "", buildiumUrl = "";
+        let leaseSigned = "", moveInDate = "", unitId = "", buildiumUrl = "", sagareusUrl = "";
         if (lu) {
           try {
             const luFull = await asanaCall("GET", `/tasks/${lu.gid}?opt_fields=name,custom_fields.gid,custom_fields.name,custom_fields.display_value`) as { custom_fields?: Array<{ gid: string; name?: string; display_value?: string | null }> };
@@ -2433,6 +2442,7 @@ ${built.email.body}`;
             leaseSigned = get2(/lease signed/i);
             moveInDate = get2(/move in date/i);
             unitId = get2(/unit id/i);
+            sagareusUrl = get2(/sagareus listing/i);
             if (unitId) {
               try {
                 const u2 = await bGet(`/rentals/units/${encodeURIComponent(unitId)}`) as { PropertyId?: number };
@@ -2447,7 +2457,7 @@ ${built.email.body}`;
           status: evS?.name ? [{ name: evS.name, color: evS.color ?? "" }] : [],
           names, address, approvedAround: (t.modified_at ?? "").slice(0, 10),
           luGid: lu?.gid ?? "", luName: lu?.name ?? "", luUrl: lu ? `https://app.asana.com/0/0/${lu.gid}` : "",
-          leaseSigned, moveInDate, unitId, buildiumUrl,
+          leaseSigned, moveInDate, unitId, buildiumUrl, sagareusUrl,
         });
       });
       for (let i = 0; i < work.length; i += 5) await Promise.all(work.slice(i, i + 5).map((fn) => fn()));
