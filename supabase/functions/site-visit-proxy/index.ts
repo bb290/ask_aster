@@ -3360,6 +3360,31 @@ app.post("*", async (c) => {
     // for submit (Brittany 2026-08-14): the code writes to the Unit Settings Keybox
     // Code field the moment it is typed, the video posts to the Conduct subtask the
     // moment the upload finishes. moSubmit re-writes both later; all idempotent.
+    // ---------- moFeedback: team feedback from the Turn Over Dispatch widget ----------
+    // Lands as a comment on the Turn Over Dispatch subtask of Team Tools | Bugs &
+    // Feature Requests (Improvements project); find-or-create by name so a
+    // reshuffle never loses feedback (Brittany 2026-09-21).
+    if (action === "moFeedback") {
+      const fbText = String(body.text ?? "").trim().slice(0, 4000);
+      const fbFrom = String(body.sender ?? "").trim().slice(0, 160);
+      if (!fbText) return j(headers, 400, { error: "missing_text" });
+      const FB_PARENT = "1216868072846283"; // Team Tools | Bugs & Feature Requests
+      try {
+        const fbSubs = ((await asana("GET", `/tasks/${FB_PARENT}/subtasks?limit=100&opt_fields=name`)) ?? []) as Array<{ gid: string; name: string }>;
+        let fbTask = fbSubs.find((t) => /turn\s*over\s*dispatch/i.test(t.name)) ?? null;
+        if (!fbTask) {
+          fbTask = await asana("POST", `/tasks/${FB_PARENT}/subtasks`, {
+            name: "Turn Over Dispatch",
+            notes: "Bugs and feature requests for the Turn Over Dispatch field tool on /field.",
+          });
+        }
+        await postStory(fbTask!.gid, fbText + "\n\n- " + (fbFrom || "unnamed") + ", via the Turn Over Dispatch feedback button");
+        return j(headers, 200, { ok: true });
+      } catch {
+        return j(headers, 200, { ok: false, error: "feedback_failed" });
+      }
+    }
+
     // ---------- moUsers: Asana workspace users for the Inspector Name dropdown ----------
     // Always in sync with Asana (Brittany 2026-09-19); @sagareus.com humans only.
     if (action === "moUsers") {

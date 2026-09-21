@@ -1067,14 +1067,22 @@ app.post("/onboard-proxy", async (c) => {
       if (!TEAM_KEY || c.req.header("x-sv-key") !== TEAM_KEY) return j(headers, 401, { error: "bad_key" });
       const text = String(body.text ?? "").trim().slice(0, 4000);
       if (text.length < 5) return j(headers, 400, { error: "missing_fields" });
-      const OB_DEV_TASK = "1216867998034878";            // "Onboarding Wizard" under Field Tools | Bugs & Feature Requests
+      // tool routing (Brittany 2026-09-19): the same action serves the Onboarding
+      // Wizard AND the Biz Dev Workbench; each tool's feedback lands on its own dev
+      // task under Team Tools | Bugs & Feature Requests (renamed from Field Tools 2026-09-19), same as pl/toFeedback.
+      const cfg = String(body.tool ?? "") === "bizdev"
+        ? { task: "1218655969980670", label: "Biz Dev Workbench" }
+        : { task: "1216867998034878", label: "Onboarding Wizard" };
+      const address = String(body.address ?? "").trim().slice(0, 120);
       const BB = "1203784854198936";                     // Brittany
       const todayPT = obDuePT(0);
-      const sub = await asana("POST", `/tasks/${OB_DEV_TASK}/subtasks`, {
-        name: `Onboarding Wizard Feedback // ${todayPT}`,
+      const sub = await asana("POST", `/tasks/${cfg.task}/subtasks`, {
+        name: `${cfg.label} Feedback // ${todayPT}`,
         assignee: BB,
         due_on: todayPT,
-        notes: text + "\n\nSubmitted via the Onboarding Wizard Team Feedback button (staff view). Done by Claude on behalf of the submitting agent.",
+        notes: text
+          + (address ? `\n\nDeal loaded at the time: ${address}` : "")
+          + `\n\nSubmitted via the ${cfg.label} Team Feedback button (staff view). Done by Claude on behalf of the submitting agent.`,
       });
       return j(headers, 200, { ok: true, url: `https://app.asana.com/0/0/${sub.gid}` });
     }
