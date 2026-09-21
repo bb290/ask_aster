@@ -1365,11 +1365,13 @@ app.post("*", async (c) => {
         } catch { notesD.push("Buildium delist failed; delist by hand."); }
       } else notesD.push("No Unit ID; delist in Buildium by hand.");
       const LD_FD = "1213182838328964"; // List Date
-      let agentD = "", addressD = "", oldList = "";
+      let agentD = "", addressD = "", oldList = "", ownerEmailD = "", ownerNameD = "";
       try {
-        const luT = await asana("GET", `/tasks/${luGidD}?opt_fields=name,assignee.gid,custom_fields.gid,custom_fields.display_value`) as { name?: string; assignee?: { gid?: string } | null; custom_fields?: Array<{ gid: string; display_value: string | null }> };
+        const luT = await asana("GET", `/tasks/${luGidD}?opt_fields=name,assignee.gid,custom_fields.gid,custom_fields.name,custom_fields.display_value`) as { name?: string; assignee?: { gid?: string } | null; custom_fields?: Array<{ gid: string; name?: string; display_value: string | null }> };
         addressD = addressFromTaskName(String(luT.name ?? "")) || String(luT.name ?? "");
         agentD = String(luT.assignee?.gid ?? "");
+        ownerEmailD = String((luT.custom_fields ?? []).find((f) => /owner e-?mail/i.test(String(f.name ?? "")))?.display_value ?? "").replace(/;/g, ",").trim();
+        ownerNameD = String((luT.custom_fields ?? []).find((f) => /owner name/i.test(String(f.name ?? "")))?.display_value ?? "").trim();
         oldList = String((luT.custom_fields ?? []).find((f) => f.gid === LD_FD)?.display_value ?? "").slice(0, 10);
         await asana("PUT", `/tasks/${luGidD}`, { custom_fields: { [LD_FD]: null } });
         notesD.push(`List Date cleared${oldList ? ` (was ${oldList})` : ""}; Go Live re-stamps it at relist, so DOM restarts.`);
@@ -1410,7 +1412,20 @@ app.post("*", async (c) => {
       } catch { /* comment is best-effort */ }
       execCache = null;
       warqCache = null;
-      return j(headers, 200, { ok: true, reason: REASONS[reasonD], notes: notesD, address: addressD });
+      return j(headers, 200, { ok: true, reason: REASONS[reasonD], notes: notesD, address: addressD, ownerEmail: ownerEmailD, ownerName: ownerNameD });
+    }
+
+    // ---------- execDelistEmail: log the owner delist email copy on the LU ----------
+    if (action === "execDelistEmail") {
+      const luGidE = String(body.taskGid ?? "").replace(/\D/g, "");
+      const copyE = String(body.emailCopy ?? "").trim().slice(0, 8000);
+      if (!luGidE || !copyE) return j(headers, 400, { error: "missing_fields" });
+      try {
+        await asana("POST", `/tasks/${luGidE}/stories`, { text: `OWNER DELIST EMAIL (Execute + Adapt bench)\nSent from listings@sagareus.com; copy below.\n\n${copyE}` });
+        return j(headers, 200, { ok: true, loggedOn: "the LU task" });
+      } catch {
+        return j(headers, 502, { error: "asana_failed", message: "Could not post the email copy." });
+      }
     }
 
     if (action === "execLateWars") {
