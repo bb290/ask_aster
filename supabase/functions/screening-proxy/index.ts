@@ -1667,7 +1667,9 @@ ${SIG}`,
         const end = new Date(Date.parse(start + "T12:00:00Z") + Math.round(term / 12 * 364) * 86400000).toISOString().slice(0, 10);
         const rent = ctx.approvedRent ?? ctx.listedRent;
         const deposit = ctx.securityDeposit ?? (rent != null ? Math.round(rent) - 100 : null);
-        const lastMonth = ctx.tacoma ? null : (rent != null ? Math.round(rent) : null);
+        // last month follows the Listing Settings call ("Not required" = none),
+        // same rule as the Draft Lease form defaults (2026-09-21)
+        const lastMonth = (ctx.tacoma || /not required|none|^no$/i.test(ctx.lastMonthRent)) ? null : (rent != null ? Math.round(rent) : null);
         const planMonths = ctx.paymentPlanMonths != null && ctx.paymentPlanMonths >= 2 ? Math.min(6, Math.round(ctx.paymentPlanMonths)) : 0;
         const namesList = ctx.names.split(",").map((x) => x.trim()).filter(Boolean);
         const emailsList = ctx.emails.split(/[,;\s]+/).map((x) => x.trim()).filter((x) => /@/.test(x));
@@ -1924,6 +1926,10 @@ ${SIG}`,
           console.error("pandadoc create failed:", JSON.stringify(doc).slice(0, 500));
           return j(headers, 502, { error: "pandadoc_failed", message: "PandaDoc refused to create the document. Nothing was sent." });
         }
+        // record the doc ID the moment the create succeeds: the processing and
+        // send-failed paths below used to exit without it, orphaning the
+        // document from the bench (4703 Beach Dr Lower B, 2026-09-21)
+        await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: { [F_LEASE_DOC_ID]: doc.id } }).catch(() => {});
         // creation is async: wait for document.draft before sending
         let status = doc.status ?? "";
         for (let i = 0; i < 12 && status !== "document.draft"; i++) {
