@@ -1306,6 +1306,7 @@ app.post("*", async (c) => {
           if (!res.ok) throw new Error(`asana new-section page ${page}`);
           for (const t of json.data ?? []) {
             const ev = (t.custom_fields ?? []).find((c) => c.gid === STATUS2_FIELD)?.enum_value;
+            if (ev?.name === "Cancelled") continue; // off the workbench (team 2026-09-21)
             const st = ev?.name ? [{ name: ev.name, color: ev.color ?? "" }] : [];
             out.push({ name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "", status: st } as never);
           }
@@ -1561,6 +1562,8 @@ ${SIG}`,
               if (t.gid && !seen.has(t.gid) && filter(t.name ?? "")) {
                 seen.add(t.gid);
                 const ev = (t.custom_fields ?? []).find((c) => c.gid === STATUS2_FIELD)?.enum_value;
+                // Cancelled leaves the bench; Approved rows belong to step 5 (team 2026-09-21)
+                if (ev?.name === "Cancelled" || ev?.name === "Approved") continue;
                 const st = ev?.name ? [{ name: ev.name, color: ev.color ?? "" }] : [];
                 const dv = (t.custom_fields ?? []).find((c) => c.gid === F_REVIEW_READY)?.date_value;
                 const ready = dv?.date_time ?? dv?.date ?? "";
@@ -2430,7 +2433,31 @@ ${built.email.body}`;
         const st0 = (await asanaCall("GET", `/sections/${sec}/tasks?limit=100&opt_fields=name,permalink_url,completed,modified_at,custom_fields.gid,custom_fields.enum_value.name,custom_fields.enum_value.color`).catch(() => [])) as Array<{ gid: string; name: string; permalink_url?: string; completed?: boolean; modified_at?: string; custom_fields?: { gid?: string; enum_value?: { name?: string; color?: string } | null }[] }>;
         for (const t of st0 ?? []) if (t.gid && !seenSign.has(t.gid)) { seenSign.add(t.gid); secTasks.push(t); }
       }
-      const open = secTasks.filter((t) => !t.completed).slice(0, 60);
+      // Status = Approved is the source of truth: rows whose section move has
+      // not landed yet (manual pill sets, rule lag) still belong in step 5
+      // (team 2026-09-21). Project scan, deduped against the section pull.
+      try {
+        let offA = "";
+        for (let pg = 0; pg < 4; pg++) {
+          const rA = await fetch(`${ASANA}/projects/${PENDING_APPS_PROJECT}/tasks?limit=100&opt_fields=name,permalink_url,completed,modified_at,custom_fields.gid,custom_fields.enum_value.gid,custom_fields.enum_value.name,custom_fields.enum_value.color${offA ? `&offset=${encodeURIComponent(offA)}` : ""}`,
+            { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+          const jA = await rA.json().catch(() => ({})) as { data?: Array<{ gid: string; name: string; permalink_url?: string; completed?: boolean; modified_at?: string; custom_fields?: { gid?: string; enum_value?: { gid?: string; name?: string; color?: string } | null }[] }>; next_page?: { offset?: string } | null };
+          for (const t of jA.data ?? []) {
+            if (t.completed || !t.gid || seenSign.has(t.gid)) continue;
+            const evA = (t.custom_fields ?? []).find((c) => c.gid === STATUS2_FIELD)?.enum_value;
+            if (evA?.name !== "Approved") continue;
+            seenSign.add(t.gid);
+            secTasks.push(t);
+          }
+          offA = jA.next_page?.offset ?? "";
+          if (!offA) break;
+        }
+      } catch { /* the section pull stands alone */ }
+      const open = secTasks.filter((t) => {
+        if (t.completed) return false;
+        const evC = ((t as { custom_fields?: { gid?: string; enum_value?: { name?: string } | null }[] }).custom_fields ?? []).find((c) => c.gid === STATUS2_FIELD)?.enum_value;
+        return evC?.name !== "Cancelled"; // off the workbench (team 2026-09-21)
+      }).slice(0, 60);
       const luTasks = await openLuTasks().catch(() => [] as Array<{ gid: string; name: string; address: string }>);
       const rows: Array<Record<string, unknown>> = [];
       const work = open.map((t) => async () => {
