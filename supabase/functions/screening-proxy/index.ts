@@ -2182,6 +2182,32 @@ ${SIG}`,
     // Writes the Status dropdown (+ title prefix via setStatus_); Brittany's
     // Asana rules then move the task to the matching section, and the queues
     // (which read sections) follow. One field drives the board.
+    // ---------- lastComments: the task's last 3 comments for the peek bubble ----------
+    if (action === "lastComments") {
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid) return j(headers, 400, { error: "bad_task_url" });
+      try {
+        const all: Array<{ type?: string; text?: string; created_at?: string; created_by?: { name?: string } | null }> = [];
+        let off = "";
+        for (let pg = 0; pg < 5; pg++) {
+          const r0 = await fetch(`${ASANA}/tasks/${gid}/stories?limit=100&opt_fields=type,text,created_at,created_by.name${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
+            { headers: { Authorization: `Bearer ${ASANA_PAT}` } });
+          const j0 = await r0.json().catch(() => ({})) as { data?: typeof all; next_page?: { offset?: string } | null };
+          if (!r0.ok) break;
+          all.push(...(j0.data ?? []));
+          off = j0.next_page?.offset ?? "";
+          if (!off) break;
+        }
+        const comments = all.filter((x) => x.type === "comment").slice(-3).map((x) => ({
+          by: String(x.created_by?.name ?? ""),
+          at: String(x.created_at ?? ""),
+          text: String(x.text ?? "").slice(0, 240),
+        }));
+        return j(headers, 200, { ok: true, comments });
+      } catch { return j(headers, 502, { error: "asana_failed", message: "Could not load the comments." }); }
+    }
+
     if (action === "setAppStatus") {
       const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
       const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
