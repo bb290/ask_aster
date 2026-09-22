@@ -1302,16 +1302,36 @@ app.post("*", async (c) => {
             `${ASANA}/sections/1217174650640615/tasks?completed=false&limit=100&opt_fields=name,permalink_url,due_on,custom_fields.gid,custom_fields.enum_value.name,custom_fields.enum_value.color${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
             { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
           );
-          const json = await res.json().catch(() => ({})) as { data?: { name?: string; permalink_url?: string; due_on?: string; custom_fields?: { gid?: string; enum_value?: { name?: string; color?: string } | null }[] }[]; next_page?: { offset?: string } | null };
+          const json = await res.json().catch(() => ({})) as { data?: { gid?: string; name?: string; permalink_url?: string; due_on?: string; custom_fields?: { gid?: string; enum_value?: { name?: string; color?: string } | null }[] }[]; next_page?: { offset?: string } | null };
           if (!res.ok) throw new Error(`asana new-section page ${page}`);
           for (const t of json.data ?? []) {
             const ev = (t.custom_fields ?? []).find((c) => c.gid === STATUS2_FIELD)?.enum_value;
             if (ev?.name === "Cancelled") continue; // off the workbench (team 2026-09-21)
             const st = ev?.name ? [{ name: ev.name, color: ev.color ?? "" }] : [];
-            out.push({ name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "", status: st } as never);
+            out.push({ gid: t.gid ?? "", name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "", status: st } as never);
           }
           offset = json.next_page?.offset ?? "";
           if (!offset) break;
+        }
+        // required-docs checklist (team 2026-09-21): classify each task's
+        // attachments by file name so step 1 shows what is still owed
+        const DOC_RES: Array<[string, RegExp]> = [
+          ["application", /applicat|rental[ _-]?app/i],
+          ["credit", /credit|trans ?union|experian|equifax|screening/i],
+          ["income", /income|\bpoi\b|pay ?stub|bank|w-?2|offer|employ/i],
+          ["id", /\bids?\b|licen[cs]e|passport|identif/i],
+        ];
+        for (let i0 = 0; i0 < out.length; i0 += 5) {
+          await Promise.all(out.slice(i0, i0 + 5).map(async (row) => {
+            const gid0 = String((row as { gid?: string }).gid ?? "");
+            if (!gid0) return;
+            try {
+              const atts = (await asanaCall("GET", `/tasks/${gid0}/attachments?limit=50&opt_fields=name`)) as Array<{ name?: string }>;
+              const docs: Record<string, boolean> = {};
+              for (const [k, re] of DOC_RES) docs[k] = (atts ?? []).some((a) => re.test(String(a.name ?? "")));
+              (row as Record<string, unknown>).docs = docs;
+            } catch { /* checklist stays hidden for this row */ }
+          }));
         }
         return j(headers, 200, { queue: out });
       } catch (e) {
