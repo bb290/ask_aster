@@ -1334,6 +1334,20 @@ app.post("*", async (c) => {
       return j(headers, 200, await buildWarQueue() as unknown as Record<string, unknown>);
     }
 
+    // ---------- execActivity: cumulative listing activity for the card hover ----------
+    // Reads the LU's three cumulative number fields (# of Inquiries / Showings /
+    // Applications, maintained by warSubmit's self-healing recompute).
+    if (action === "execActivity") {
+      const gidA = String(body.taskGid ?? "").replace(/\D/g, "");
+      if (!gidA) return j(headers, 400, { error: "missing_fields" });
+      try {
+        const tA = await asana("GET", `/tasks/${gidA}?opt_fields=custom_fields.name,custom_fields.number_value`) as { custom_fields?: Array<{ name?: string; number_value?: number | null }> };
+        const cfA = tA.custom_fields ?? [];
+        const numA = (re: RegExp) => { const f = cfA.find((x) => re.test(String(x.name ?? ""))); return f?.number_value ?? 0; };
+        return j(headers, 200, { ok: true, inquiries: numA(/#\s*of\s*inquiries/i), showings: numA(/#\s*of\s*showings/i), applications: numA(/#\s*of\s*applications/i) });
+      } catch { return j(headers, 502, { error: "asana_failed", message: "Could not read the activity totals." }); }
+    }
+
     // ---------- execDelist: take a live listing off market (team 2026-09-21) ----------
     // Delists the unit in Buildium, clears the LU's List Date (the queue, WAR,
     // and DOM logic all key on it; Go Live re-stamps it at relist so DOM
