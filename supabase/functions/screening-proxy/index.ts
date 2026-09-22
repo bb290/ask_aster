@@ -1313,8 +1313,10 @@ app.post("*", async (c) => {
           offset = json.next_page?.offset ?? "";
           if (!offset) break;
         }
-        // required-docs checklist (team 2026-09-21): classify each task's
-        // attachments by file name so step 1 shows what is still owed
+        // required-docs checklist (team 2026-09-21): one of each PER APPLICANT.
+        // Adults come from the title's names segment ("A + B"); coverage counts
+        // distinct applicant first names in the matching file names, falling
+        // back to the raw file count when names are not in the file names.
         const DOC_RES: Array<[string, RegExp]> = [
           ["application", /applicat|rental[ _-]?app/i],
           ["credit", /credit|trans ?union|experian|equifax|screening/i],
@@ -1326,9 +1328,16 @@ app.post("*", async (c) => {
             const gid0 = String((row as { gid?: string }).gid ?? "");
             if (!gid0) return;
             try {
+              const nameSeg = (String((row as { name?: string }).name ?? "").match(/Application \/ (.+?) \//i) ?? [])[1] ?? "";
+              const firsts = nameSeg.split("+").map((x) => x.trim().split(/\s+/)[0]).filter((x) => x.length > 1);
+              const need = Math.max(1, firsts.length);
               const atts = (await asanaCall("GET", `/tasks/${gid0}/attachments?limit=50&opt_fields=name`)) as Array<{ name?: string }>;
-              const docs: Record<string, boolean> = {};
-              for (const [k, re] of DOC_RES) docs[k] = (atts ?? []).some((a) => re.test(String(a.name ?? "")));
+              const docs: Record<string, { got: number; need: number }> = {};
+              for (const [k, re] of DOC_RES) {
+                const hits = (atts ?? []).map((a) => String(a.name ?? "")).filter((n0) => re.test(n0));
+                const byName = firsts.filter((f0) => hits.some((n0) => new RegExp(f0.replace(/[.*+?^${}()|[\]\\]/g, ""), "i").test(n0))).length;
+                docs[k] = { got: Math.min(need, byName > 0 ? byName : hits.length), need };
+              }
               (row as Record<string, unknown>).docs = docs;
             } catch { /* checklist stays hidden for this row */ }
           }));
