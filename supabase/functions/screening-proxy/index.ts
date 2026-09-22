@@ -1712,10 +1712,25 @@ ${SIG}`,
         if (!ctx.unitId) notes.push("No Unit ID on the LU: Buildium lease NOT created, enter it by hand.");
         else if (rent == null) notes.push("No rent on file: Buildium lease NOT created, enter it by hand.");
         else {
+          // Buildium validation (first live run, 2026-09-22, lease 769979):
+          // each tenant needs an Address, the rent charge needs a GlAccountId,
+          // and the deposit needs a DueDate
+          let unitAddr: Record<string, unknown> | null = null;
+          try {
+            const u0 = await bGet(`/rentals/units/${encodeURIComponent(ctx.unitId)}`) as { Address?: Record<string, unknown> };
+            unitAddr = u0?.Address ?? null;
+          } catch { /* tenants go without an address; Buildium will say so */ }
+          let rentGl: number | null = null;
+          try {
+            const gl0 = await bGetAll(`/glaccounts`) as { Id?: number; Name?: string; Type?: string }[];
+            rentGl = gl0.find((g) => g.Type === "Income" && /^rent\b/i.test(String(g.Name ?? "")) && !/insurance/i.test(String(g.Name ?? "")))?.Id ?? null;
+          } catch { /* charge goes without a GL; Buildium will say so */ }
           const tenants = namesList.map((full, i) => {
             const parts = full.split(/\s+/);
             const last = parts.length > 1 ? parts.pop() ?? "" : full;
-            return { FirstName: parts.join(" ") || full, LastName: last, Email: emailsList[i] ?? undefined };
+            const t0: Record<string, unknown> = { FirstName: parts.join(" ") || full, LastName: last, Email: emailsList[i] ?? undefined };
+            if (unitAddr) t0.Address = unitAddr;
+            return t0;
           });
           const firstOfNext = (() => {
             const d = new Date(start + "T12:00:00Z");
@@ -1728,9 +1743,9 @@ ${SIG}`,
           };
           const fullPayload: Record<string, unknown> = {
             ...basePayload,
-            Rent: { Cycle: "Monthly", Charges: [{ Amount: Math.round(rent), NextDueDate: firstOfNext, Memo: "Rent" }] },
+            Rent: { Cycle: "Monthly", Charges: [{ Amount: Math.round(rent), ...(rentGl != null ? { GlAccountId: rentGl } : {}), NextDueDate: firstOfNext, Memo: "Rent" }] },
           };
-          if (!planMonths && deposit != null) fullPayload.SecurityDeposit = { Amount: Math.round(deposit) };
+          if (!planMonths && deposit != null) fullPayload.SecurityDeposit = { Amount: Math.round(deposit), DueDate: start };
           const mk = async (payload: Record<string, unknown>) => {
             const r1 = await fetch(`${BUILDIUM}/leases`, { method: "POST", headers: { ...BH, "Content-Type": "application/json" }, body: JSON.stringify(payload) });
             const t1 = await r1.text().catch(() => "");
