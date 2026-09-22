@@ -3685,6 +3685,32 @@ app.post("*", async (c) => {
       }
     }
 
+    // ---------- moManaged: is this unit's turn over Owner Managed? ----------
+    // The flag lives in the Plan bench's compsData JSON on the Listing Settings
+    // task, keyed by Unit ID (no Asana field; Brittany 2026-09-15/22). The
+    // Leasing Team Lead rides along because Owner Managed hands the turn over
+    // coordination to them.
+    if (action === "moManaged") {
+      const uidM = String(body.unitId ?? "").replace(/\D/g, "");
+      if (!uidM) return j(headers, 400, { error: "missing_unit" });
+      try {
+        const shM = ((await asana("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=1217446710785429&custom_fields.1213183515622826.value=${uidM}&opt_fields=name`)) ?? []) as Array<{ gid: string }>;
+        const lsM = shM[0]?.gid ?? "";
+        if (!lsM) return j(headers, 200, { ok: true, ownerManaged: false, leadGid: "", leadName: "" });
+        const lsT = await asana("GET", `/tasks/${lsM}?opt_fields=custom_fields.gid,custom_fields.display_value,custom_fields.people_value.gid,custom_fields.people_value.name`);
+        const cfM = (lsT.custom_fields ?? []) as Array<{ gid: string; display_value?: string | null; people_value?: Array<{ gid: string; name: string }> }>;
+        let omM = false;
+        try {
+          const cdM = JSON.parse(String(cfM.find((f) => f.gid === "1217516812648029")?.display_value ?? "") || "{}");
+          omM = cdM?.turnManaged === "owner";
+        } catch { /* unparseable plan JSON = not owner-managed */ }
+        const leadM = cfM.find((f) => f.gid === "1217446711292696")?.people_value?.[0];
+        return j(headers, 200, { ok: true, ownerManaged: omM, leadGid: leadM?.gid ?? "", leadName: leadM?.name ?? "", lsGid: lsM });
+      } catch {
+        return j(headers, 200, { ok: false, ownerManaged: false });
+      }
+    }
+
     // ---------- moKb: current [Onsite] Key Box value from the Leasing parent ----------
     // Prefills the dispatch tool's keybox input so staff see the code on file and
     // update it when they change the physical code (Brittany 2026-09-15).
@@ -4032,6 +4058,29 @@ app.post("*", async (c) => {
         lines.push(`PHOTO BACKUPS (${photoUrls.length})`);
         photoUrls.forEach((u) => lines.push(u));
       }
+      // Owner Managed turn over (Brittany 2026-09-22): no vendor dispatch (the
+      // widget skips those calls) and the coordination belongs to the Leasing
+      // Team Lead, so the Turn Over task is reassigned to them BEFORE the
+      // condition comment posts; the @mention then lands on the lead.
+      let omAssigned = "";
+      if (body.ownerManaged === true) {
+        const uidOM = String(body.unitId ?? "").replace(/\D/g, "");
+        if (uidOM) {
+          try {
+            const shOM = ((await asana("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=1217446710785429&custom_fields.1213183515622826.value=${uidOM}&opt_fields=name`)) ?? []) as Array<{ gid: string }>;
+            const lsOM = shOM[0]?.gid ?? "";
+            if (lsOM) {
+              const lsTOM = await asana("GET", `/tasks/${lsOM}?opt_fields=custom_fields.gid,custom_fields.people_value.gid,custom_fields.people_value.name`);
+              const leadOM = ((lsTOM.custom_fields ?? []) as Array<{ gid: string; people_value?: Array<{ gid: string; name: string }> }>).find((f) => f.gid === "1217446711292696")?.people_value?.[0];
+              if (leadOM) {
+                await asana("PUT", `/tasks/${tuGid}`, { assignee: leadOM.gid });
+                omAssigned = leadOM.name;
+              }
+            }
+          } catch { /* fail-soft: assignment can be set by hand */ }
+        }
+      }
+
       // the condition comment @mentions the Turn Over assignee (Brittany 2026-09-16)
       let story: { gid?: string } | null = null;
       const bodyText9 = lines.join("\n").slice(0, 60000);
@@ -4195,6 +4244,7 @@ app.post("*", async (c) => {
         ok: true,
         luNoted,
         goLiveSet, goLiveLead,
+        omAssigned,
         // photos + PDF attach here too: the Turn Over task carries everything
         conductGid: tuGid,
         conductUrl: `https://app.asana.com/0/0/${tuGid}`,
