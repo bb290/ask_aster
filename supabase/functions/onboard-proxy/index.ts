@@ -1790,7 +1790,11 @@ app.post("/onboard-proxy", async (c) => {
                   .filter((l: { UnitId?: number }) => String(l?.UnitId ?? "") === uid)
                   .sort((a: { LeaseFromDate?: string }, b: { LeaseFromDate?: string }) => String(b?.LeaseFromDate ?? "").localeCompare(String(a?.LeaseFromDate ?? "")))
                   .map((l: { AccountDetails?: { SecurityDeposit?: number } }) => l?.AccountDetails?.SecurityDeposit)
-                  .find((d: unknown) => typeof d === "number" && d > 0);
+                  // $0 is a real answer (new property, no deposit collected yet) and
+                  // must render as $0 on the owner page, not the generic placeholder
+                  // (Brittany 2026-09-22); null still means "no lease found", which
+                  // keeps the generic text so a failed lookup never claims $0
+                  .find((d: unknown) => typeof d === "number" && d >= 0);
                 out.depositHeld = dep ?? null;
               }
             } catch { /* best-effort */ }
