@@ -1317,8 +1317,9 @@ app.post("*", async (c) => {
         // Adults come from the title's names segment ("A + B"); coverage counts
         // distinct applicant first names in the matching file names, falling
         // back to the raw file count when names are not in the file names.
+        // Application dropped from the required list (team 2026-09-21): the
+        // application feeds the credit report, so credit presence covers it
         const DOC_RES: Array<[string, RegExp]> = [
-          ["application", /applicat|rental[ _-]?app/i],
           ["credit", /credit|trans ?union|experian|equifax|screening/i],
           ["income", /income|\bpoi\b|pay ?stub|bank|w-?2|offer|employ/i],
           ["id", /\bids?\b|licen[cs]e|passport|identif/i],
