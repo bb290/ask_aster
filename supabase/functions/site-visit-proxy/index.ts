@@ -4125,6 +4125,7 @@ app.post("*", async (c) => {
               const upd9: Record<string, unknown> = { due_on: todayStr };
               if (leadGid9) upd9.assignee = leadGid9;
               await asana("PUT", `/tasks/${gl9.gid}`, upd9);
+              await postStory(gl9.gid, "Move out confirmed, unit is ready to list.").catch(() => null);
               goLiveSet = true;
             }
           } catch { /* fail-soft */ }
