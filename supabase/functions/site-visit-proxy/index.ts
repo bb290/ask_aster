@@ -4090,13 +4090,13 @@ app.post("*", async (c) => {
         } catch { /* fail-soft: the field can be filled from the report by hand */ }
       }
 
-      // Photo / Show Ready = Yes (Brittany 2026-09-19): the unit can list NOW, so
-      // the LU task's Go Live subtask goes due today assigned to the Leasing Team
-      // Lead, and Target List Date on Listing Settings becomes today (that field
-      // feeds the workbench queue).
-      let goLiveSet = false, targetListSet = false, goLiveLead = "";
+      // Photo / Show Ready = Yes: the LU task's Go Live subtask goes due today,
+      // assigned to the Leasing Team Lead, with a ready-to-list note. Target List
+      // Date is deliberately NOT touched (Brittany 2026-09-22: targets stay as set
+      // so target-vs-actual can be compared later).
+      let goLiveSet = false, goLiveLead = "";
       if (showReady9.toLowerCase() === "yes") {
-        const LSP9 = "1217446710785429", UIDF9 = "1213183515622826", LEADF9 = "1217446711292696", TLDF9 = "1217515135889617";
+        const LSP9 = "1217446710785429", UIDF9 = "1213183515622826", LEADF9 = "1217446711292696";
         let lsGid9 = "";
         let leadGid9 = "";
         if (uidMR) {
@@ -4107,10 +4107,6 @@ app.post("*", async (c) => {
           } catch { /* fail-soft */ }
         }
         if (lsGid9) {
-          try {
-            await asana("PUT", `/tasks/${lsGid9}`, { custom_fields: { [TLDF9]: { date: todayStr } } });
-            targetListSet = true;
-          } catch { /* fail-soft */ }
           try {
             const lsT9 = await asana("GET", `/tasks/${lsGid9}?opt_fields=custom_fields.gid,custom_fields.people_value.gid,custom_fields.people_value.name`);
             const leadF9 = ((lsT9.custom_fields ?? []) as Array<{ gid: string; people_value?: Array<{ gid: string; name: string }> }>).find((f) => f.gid === LEADF9);
@@ -4135,7 +4131,7 @@ app.post("*", async (c) => {
       return j(headers, 200, {
         ok: true,
         luNoted,
-        goLiveSet, targetListSet, goLiveLead,
+        goLiveSet, goLiveLead,
         // photos + PDF attach here too: the Turn Over task carries everything
         conductGid: tuGid,
         conductUrl: `https://app.asana.com/0/0/${tuGid}`,
