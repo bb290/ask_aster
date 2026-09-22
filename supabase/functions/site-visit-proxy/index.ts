@@ -527,6 +527,7 @@ async function turnOverTasks(): Promise<Array<{ gid: string; address: string; co
   toOpenCache = { at: Date.now(), tasks };
   return tasks;
 }
+let moVendorCache: { at: number; vendors: Array<{ name: string; email: string }> } | null = null;
 let moUsersCache: { at: number; users: Array<{ name: string; email: string }> } | null = null;
 let maintVisitCache: { at: number; recs: Array<{ gid: string; address: string }> } | null = null;
 async function maintVisitTasks(): Promise<Array<{ gid: string; address: string }>> {
@@ -3468,6 +3469,65 @@ app.post("*", async (c) => {
     // for submit (Brittany 2026-08-14): the code writes to the Unit Settings Keybox
     // Code field the moment it is typed, the video posts to the Conduct subtask the
     // moment the upload finishes. moSubmit re-writes both later; all idempotent.
+    // ---------- moVendorTo: vendor-email recipients for the dispatch send ----------
+    // Resolves who the vendor work-order email goes to (Brittany 2026-09-22):
+    // the Turn Over task's Turn Over Vendor enum matched against Buildium vendors
+    // (the foundation - vendor emails are thin today) PLUS the Turn Over
+    // Coordinator (the TO assignee). No vendor email on file = coordinator only,
+    // who forwards. No coordinator either = nothing to send (Asana comment stands).
+    if (action === "moVendorTo") {
+      const tgV = String(body.taskGid ?? "");
+      if (!tgV) return j(headers, 400, { error: "missing_task" });
+      let coordEmail = "", coordName = "", vendorName = "", vendorEmail = "";
+      try {
+        const toT = await asana("GET", `/tasks/${tgV}?opt_fields=assignee.gid,assignee.name,custom_fields.gid,custom_fields.display_value`);
+        vendorName = String(((toT.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>)
+          .find((f) => f.gid === "1205841857463978")?.display_value ?? "").trim();
+        if (toT?.assignee?.gid) {
+          const uV = await asana("GET", `/users/${toT.assignee.gid}?opt_fields=email,name`).catch(() => null);
+          const emV = String(uV?.email ?? "").toLowerCase();
+          if (/@sagareus\.com$/.test(emV)) { coordEmail = emV; coordName = String(uV?.name ?? toT.assignee.name ?? ""); }
+        }
+      } catch { /* resolved fields stay blank */ }
+      const normV = (n: string) => n.toLowerCase().replace(/\([^)]*\)/g, "").replace(/[^a-z0-9]/g, "");
+      const skipV = /^(need schedule|not needed|owner)$/i.test(vendorName);
+      if (vendorName && !skipV && BUILDIUM_ID && BUILDIUM_SECRET) {
+        try {
+          if (!moVendorCache || Date.now() - moVendorCache.at > 10 * 60 * 1000) {
+            const vsAll: Array<{ name: string; email: string }> = [];
+            const bhV = { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET };
+            for (let pg = 0; pg < 5; pg++) {
+              const rV = await fetch(`https://api.buildium.com/v1/vendors?limit=100&offset=${pg * 100}`, { headers: bhV });
+              if (!rV.ok) break;
+              const jV = await rV.json().catch(() => []);
+              const arrV = Array.isArray(jV) ? jV : [];
+              for (const v of arrV as Array<Record<string, unknown>>) {
+                const nm = String(v.CompanyName ?? "").trim() || `${String(v.FirstName ?? "")} ${String(v.LastName ?? "")}`.trim();
+                const em = String(v.Email ?? v.PrimaryEmail ?? "").trim().toLowerCase();
+                if (nm) vsAll.push({ name: nm, email: /@/.test(em) ? em : "" });
+              }
+              if (arrV.length < 100) break;
+            }
+            moVendorCache = { at: Date.now(), vendors: vsAll };
+          }
+          const want = normV(vendorName);
+          if (want.length >= 4) {
+            const hitsV = moVendorCache.vendors.filter((v) => {
+              const got = normV(v.name);
+              return got.length >= 4 && (got === want || got.indexOf(want) === 0 || want.indexOf(got) === 0);
+            }).filter((v) => v.email);
+            if (hitsV.length === 1) vendorEmail = hitsV[0].email;
+          }
+        } catch { /* vendor email stays blank; coordinator carries it */ }
+      }
+      const toV = [vendorEmail, coordEmail].filter(Boolean).join(", ");
+      return j(headers, 200, {
+        ok: true, to: toV, coordEmail, coordName, vendorName, vendorEmail,
+        vendorMatched: !!vendorEmail,
+        reason: toV ? "" : (coordEmail ? "" : "no_coordinator"),
+      });
+    }
+
     // ---------- moFeedback: team feedback from the Turn Over Dispatch widget ----------
     // Lands as a comment on the Turn Over Dispatch subtask of Team Tools | Bugs &
     // Feature Requests (Improvements project); find-or-create by name so a
