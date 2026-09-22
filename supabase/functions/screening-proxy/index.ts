@@ -1712,6 +1712,32 @@ ${SIG}`,
         if (!ctx.unitId) notes.push("No Unit ID on the LU: Buildium lease NOT created, enter it by hand.");
         else if (rent == null) notes.push("No rent on file: Buildium lease NOT created, enter it by hand.");
         else {
+          // Applicant conversion (Brittany 2026-09-22): the applicants already
+          // exist in Buildium, so the lease is created from ApplicantIds
+          // (approving their applications first - ApplicantIds must refer to
+          // approved applicants) and Buildium converts them to tenants. Inline
+          // Tenants would duplicate the contacts; that path survives only as
+          // the fallback when not every resident matches an applicant.
+          const applicantIds: number[] = [];
+          try {
+            const aps = await bGetAll(`/applicants?unitids=${encodeURIComponent(ctx.unitId)}`) as Array<{ Id?: number; Email?: string; Applications?: Array<{ Id?: number; ApplicationStatus?: string }> }>;
+            for (const em of emailsList) {
+              const hitA = aps.find((a) => String(a.Email ?? "").toLowerCase() === em.toLowerCase());
+              if (hitA?.Id == null) continue;
+              applicantIds.push(hitA.Id);
+              for (const app0 of hitA.Applications ?? []) {
+                if (app0?.Id != null && app0.ApplicationStatus !== "Approved") {
+                  await fetch(`${BUILDIUM}/applicants/${hitA.Id}/applications/${app0.Id}`, {
+                    method: "PUT", headers: { ...BH, "Content-Type": "application/json" },
+                    body: JSON.stringify({ ApplicationStatus: "Approved" }),
+                  }).catch(() => null);
+                }
+              }
+            }
+          } catch { applicantIds.length = 0; }
+          const convertAll = applicantIds.length === namesList.length && applicantIds.length > 0;
+          if (convertAll) notes.push("Buildium applicants matched by email; converting to tenants (no duplicate contacts).");
+          else notes.push("Not every resident matched a Buildium applicant; creating tenant contacts inline (check for duplicate applicant records).");
           // Buildium validation (first live run, 2026-09-22, lease 769979):
           // each tenant needs an Address, the rent charge needs a GlAccountId,
           // and the deposit needs a DueDate
@@ -1739,7 +1765,8 @@ ${SIG}`,
           const basePayload: Record<string, unknown> = {
             LeaseType: "Fixed", UnitId: Number(ctx.unitId),
             LeaseFromDate: start, LeaseToDate: end,
-            SendWelcomeEmail: false, Tenants: tenants,
+            SendWelcomeEmail: false,
+            ...(convertAll ? { ApplicantIds: applicantIds } : { Tenants: tenants }),
           };
           const fullPayload: Record<string, unknown> = {
             ...basePayload,
