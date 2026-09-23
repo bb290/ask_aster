@@ -4462,6 +4462,11 @@ app.post("*", async (c) => {
           leaseTerms: L.LeaseTerms ?? null,
           contactId: L?.Contact?.Id ?? null,
           listingDate: L.ListingDate ?? null,
+          // bed / bath / sqft off the unit record for the apply-step hint
+          // (Brittany 2026-09-23)
+          bedrooms: u.UnitBedrooms ?? null,
+          bathrooms: u.UnitBathrooms ?? null,
+          squareFeet: u.UnitSize ?? null,
         };
       }
       // sticky-header extras (Brittany 2026-08-26): previous lease rent from real
