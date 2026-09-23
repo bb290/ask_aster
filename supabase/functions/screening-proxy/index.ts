@@ -1994,6 +1994,13 @@ ${SIG}`,
           { name: "opt | Internet Provider", value: s("internetProvider") },
           { name: "Rent Credit", value: rentCredit != null ? num(rentCredit) : "" },
           { name: "OPTIONAL | General Addendum Terms", value: s("generalAddendum") },
+          // utilities + landscaping as plain text tokens straight from Listing
+          // Settings (Brittany 2026-09-23: the checkbox grid retired; the
+          // template carries {Utility Description} and {Landscaping
+          // Responsibility} text fields instead). Editable on the form; the
+          // Settings values are the defaults.
+          { name: "Utility Description", value: s("utilities") || ctx.utilities },
+          { name: "Landscaping Responsibility", value: s("landscaping") || ctx.landscaping },
         ];
         namesList.forEach((full, i) => {
           const parts = full.split(/\s+/);
