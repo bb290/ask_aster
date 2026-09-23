@@ -1335,10 +1335,13 @@ app.post("*", async (c) => {
       return j(headers, 200, await buildWarQueue() as unknown as Record<string, unknown>);
     }
 
-    // ---------- execActivity: cumulative listing activity for the card hover ----------
+    // ---------- execTotals: cumulative listing activity for the card hover ----------
     // Reads the LU's three cumulative number fields (# of Inquiries / Showings /
     // Applications, maintained by warSubmit's self-healing recompute).
-    if (action === "execActivity") {
+    // NOTE renamed from execActivity 2026-09-22: that name already belonged to
+    // the Review Activity report reader, and the duplicate shadowed it (bench
+    // showed "No weekly report submitted" on every populate).
+    if (action === "execTotals") {
       const gidA = String(body.taskGid ?? "").replace(/\D/g, "");
       if (!gidA) return j(headers, 400, { error: "missing_fields" });
       try {
