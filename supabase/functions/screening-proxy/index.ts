@@ -2044,8 +2044,13 @@ ${SIG}`,
           // template carries {Utility Description} and {Landscaping
           // Responsibility} text fields instead). Editable on the form; the
           // Settings values are the defaults.
+          // both spellings ship; PandaDoc ignores tokens a template lacks
+          // (the new 1-resident template uses Utility_Description and
+          // Landscaping, 2026-09-23)
           { name: "Utility Description", value: s("utilities") || ctx.utilities },
+          { name: "Utility_Description", value: s("utilities") || ctx.utilities },
           { name: "Landscaping Responsibility", value: s("landscaping") || ctx.landscaping },
+          { name: "Landscaping", value: s("landscaping") || ctx.landscaping },
           { name: "Pet Deposit", value: petDeposit != null ? num(petDeposit) : "" },
           { name: "Pet Policy", value: ctx.petPolicy },
         ];
