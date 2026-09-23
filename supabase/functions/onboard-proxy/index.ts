@@ -699,8 +699,9 @@ app.post("/onboard-proxy", async (c) => {
   try {
     // ---------- obStart: address step creates the Initial Onboarding task up front ----------
     // Open-but-contained: creates ONLY in the Wizard In Progress section of Initial Onboard.
-    // Assigned to Brittany with due = +3 days; every obProgress save rolls the due date
-    // forward, so the task surfaces in her My Tasks only after 3 quiet days (no cron).
+    // Assigned to Brittany with due = next day (Brittany 2026-09-23: initial onboard tasks are
+    // hers, due the following day, as they come in); every obProgress save rolls the due date
+    // forward, so an active wizard stays due tomorrow and surfaces the day the owner goes quiet.
     if (action === "obStart") {
       const kind = ["new_client", "add_property", "add_unit"].includes(String(body.kind)) ? String(body.kind) : "new_client";
       const TITLE: Record<string, string> = { new_client: "Initial Onboarding", add_property: "Add Property", add_unit: "Add Unit" };
@@ -713,8 +714,8 @@ app.post("/onboard-proxy", async (c) => {
           name: `${TITLE[kind]} | ${address} (IN PROGRESS)`,
           projects: [OB_PROJECT_GID],
           assignee: "bb@sagareus.com",
-          due_on: obDuePT(3),
-          notes: `${TITLE[kind]} wizard started for ${address}${ownerName ? ` by ${ownerName}${ownerEmail ? " (" + ownerEmail + ")" : ""}` : ""}. Answers fill in here as the owner works through the form; the task renames and moves out of Wizard In Progress when they submit.\n\nIf this surfaces on its due date, the owner has gone quiet for 3 days - worth a follow up.\n\nCreated by Claude (onboarding wizard) on behalf of the owner.`,
+          due_on: obDuePT(1),
+          notes: `${TITLE[kind]} wizard started for ${address}${ownerName ? ` by ${ownerName}${ownerEmail ? " (" + ownerEmail + ")" : ""}` : ""}. Answers fill in here as the owner works through the form; the task renames and moves out of Wizard In Progress when they submit.\n\nIf this surfaces on its due date, the owner has gone quiet - worth a follow up.\n\nCreated by Claude (onboarding wizard) on behalf of the owner.`,
         });
         await asana("POST", `/sections/${OB_WIP_SECTION}/addTask`, { task: task.gid }).catch(() => null);
         // Existing-client adds also spawn the Client Relations tracking task NOW, with the
@@ -770,7 +771,7 @@ app.post("/onboard-proxy", async (c) => {
         const byName = await obFieldSettings();
         const cf = obMapAnswers(byName, answers);
         const { lines, htmlNotes } = obDump("new_client", address || "(address pending)", sectionsDump, units, true);
-        const base: Record<string, unknown> = { due_on: obDuePT(3), custom_fields: Object.keys(cf).length ? cf : undefined };
+        const base: Record<string, unknown> = { due_on: obDuePT(1), custom_fields: Object.keys(cf).length ? cf : undefined };
         const prefix = String(t0.name ?? "").split(" | ")[0].trim() || "Initial Onboarding";
         if (address) base.name = `${prefix} | ${address} (IN PROGRESS)`;
         try { await asana("PUT", `/tasks/${gid}`, { ...base, html_notes: htmlNotes }); }
@@ -796,15 +797,20 @@ app.post("/onboard-proxy", async (c) => {
       const { lines, htmlNotes } = obDump(kind, address, sectionsDump, units, false);
 
       // find target section
+      // Section names drift ("New Submissions" became "New Submissions = Human Review", then was
+      // removed entirely on the 3-section board), so match by prefix and accept a miss: with no
+      // review section the task stays in Wizard In Progress, assigned to Brittany due next day,
+      // and her move to Review Complete is the go signal (Brittany 2026-09-23).
       const secs = await asana("GET", `/projects/${OB_PROJECT}/sections?opt_fields=name`);
-      const target = (secs ?? []).find((x: { name: string }) => x.name === SECTIONS[kind]) ?? null;
+      const target = (secs ?? []).find((x: { name: string }) => String(x.name ?? "").startsWith(SECTIONS[kind])) ?? null;
 
       const byName = await obFieldSettings();
       const cf = obMapAnswers(byName, answers);
 
       const TITLE: Record<string, string> = { new_client: "Initial Onboarding", add_property: "Add Property", add_unit: "Add Unit" };
       // obStart may have created the task at the address step: finalize IN PLACE (rename,
-      // full dump + fields, drop the 3-quiet-days assignment) instead of creating a duplicate
+      // full dump + fields) instead of creating a duplicate. The task stays assigned to
+      // Brittany, due next day, so every submission lands in her My Tasks for review.
       let existingGid = "";
       const upGid = String(body.taskGid ?? "").replace(/\D/g, "");
       const upTok = String(body.token ?? "");
@@ -814,7 +820,7 @@ app.post("/onboard-proxy", async (c) => {
       }
       let task;
       if (existingGid) {
-        const fin = { name: `${TITLE[kind]} | ${address}`, custom_fields: Object.keys(cf).length ? cf : undefined, assignee: null, due_on: null };
+        const fin = { name: `${TITLE[kind]} | ${address}`, custom_fields: Object.keys(cf).length ? cf : undefined, assignee: "bb@sagareus.com", due_on: obDuePT(1) };
         try {
           await asana("PUT", `/tasks/${existingGid}`, { ...fin, html_notes: htmlNotes });
         } catch {
@@ -826,6 +832,8 @@ app.post("/onboard-proxy", async (c) => {
           task = await asana("POST", "/tasks", {
             name: `${TITLE[kind]} | ${address}`,
             projects: [OB_PROJECT],
+            assignee: "bb@sagareus.com",
+            due_on: obDuePT(1),
             html_notes: htmlNotes,
             custom_fields: Object.keys(cf).length ? cf : undefined,
           });
@@ -834,6 +842,8 @@ app.post("/onboard-proxy", async (c) => {
           task = await asana("POST", "/tasks", {
             name: `${TITLE[kind]} | ${address}`,
             projects: [OB_PROJECT],
+            assignee: "bb@sagareus.com",
+            due_on: obDuePT(1),
             notes: lines.join("\n").slice(0, 60000),
             custom_fields: Object.keys(cf).length ? cf : undefined,
           });
