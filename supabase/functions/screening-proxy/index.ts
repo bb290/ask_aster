@@ -258,6 +258,8 @@ async function leaseContext(gid: string) {
     lastMonthRent: "", petRent: null as number | null, petPolicy: "", concessions: "", lsUrl: "",
     unitId: "",
     landscaping: "", utilities: "", utilProviders: "", leaseTermsText: "", internetProvider: "",
+    petDeposit: null as number | null, rentCreditDefault: null as number | null,
+    parkingInfo: "", storageInfo: "", mailboxLocation: "", mailboxNumber: "",
   };
   if (ctx.luGid) {
     try {
@@ -306,8 +308,37 @@ async function leaseContext(gid: string) {
           ctx.utilities = lstr("1217515337017428");     // Utility Listing Description
           ctx.utilProviders = lstr("1217921018573269"); // Utility Providers
           ctx.leaseTermsText = lstr("1217446589881673"); // Lease Terms
+          ctx.petDeposit = lnum("1217450833264180"); // Pet Deposit
+          // Rent Credit default: the first dollar amount in Concessions
+          // (Brittany 2026-09-23); "None" or no $ leaves it blank
+          const ccM = ctx.concessions.match(/\$\s*([\d,]+)/);
+          if (ccM) ctx.rentCreditDefault = Number(ccM[1].replace(/,/g, "")) || null;
           const netM = ctx.utilities.match(/internet:[^.\n]*\bto\s+([^.\n,;]+)/i);
           ctx.internetProvider = (netM?.[1] ?? "").trim();
+        }
+      }
+      // Unit Settings by Unit ID (Property Settings fallback for single-unit
+      // properties): Parking / Storage / Mailbox for the lease form
+      // (Brittany 2026-09-23)
+      if (ctx.unitId) {
+        for (const proj of ["1213032009308835", "1211134623744906"]) {
+          try {
+            const hitsU = (await asanaCall("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=${proj}&custom_fields.${UNIT_ID_FIELD}.value=${ctx.unitId}&opt_fields=custom_fields.name,custom_fields.display_value`)) as { custom_fields?: { name?: string; display_value?: string | null }[] }[];
+            const ucf = hitsU?.[0]?.custom_fields;
+            if (!ucf) continue;
+            const ustr = (re: RegExp) => String(ucf.find((f) => re.test(String(f.name ?? "")))?.display_value ?? "").trim();
+            const park = ustr(/^parking$/i), stor = ustr(/^storage$/i), mail = ustr(/^mailbox$/i);
+            if (park && !ctx.parkingInfo) {
+              const lines = park.split(/\n+/).map((x) => x.trim()).filter((x) => x && !/^building:/i.test(x));
+              ctx.parkingInfo = (lines[0] ?? park.split(/\n/)[0]).slice(0, 120);
+            }
+            if (stor && !ctx.storageInfo) ctx.storageInfo = stor.split(/\n/)[0].trim().slice(0, 120);
+            if (mail && !ctx.mailboxLocation) {
+              ctx.mailboxNumber = (mail.match(/#\s*(\d+)/) ?? [])[1] ?? "";
+              ctx.mailboxLocation = mail.split(/\n/)[0].replace(/^mailbox\s*#?\s*\d*[,:.]?\s*/i, "").trim().slice(0, 120);
+            }
+            if (ctx.parkingInfo || ctx.storageInfo || ctx.mailboxLocation) break;
+          } catch { /* next project */ }
         }
       }
     } catch { /* partial context renders a partial form */ }
@@ -1976,9 +2007,10 @@ ${SIG}`,
         const num = (v: number | null) => v == null ? "" : Math.round(v).toLocaleString("en-US");
         const deposit = n("deposit"), lastMonth = n("lastMonth"), petRent = n("petRent"), flatFee = n("flatFee") ?? ctx.flatFee, prorated = n("prorated"), rentCredit = n("rentCredit");
         const parkingRent = n("parkingRent"), storageRent = n("storageRent");
+        const petDeposit = n("petDeposit") ?? ctx.petDeposit;
         const totalRent = rent + (petRent ?? 0) + (flatFee ?? 0) + (parkingRent ?? 0) + (storageRent ?? 0);
         const depPlusLast = (deposit ?? 0) + (lastMonth ?? 0);
-        const totalMoveIn = depPlusLast + (prorated ?? 0);
+        const totalMoveIn = depPlusLast + (prorated ?? 0) + (petDeposit ?? 0);
         const zip = (ctx.address.match(/\b(\d{5})(?:-\d{4})?\s*$/) ?? [])[1] ?? "";
         const tokens: { name: string; value: string }[] = [
           { name: "Property Address", value: ctx.address },
@@ -2014,6 +2046,8 @@ ${SIG}`,
           // Settings values are the defaults.
           { name: "Utility Description", value: s("utilities") || ctx.utilities },
           { name: "Landscaping Responsibility", value: s("landscaping") || ctx.landscaping },
+          { name: "Pet Deposit", value: petDeposit != null ? num(petDeposit) : "" },
+          { name: "Pet Policy", value: ctx.petPolicy },
         ];
         namesList.forEach((full, i) => {
           const parts = full.split(/\s+/);
