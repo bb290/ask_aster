@@ -261,15 +261,32 @@ async function leaseContext(gid: string) {
   };
   if (ctx.luGid) {
     try {
-      const lu = await asanaCall("GET", `/tasks/${ctx.luGid}?opt_fields=name,custom_fields.gid,custom_fields.name,custom_fields.number_value,custom_fields.display_value`) as { name?: string; custom_fields?: { gid?: string; name?: string; number_value?: number | null; display_value?: string | null }[] };
+      const lu = await asanaCall("GET", `/tasks/${ctx.luGid}?opt_fields=name,parent.gid,custom_fields.gid,custom_fields.name,custom_fields.number_value,custom_fields.display_value`) as { name?: string; parent?: { gid?: string } | null; custom_fields?: { gid?: string; name?: string; number_value?: number | null; display_value?: string | null }[] };
       const lcf = lu.custom_fields ?? [];
       ctx.address = String(lu.name ?? "").replace(/^LU \|\s*/i, "").split(" - ")[0].trim();
       ctx.tacoma = /tacoma/i.test(String(lu.name ?? ""));
       ctx.flatFee = lcf.find((x) => x.gid === LU_FLAT_FEE)?.number_value ?? null;
-      const uid = String(lcf.find((f) => /unit id/i.test(String(f.name ?? "")))?.display_value ?? "").replace(/\D/g, "");
+      let uid = String(lcf.find((f) => /unit id/i.test(String(f.name ?? "")))?.display_value ?? "").replace(/\D/g, "");
+      if (!uid && lu.parent?.gid) {
+        // LU without a Unit ID (748 Old Pacific, 2026-09-23): the id lives up
+        // the pipeline on the LEASING parent task (Application -> Lease-up ->
+        // Leasing). Never match by address; two units at one property cross.
+        try {
+          const par = await asanaCall("GET", `/tasks/${lu.parent!.gid}?opt_fields=custom_fields.name,custom_fields.display_value`) as { custom_fields?: { name?: string; display_value?: string | null }[] };
+          uid = String((par.custom_fields ?? []).find((f) => /unit id/i.test(String(f.name ?? "")))?.display_value ?? "").replace(/\D/g, "");
+          if (uid) {
+            // heal the LU so the whole pipeline finds it next time
+            const luUidF = lcf.find((f) => /unit id/i.test(String(f.name ?? "")));
+            if (luUidF?.gid) await asanaCall("PUT", `/tasks/${ctx.luGid}`, { custom_fields: { [luUidF.gid]: uid } }).catch(() => {});
+          }
+        } catch { /* no parent walk; the form renders partial */ }
+      }
       ctx.unitId = uid;
-      if (uid) {
-        const hits = (await asanaCall("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LS_PROJECT_ID}&custom_fields.${UNIT_ID_FIELD}.value=${uid}&opt_fields=name,permalink_url,custom_fields.gid,custom_fields.display_value,custom_fields.number_value`)) as { permalink_url?: string; custom_fields?: { gid?: string; display_value?: string | null; number_value?: number | null }[] }[];
+      {
+        let hits: { permalink_url?: string; custom_fields?: { gid?: string; display_value?: string | null; number_value?: number | null }[] }[] = [];
+        if (uid) {
+          hits = (await asanaCall("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LS_PROJECT_ID}&custom_fields.${UNIT_ID_FIELD}.value=${uid}&opt_fields=name,permalink_url,custom_fields.gid,custom_fields.display_value,custom_fields.number_value`)) as typeof hits;
+        }
         const ls = hits?.[0];
         if (ls) {
           const scf = ls.custom_fields ?? [];
