@@ -1943,20 +1943,33 @@ ${SIG}`,
       if (!rent || rent < 100) return j(headers, 400, { error: "bad_terms", message: "Enter the rent first." });
       try {
         const ctx = await leaseContext(gid);
-        const wanted = `current sagareus lease (${namesList.length} resident)`;
+        // template lookup (Brittany 2026-09-23): the new token-based templates
+        // ("Sagareus Lease - N Resident") win when they exist; the old
+        // "Current Sagareus Lease (N resident)" set stays as the fallback so
+        // the team keeps working while the new ones roll out. Names are
+        // squashed (case, spaces, punctuation, trailing s) so dash and
+        // spacing variants all match.
+        const nRes = namesList.length;
+        const squash = (x: string) => x.toLowerCase().replace(/[^a-z0-9]/g, "").replace(/residents$/, "resident");
+        const wantNew = squash(`sagareus lease ${nRes} resident`);
+        const wantOld = squash(`current sagareus lease ${nRes} resident`);
         let tplId = "";
+        let tplOld = "";
         let page = 1;
-        while (!tplId && page <= 4) {
-          const r0 = await fetch(`${PD}/templates?count=100&page=${page}&q=${encodeURIComponent("Current Sagareus Lease")}`, { headers: pdH });
+        while (page <= 4) {
+          const r0 = await fetch(`${PD}/templates?count=100&page=${page}&q=${encodeURIComponent("Sagareus Lease")}`, { headers: pdH });
           const j0 = await r0.json().catch(() => ({})) as { results?: { id?: string; name?: string }[] };
           if (!r0.ok) return j(headers, 502, { error: "pandadoc_failed", message: "PandaDoc did not answer for the template list." });
           for (const t of j0.results ?? []) {
-            if (String(t.name ?? "").trim().toLowerCase().replace(/\s+/g, " ") === wanted) { tplId = t.id ?? ""; break; }
+            const sq = squash(String(t.name ?? ""));
+            if (sq === wantNew && !tplId) tplId = t.id ?? "";
+            if (sq === wantOld && !tplOld) tplOld = t.id ?? "";
           }
           if ((j0.results ?? []).length < 100) break;
           page++;
         }
-        if (!tplId) return j(headers, 400, { error: "no_template", message: `No PandaDoc template named "Current Sagareus Lease (${namesList.length} resident)".` });
+        if (!tplId) tplId = tplOld;
+        if (!tplId) return j(headers, 400, { error: "no_template", message: `No PandaDoc template named "Sagareus Lease - ${nRes} Resident" (or the older "Current Sagareus Lease (${nRes} resident)").` });
         const money = (v: number | null) => v == null ? "" : `$${Math.round(v).toLocaleString("en-US")}`;
         // token values carry NO dollar sign: the template embeds the $ next to
         // each token, so a $ here rendered doubled (team feedback 2026-09-21)
