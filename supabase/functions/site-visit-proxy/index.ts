@@ -1866,7 +1866,7 @@ app.post("*", async (c) => {
           // "Update | List Date..." completes too (Brittany 2026-09-19): the button
           // writes List Date itself. The combined List/Lease-Signed/Move-In variant
           // is EXCLUDED: those last two happen at signing, not go-live.
-          if (!s0.completed && (/^go live \|/i.test(s0.name) || /assign \| task to agent/i.test(s0.name) ||
+          if (!s0.completed && (/^go live\b/i.test(s0.name) || /assign \| task to agent/i.test(s0.name) ||
               (/^update \| list date/i.test(s0.name) && !/lease|move/i.test(s0.name)))) {
             await asana("PUT", `/tasks/${s0.gid}`, { completed: true, due_on: todayG }).catch(() => null);
           }
