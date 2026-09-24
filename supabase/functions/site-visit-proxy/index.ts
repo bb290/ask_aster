@@ -960,7 +960,7 @@ app.post("*", async (c) => {
       const weekAgo = now - 7 * 86400000;
       const TEMPLATE = new RegExp([
         "site\\s*visit", "inspection", "activity report", "speed to lead", "listing video",
-        "zillow listing", "floor plan", "bd listing", "schedule photo", "market rent",
+        "zillow listing", "floor plan", "bd listing", "leasing plan", "schedule photo", "market rent",
         "go live", "property listed", "occupied showings", "brandtegic", "move out cleaning",
         "^={2,}", // section headers
         // template subtasks all follow the "Verb | Thing" convention
@@ -2180,11 +2180,15 @@ app.post("*", async (c) => {
         ownerEmail = String(((lu.custom_fields ?? []).find((f: { name: string }) => /owner e-?mail/i.test(f.name)) ?? {}).display_value ?? "").replace(/;/g, ",").trim();
       } catch { /* non-fatal */ }
       const subtasks = await asana("GET", `/tasks/${hit.gid}/subtasks?limit=100&opt_fields=name`);
-      let pre = (subtasks ?? []).find((s: { name: string }) => /market rent.*prelisting|prelisting/i.test(s.name));
+      // combined subtask (Brittany 2026-09-24): "Send | Leasing Plan" replaces
+      // Prepare | BD Listing + Email | Owner - Market Rent & PreListing; the
+      // old names keep matching for LUs created before the merge
+      let pre = (subtasks ?? []).find((s: { name: string }) => /send\s*\|\s*leasing\s*plan/i.test(s.name))
+        ?? (subtasks ?? []).find((s: { name: string }) => /market rent.*prelisting|prelisting/i.test(s.name));
       if (!pre) {
         pre = await asana("POST", `/tasks/${hit.gid}/subtasks`, {
-          name: "Email | Owner - Market Rent & PreListing",
-          notes: "PreListing report record. SOP: https://sagareus.getoutline.com/doc/lease-up-asana-sop-fro5kaDubB",
+          name: "Send | Leasing Plan",
+          notes: "Leasing Plan record. SOP: https://sagareus.getoutline.com/doc/lease-up-asana-sop-fro5kaDubB",
         });
       }
       const story = await postStory(pre.gid, text.slice(0, 60000));
@@ -3116,7 +3120,7 @@ app.post("*", async (c) => {
           const today9 = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
           const subs10 = await asana("GET", `/tasks/${luHit9.gid}/subtasks?limit=100&opt_fields=name,completed`);
           const targets = ((subs10 ?? []) as Array<{ gid: string; name: string; completed?: boolean }>)
-            .filter((s) => /^prepare\s*\|\s*bd\s*listing/i.test(s.name) || /market rent.*prelisting|prelisting/i.test(s.name));
+            .filter((s) => /send\s*\|\s*leasing\s*plan/i.test(s.name) || /^prepare\s*\|\s*bd\s*listing/i.test(s.name) || /market rent.*prelisting|prelisting/i.test(s.name));
           for (const s of isDraft ? [] : targets) {
             try {
               if (emailCopy) {
@@ -4730,15 +4734,19 @@ app.post("*", async (c) => {
           // projects.any scopes the fuzzy text match to leasing (subtasks inherit the
           // parent's project in search) - without it the workspace-wide noise fills
           // the 100-hit cap and real Prepare tasks get crowded out (472496, 2026-08-28)
-          const rs = await fetch(`${ASANA}/workspaces/${WORKSPACE}/tasks/search?projects.any=${LEASING_LU_PROJECT}&text=${encodeURIComponent("Prepare | BD Listing")}&completed=false&due_on.after=${from}&due_on.before=${to}&sort_by=due_date&sort_ascending=true&limit=100&opt_fields=name,due_on,parent.gid,parent.name`,
-            { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
-          const js = await rs.json().catch(() => ({}));
-          for (const t of (js.data ?? []) as PrepHit[]) {
-            if (!/^prepare\s*\|\s*bd\s*listing/i.test(String(t.name))) continue;
-            if (/[<>]/.test(String(t.parent?.name ?? ""))) continue;  // template artifacts like "LU | <address>"
-            if (seenP.has(t.gid)) continue;
-            seenP.add(t.gid);
-            preps.push(t);
+          // both generations feed the workbench queue: the combined
+          // "Send | Leasing Plan" (2026-09-24) and the old "Prepare | BD Listing"
+          for (const q0 of ["Send | Leasing Plan", "Prepare | BD Listing"]) {
+            const rs = await fetch(`${ASANA}/workspaces/${WORKSPACE}/tasks/search?projects.any=${LEASING_LU_PROJECT}&text=${encodeURIComponent(q0)}&completed=false&due_on.after=${from}&due_on.before=${to}&sort_by=due_date&sort_ascending=true&limit=100&opt_fields=name,due_on,parent.gid,parent.name`,
+              { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+            const js = await rs.json().catch(() => ({}));
+            for (const t of (js.data ?? []) as PrepHit[]) {
+              if (!/^send\s*\|\s*leasing\s*plan/i.test(String(t.name)) && !/^prepare\s*\|\s*bd\s*listing/i.test(String(t.name))) continue;
+              if (/[<>]/.test(String(t.parent?.name ?? ""))) continue;  // template artifacts like "LU | <address>"
+              if (seenP.has(t.gid)) continue;
+              seenP.add(t.gid);
+              preps.push(t);
+            }
           }
         }
         for (const t of preps.slice(0, 20)) {
