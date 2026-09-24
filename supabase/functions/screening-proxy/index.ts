@@ -132,6 +132,117 @@ const STATUS2_NAME: Record<string, string> = {
 // move in; Cancelled = the applicant withdrew (task files to Complete, closed).
 const ST2_LEASING_DONE = "1218716506959444";
 const ST2_CANCELLED = "1218716498458224";
+// ---- Status split (Brittany 2026-09-24): Stage / Decision / Holds ----
+// Stage = where the file is in the process; Decision = our call (Pending =
+// none yet); Holds = named conditions, any number. Conditionally Approved
+// always carries at least one Hold.
+const F_STAGE = "1218844007644664";
+const F_DECISION = "1218843918385357";
+const F_HOLDS = "1218843872406896";
+const STAGE_OPT: Record<string, string> = {
+  "Pending Showing": "1218844007644665", "Pending App(s)": "1218844007644666",
+  "Pending App Fee": "1218844007644667", "Pending Income Docs": "1218844007644668",
+  "Ready for Review": "1218844007644669", "Enhanced Review": "1218844007644670",
+  "Mgr Review": "1218844007644671", "Lease Sent": "1218844007644672",
+  "Lease Signed": "1218844007644673", "Pending MI": "1218844007644674",
+  "Cancelled": "1218844007644675",
+};
+const DEC_OPT: Record<string, string> = {
+  "Pending": "1218843918385358", "Approved": "1218843918385359",
+  "Conditionally Approved": "1218843918385360", "Declined": "1218843918385361",
+};
+const HOLD_OPT: Record<string, string> = {
+  "Sec 8": "1218843872406897", "Owner Policy Exception": "1218843872406898",
+  "Co-Signer": "1218843872406899", "Add'l Income Docs": "1218843872406900",
+  "Balance Owed": "1218843872406901", "On Hold": "1218843872406902",
+};
+const SEC_LEASE_SENT = "1217174552914951";
+const SEC_PENDING_MGR = "1217174694944319";
+const SEC_NEW_INCOMPLETE = "1217174650640615";
+type TripleUpd = { stage?: string; decision?: string; holds?: string[]; addHolds?: string[] };
+async function applyTriple(gid: string, upd: TripleUpd): Promise<{ stage: string; decision: string; holds: string[] }> {
+  const t = await asanaCall("GET", `/tasks/${gid}?opt_fields=name,custom_fields.gid,custom_fields.enum_value.name,custom_fields.multi_enum_values.name`) as { name?: string; custom_fields?: Array<{ gid: string; enum_value?: { name?: string } | null; multi_enum_values?: Array<{ name?: string }> | null }> };
+  const cf = t.custom_fields ?? [];
+  const curStage = String(cf.find((f) => f.gid === F_STAGE)?.enum_value?.name ?? "");
+  const curDec = String(cf.find((f) => f.gid === F_DECISION)?.enum_value?.name ?? "");
+  const curHolds = (cf.find((f) => f.gid === F_HOLDS)?.multi_enum_values ?? []).map((x) => String(x?.name ?? "")).filter(Boolean);
+  const stage = upd.stage ?? curStage;
+  const decision = upd.decision ?? curDec;
+  let holds = upd.holds ?? curHolds;
+  if (upd.addHolds) holds = [...new Set([...holds, ...upd.addHolds])];
+  const writes: Record<string, unknown> = {};
+  if (upd.stage && STAGE_OPT[upd.stage]) writes[F_STAGE] = STAGE_OPT[upd.stage];
+  if (upd.decision && DEC_OPT[upd.decision]) writes[F_DECISION] = DEC_OPT[upd.decision];
+  if (upd.holds || upd.addHolds) writes[F_HOLDS] = holds.map((h) => HOLD_OPT[h]).filter(Boolean);
+  if (Object.keys(writes).length) await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: writes }).catch(() => {});
+  // title prefix: late stages and Cancelled win; then a real decision; then the stage
+  try {
+    const bare = stripStatusPrefix(String(t.name ?? ""));
+    const pfx = ["Lease Sent", "Lease Signed", "Pending MI", "Cancelled"].includes(stage) ? stage
+      : (decision && decision !== "Pending") ? decision : stage;
+    const wanted = pfx && bare ? `${pfx.toUpperCase()} | ${bare}` : String(t.name ?? "");
+    if (bare && wanted !== t.name) await asanaCall("PUT", `/tasks/${gid}`, { name: wanted }).catch(() => {});
+  } catch { /* prefix is best-effort */ }
+  // section sync: the bench moves sections itself so the Asana rules are optional
+  try {
+    const sec = stage === "Cancelled" ? SEC_COMPLETE
+      : decision === "Declined" ? SEC_COMPLETE
+      : (stage === "Lease Signed" || stage === "Pending MI") ? SEC_MOVEIN_PENDING
+      : stage === "Lease Sent" ? SEC_LEASE_SENT
+      : decision === "Conditionally Approved" ? SEC_PENDING_DOCS
+      : (holds.length && decision !== "Approved") ? SEC_PENDING_DOCS
+      : decision === "Approved" ? SEC_APPROVED
+      : (stage === "Mgr Review" || stage === "Enhanced Review") ? SEC_PENDING_MGR
+      : stage ? SEC_NEW_INCOMPLETE : "";
+    if (sec) await asanaCall("POST", `/tasks/${gid}/addProject`, { project: PENDING_APPS_PROJECT, section: sec }).catch(() => {});
+  } catch { /* section move is best-effort */ }
+  return { stage, decision, holds };
+}
+// old-vocabulary translation: every existing caller keeps its gids
+const OLD_TO_TRIPLE: Record<string, TripleUpd> = {
+  [STATUS.pendingShowing]: { stage: "Pending Showing" },
+  [STATUS.pendingApps]: { stage: "Pending App(s)" },
+  [STATUS.pendingIncomeDocs]: { stage: "Pending Income Docs" },
+  [STATUS.complete]: { stage: "Ready for Review" },
+  [STATUS.pendingEnhanced]: { stage: "Enhanced Review" },
+  [STATUS.pendingMgr]: { stage: "Mgr Review" },
+  [STATUS.approved]: { decision: "Approved" },
+  [STATUS.approvedLeaseSent]: { stage: "Lease Sent", decision: "Approved" },
+  [STATUS.leaseSigned]: { stage: "Lease Signed", decision: "Approved" },
+  [STATUS.condSec8]: { decision: "Conditionally Approved", addHolds: ["Sec 8"] },
+  [STATUS.condOwnerException]: { decision: "Conditionally Approved", addHolds: ["Owner Policy Exception"] },
+  [STATUS.pendingCosigner]: { addHolds: ["Co-Signer"] },
+  [STATUS.pendingAddlDocs]: { addHolds: ["Add'l Income Docs"] },
+  [STATUS.pendingLandlordBalance]: { addHolds: ["Balance Owed"] },
+  [STATUS.exceptionPet]: { addHolds: ["Owner Policy Exception"] },
+  [STATUS.declined]: { decision: "Declined" },
+  [STATUS.onHold]: { addHolds: ["On Hold"] },
+};
+const OLD2_TO_TRIPLE: Record<string, TripleUpd> = Object.fromEntries(
+  Object.entries(STATUS2).map(([oldGid, ddGid]) => [ddGid, OLD_TO_TRIPLE[oldGid]]).filter(([, v]) => v)
+) as Record<string, TripleUpd>;
+OLD2_TO_TRIPLE["1218685241682741"] = { stage: "Pending App Fee" };
+OLD2_TO_TRIPLE[ST2_LEASING_DONE] = { stage: "Pending MI", decision: "Approved" };
+OLD2_TO_TRIPLE[ST2_CANCELLED] = { stage: "Cancelled" };
+// combined display chips: stage, then a real decision, then each hold
+function tripleChips(cf: Array<{ gid?: string; enum_value?: { name?: string; color?: string } | null; multi_enum_values?: Array<{ name?: string; color?: string }> | null }> | undefined): Array<{ name: string; color: string }> {
+  const out: Array<{ name: string; color: string }> = [];
+  const st = (cf ?? []).find((f) => f.gid === F_STAGE)?.enum_value;
+  if (st?.name) out.push({ name: st.name, color: st.color ?? "" });
+  const de = (cf ?? []).find((f) => f.gid === F_DECISION)?.enum_value;
+  if (de?.name && de.name !== "Pending") out.push({ name: de.name, color: de.color ?? "" });
+  for (const h of (cf ?? []).find((f) => f.gid === F_HOLDS)?.multi_enum_values ?? []) {
+    if (h?.name) out.push({ name: h.name, color: h.color ?? "" });
+  }
+  return out;
+}
+function tripleNames(cf: Parameters<typeof tripleChips>[0]): { stage: string; decision: string; holds: string[] } {
+  return {
+    stage: String((cf ?? []).find((f) => f.gid === F_STAGE)?.enum_value?.name ?? ""),
+    decision: String((cf ?? []).find((f) => f.gid === F_DECISION)?.enum_value?.name ?? ""),
+    holds: ((cf ?? []).find((f) => f.gid === F_HOLDS)?.multi_enum_values ?? []).map((x) => String(x?.name ?? "")).filter(Boolean),
+  };
+}
 // Every status name plus every legacy prefix the automation or staff ever used
 const PREFIX_TOKENS = [
   ...Object.values(STATUS_NAME),
@@ -141,6 +252,10 @@ const PREFIX_TOKENS = [
   "Approved - Lease Sent",
   "APPROVED", "REJECTED", "DECLINED", "LEASE SENT", "CO-SIGNER NEEDED",
   "PENDING SEC 8", "Additional Docs Needed",
+  // Status split vocabulary (2026-09-24)
+  "Pending Showing", "Pending App(s)", "Pending App Fee", "Ready for Review",
+  "Enhanced Review", "Mgr Review", "Lease Signed", "Pending MI",
+  "Conditionally Approved", "Pending",
 ].sort((a, b) => b.length - a.length);
 export function stripStatusPrefix(name: string): string {
   let out = name.trim();
@@ -157,30 +272,18 @@ export function stripStatusPrefix(name: string): string {
 // Sets the Status field AND rewrites the title prefix to match it: the
 // prefix IS the status list, uppercased, pipe-joined (Brittany, 2026-08-08).
 async function setStatus_(gid: string, optionGids: string[]) {
-  // the multi-select Status was DELETED (Brittany 2026-09-20); the dropdown is
-  // the one Status field. optionGids stay in the old vocabulary and map through
-  // STATUS2 so every caller keeps working unchanged.
-  const s2 = STATUS2[optionGids[0] ?? ""];
-  if (s2) await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: { [STATUS2_FIELD]: s2 } }).catch(() => {});
-  try {
-    const cur = await asanaCall("GET", `/tasks/${gid}?opt_fields=name`) as { name?: string };
-    const bare = stripStatusPrefix(cur.name ?? "");
-    const prefix = optionGids.map((g) => (STATUS_NAME[g] ?? "").toUpperCase()).filter(Boolean).join(" | ");
-    const wanted = prefix ? `${prefix} | ${bare}` : bare;
-    if (bare && wanted !== cur.name) await asanaCall("PUT", `/tasks/${gid}`, { name: wanted });
-  } catch { /* prefix sync is best-effort */ }
+  // Status split (2026-09-24): old-vocabulary gids translate onto the Stage /
+  // Decision / Holds triple, which also handles prefix + section. The old
+  // dropdown is no longer written; delete it when ready.
+  const upd = OLD_TO_TRIPLE[optionGids[0] ?? ""];
+  if (upd) await applyTriple(gid, upd).catch(() => {});
 }
 // setStatus2_: like setStatus_ but takes the DROPDOWN option gid directly, for
 // the dropdown-native statuses that never existed in the old vocabulary
 async function setStatus2_(gid: string, opt2: string) {
-  await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: { [STATUS2_FIELD]: opt2 } }).catch(() => {});
-  try {
-    const cur = await asanaCall("GET", `/tasks/${gid}?opt_fields=name`) as { name?: string };
-    const bare = stripStatusPrefix(cur.name ?? "");
-    const nm = (STATUS2_NAME[opt2] ?? "").toUpperCase();
-    const wanted = nm && bare ? `${nm} | ${bare}` : cur.name ?? "";
-    if (bare && wanted !== cur.name) await asanaCall("PUT", `/tasks/${gid}`, { name: wanted });
-  } catch { /* prefix sync is best-effort */ }
+  // dropdown-vocabulary gids translate onto the triple too (2026-09-24)
+  const upd = OLD2_TO_TRIPLE[opt2];
+  if (upd) await applyTriple(gid, upd).catch(() => {});
 }
 // ---- Screen + Sign v2 application fields (created 2026-09-20, Brittany-approved) ----
 const F_HOUSEHOLD_SIZE = "1218658174503778";
@@ -1347,15 +1450,17 @@ app.post("*", async (c) => {
         let offset = "";
         for (let page = 0; page < 5; page++) {
           const res = await fetch(
-            `${ASANA}/sections/1217174650640615/tasks?completed=false&limit=100&opt_fields=name,permalink_url,due_on,custom_fields.gid,custom_fields.enum_value.name,custom_fields.enum_value.color${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+            `${ASANA}/sections/1217174650640615/tasks?completed=false&limit=100&opt_fields=name,permalink_url,due_on,custom_fields.gid,custom_fields.enum_value.name,custom_fields.enum_value.color,custom_fields.multi_enum_values.name,custom_fields.multi_enum_values.color${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
             { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
           );
           const json = await res.json().catch(() => ({})) as { data?: { gid?: string; name?: string; permalink_url?: string; due_on?: string; custom_fields?: { gid?: string; enum_value?: { name?: string; color?: string } | null }[] }[]; next_page?: { offset?: string } | null };
           if (!res.ok) throw new Error(`asana new-section page ${page}`);
           for (const t of json.data ?? []) {
             const ev = (t.custom_fields ?? []).find((c) => c.gid === STATUS2_FIELD)?.enum_value;
-            if (ev?.name === "Cancelled") continue; // off the workbench (team 2026-09-21)
-            const st = ev?.name ? [{ name: ev.name, color: ev.color ?? "" }] : [];
+            const tri = tripleNames(t.custom_fields as never);
+            if (ev?.name === "Cancelled" || tri.stage === "Cancelled") continue; // off the workbench (team 2026-09-21)
+            const chips = tripleChips(t.custom_fields as never);
+            const st = chips.length ? chips : (ev?.name ? [{ name: ev.name, color: ev.color ?? "" }] : []);
             out.push({ gid: t.gid ?? "", name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "", status: st } as never);
           }
           offset = json.next_page?.offset ?? "";
@@ -1631,7 +1736,7 @@ ${SIG}`,
           let offset = "";
           for (let page = 0; page < 5; page++) {
             const res = await fetch(
-              `${ASANA}${path}?completed=false&limit=100&opt_fields=name,permalink_url,due_on,custom_fields.gid,custom_fields.enum_value.name,custom_fields.enum_value.color,custom_fields.date_value${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+              `${ASANA}${path}?completed=false&limit=100&opt_fields=name,permalink_url,due_on,custom_fields.gid,custom_fields.enum_value.name,custom_fields.enum_value.color,custom_fields.multi_enum_values.name,custom_fields.multi_enum_values.color,custom_fields.date_value${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
               { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
             );
             const json = await res.json().catch(() => ({})) as { data?: { gid?: string; name?: string; permalink_url?: string; due_on?: string; custom_fields?: { gid?: string; enum_value?: { name?: string; color?: string } | null; date_value?: { date?: string; date_time?: string } | null }[] }[]; next_page?: { offset?: string } | null };
@@ -1640,9 +1745,12 @@ ${SIG}`,
               if (t.gid && !seen.has(t.gid) && filter(t.name ?? "")) {
                 seen.add(t.gid);
                 const ev = (t.custom_fields ?? []).find((c) => c.gid === STATUS2_FIELD)?.enum_value;
-                // Cancelled leaves the bench; Approved rows belong to step 5 (team 2026-09-21)
+                const tri = tripleNames(t.custom_fields as never);
+                // Cancelled leaves the bench; a decided row belongs to step 4/5 (team 2026-09-21)
                 if (ev?.name === "Cancelled" || ev?.name === "Approved") continue;
-                const st = ev?.name ? [{ name: ev.name, color: ev.color ?? "" }] : [];
+                if (tri.stage === "Cancelled" || (tri.decision && tri.decision !== "Pending")) continue;
+                const chips = tripleChips(t.custom_fields as never);
+                const st = chips.length ? chips : (ev?.name ? [{ name: ev.name, color: ev.color ?? "" }] : []);
                 const dv = (t.custom_fields ?? []).find((c) => c.gid === F_REVIEW_READY)?.date_value;
                 const ready = dv?.date_time ?? dv?.date ?? "";
                 out.push({ name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "", status: st, reviewReady: ready } as never);
@@ -2332,28 +2440,53 @@ ${SIG}`,
       if (!gid) return j(headers, 400, { error: "bad_task_url" });
       const want = String((body as { statusGid?: unknown }).statusGid ?? "");
       const name2 = STATUS2_NAME[want] ?? "";
-      if (!name2) return j(headers, 400, { error: "bad_status", message: "Pick a status first." });
+      const upd = OLD2_TO_TRIPLE[want];
+      if (!name2 || !upd) return j(headers, 400, { error: "bad_status", message: "Pick a status first." });
       try {
-        await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: { [STATUS2_FIELD]: want } });
-        try {
-          const cur = await asanaCall("GET", `/tasks/${gid}?opt_fields=name`) as { name?: string };
-          const bare = stripStatusPrefix(cur.name ?? "");
-          const wanted = bare ? `${name2.toUpperCase()} | ${bare}` : cur.name ?? "";
-          if (bare && wanted !== cur.name) await asanaCall("PUT", `/tasks/${gid}`, { name: wanted });
-        } catch { /* prefix sync is best-effort */ }
-        // status-driven filing (team 2026-09-21): Cancelled = applicant
-        // withdrew -> Complete section, task closed; Leasing Complete stays
-        // OPEN in Move In Pending until the physical move in
+        // Status split (2026-09-24): old dropdown gids from the bench translate
+        // onto the triple; applyTriple handles prefix + section filing.
+        await applyTriple(gid, upd);
+        // Cancelled = applicant withdrew -> task closed (team 2026-09-21);
+        // Leasing Complete stays OPEN in Move In Pending until physical move in
         if (want === ST2_CANCELLED) {
-          await asanaCall("POST", `/tasks/${gid}/addProject`, { project: PENDING_APPS_PROJECT, section: SEC_COMPLETE }).catch(() => {});
           await asanaCall("PUT", `/tasks/${gid}`, { completed: true }).catch(() => {});
-        } else if (want === ST2_LEASING_DONE) {
-          await asanaCall("POST", `/tasks/${gid}/addProject`, { project: PENDING_APPS_PROJECT, section: SEC_MOVEIN_PENDING }).catch(() => {});
         }
         signqCache = null;
         return j(headers, 200, { ok: true, name: name2 });
       } catch (e) {
         console.error("setAppStatus failed:", e);
+        return j(headers, 502, { error: "status_failed", message: "Could not save the status." });
+      }
+    }
+
+    // ---------- setTriple: the bench's Stage / Decision / Holds editor ----------
+    // stage and decision update when sent; holds REPLACE the set when the key
+    // is present (an empty array clears every hold). applyTriple files the
+    // section and rewrites the title prefix.
+    if (action === "setTriple") {
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      if (!gid) return j(headers, 400, { error: "bad_task_url" });
+      const stage = String((body as { stage?: unknown }).stage ?? "");
+      const decision = String((body as { decision?: unknown }).decision ?? "");
+      const holdsIn = (body as { holds?: unknown }).holds;
+      const holds = Array.isArray(holdsIn) ? holdsIn.map(String) : undefined;
+      if (stage && !STAGE_OPT[stage]) return j(headers, 400, { error: "bad_stage", message: "Unknown stage." });
+      if (decision && !DEC_OPT[decision]) return j(headers, 400, { error: "bad_decision", message: "Unknown decision." });
+      if (holds && holds.some((h) => !HOLD_OPT[h])) return j(headers, 400, { error: "bad_hold", message: "Unknown hold." });
+      const upd: TripleUpd = {};
+      if (stage) upd.stage = stage;
+      if (decision) upd.decision = decision;
+      if (holds) upd.holds = holds;
+      if (!Object.keys(upd).length) return j(headers, 400, { error: "bad_status", message: "Nothing to change." });
+      try {
+        const res = await applyTriple(gid, upd);
+        // Cancelled = applicant withdrew -> task closed (team 2026-09-21)
+        if (stage === "Cancelled") await asanaCall("PUT", `/tasks/${gid}`, { completed: true }).catch(() => {});
+        signqCache = null;
+        return j(headers, 200, { ok: true, ...res });
+      } catch (e) {
+        console.error("setTriple failed:", e);
         return j(headers, 502, { error: "status_failed", message: "Could not save the status." });
       }
     }
@@ -2425,7 +2558,7 @@ ${SIG}`,
         let offset = "";
         for (let page = 0; page < 4; page++) {
           const res = await fetch(
-            `${ASANA}/projects/${PENDING_APPS_PROJECT}/tasks?limit=100&opt_fields=name,permalink_url,due_on,completed,custom_fields.gid,custom_fields.enum_value.gid,custom_fields.enum_value.name,custom_fields.enum_value.color${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
+            `${ASANA}/projects/${PENDING_APPS_PROJECT}/tasks?limit=100&opt_fields=name,permalink_url,due_on,completed,custom_fields.gid,custom_fields.enum_value.gid,custom_fields.enum_value.name,custom_fields.enum_value.color,custom_fields.multi_enum_values.name,custom_fields.multi_enum_values.color${offset ? `&offset=${encodeURIComponent(offset)}` : ""}`,
             { headers: { Authorization: `Bearer ${ASANA_PAT}` } },
           );
           const json = await res.json().catch(() => ({})) as { data?: { gid?: string; name?: string; permalink_url?: string; due_on?: string; completed?: boolean; custom_fields?: { gid?: string; enum_value?: { gid?: string; name?: string; color?: string } | null }[] }[]; next_page?: { offset?: string } | null };
@@ -2433,10 +2566,16 @@ ${SIG}`,
           for (const t of json.data ?? []) {
             if (t.completed) continue;
             const ev = (t.custom_fields ?? []).find((c) => c.gid === STATUS2_FIELD)?.enum_value;
-            if (!ev || !COND_STATUSES2.includes(ev.gid ?? "")) continue;
+            const tri = tripleNames(t.custom_fields as never);
+            const late = ["Lease Sent", "Lease Signed", "Pending MI", "Cancelled"].includes(tri.stage);
+            const HOLD_LIST = ["Sec 8", "Owner Policy Exception", "Co-Signer", "Add'l Income Docs", "Balance Owed"];
+            const oldCond = !!ev && COND_STATUSES2.includes(ev.gid ?? "");
+            const newCond = !late && (tri.decision === "Conditionally Approved" || tri.holds.some((h) => HOLD_LIST.includes(h)));
+            if (!oldCond && !newCond) continue;
+            const chips = tripleChips(t.custom_fields as never);
             rows.push({
               gid: t.gid ?? "", name: t.name ?? "", url: t.permalink_url ?? "", due: t.due_on ?? "",
-              status: [{ name: ev.name ?? "", color: ev.color ?? "" }],
+              status: chips.length ? chips : [{ name: ev?.name ?? "", color: ev?.color ?? "" }],
             });
           }
           offset = json.next_page?.offset ?? "";
@@ -2563,15 +2702,22 @@ ${built.email.body}`;
           else if (v === "fail") pfWrites[cfg.field] = cfg.fail;
         }
         if (Object.keys(pfWrites).length) await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: pfWrites }).catch(() => {});
-        const statusGid = isConditional ? CONDITIONAL_MAP[option].status
-          : effDecision === "declined" ? STATUS.declined
-          : effDecision === "insufficient" ? (effOption === "cosigner" ? STATUS.pendingCosigner
-            : effOption === "landlord_balance" ? STATUS.pendingLandlordBalance
-            : STATUS.pendingAddlDocs) // Exception options disabled 2026-09-20
-          : effOption === "section8" ? STATUS.condSec8
-          : effOption === "owner_exception" ? STATUS.condOwnerException
-          : STATUS.approved; // plain approvals write Approved (team feedback 2026-09-20)
-        if (statusGid) await setStatus_(gid, [statusGid]);
+        // Status split (2026-09-24): decisions write Decision + Holds directly.
+        // Conditionally Approved always carries at least one named Hold
+        // (Brittany's rule); a plain docs/co-signer/balance chase stays
+        // Decision = Pending and only adds the Hold.
+        const triUpd: TripleUpd = isConditional
+          ? (option === "sec8" ? { decision: "Conditionally Approved", addHolds: ["Sec 8"] }
+            : option === "cosigner" ? { decision: "Conditionally Approved", addHolds: ["Co-Signer"] }
+            : { decision: "Conditionally Approved", addHolds: ["Add'l Income Docs"] })
+          : effDecision === "declined" ? { decision: "Declined" }
+          : effDecision === "insufficient" ? (effOption === "cosigner" ? { addHolds: ["Co-Signer"] }
+            : effOption === "landlord_balance" ? { addHolds: ["Balance Owed"] }
+            : { addHolds: ["Add'l Income Docs"] })
+          : effOption === "section8" ? { decision: "Conditionally Approved", addHolds: ["Sec 8"] }
+          : effOption === "owner_exception" ? { decision: "Conditionally Approved", addHolds: ["Owner Policy Exception"] }
+          : { decision: "Approved" };
+        await applyTriple(gid, triUpd).catch(() => {});
         const destName = destSection === SEC_COMPLETE ? "Complete" : destSection === SEC_PENDING_DOCS ? "Pending Docs / Co-Signer / Sec 8" : "Approved";
         return j(headers, 200, {
           decided: true, headline: headlineOut,
@@ -2604,7 +2750,7 @@ ${built.email.body}`;
       const seenSign = new Set<string>();
       const secTasks: Array<{ gid: string; name: string; permalink_url?: string; completed?: boolean; modified_at?: string }> = [];
       for (const sec of SIGN_SECTIONS) {
-        const st0 = (await asanaCall("GET", `/sections/${sec}/tasks?limit=100&opt_fields=name,permalink_url,completed,modified_at,custom_fields.gid,custom_fields.enum_value.name,custom_fields.enum_value.color`).catch(() => [])) as Array<{ gid: string; name: string; permalink_url?: string; completed?: boolean; modified_at?: string; custom_fields?: { gid?: string; enum_value?: { name?: string; color?: string } | null }[] }>;
+        const st0 = (await asanaCall("GET", `/sections/${sec}/tasks?limit=100&opt_fields=name,permalink_url,completed,modified_at,custom_fields.gid,custom_fields.enum_value.name,custom_fields.enum_value.color,custom_fields.multi_enum_values.name,custom_fields.multi_enum_values.color`).catch(() => [])) as Array<{ gid: string; name: string; permalink_url?: string; completed?: boolean; modified_at?: string; custom_fields?: { gid?: string; enum_value?: { name?: string; color?: string } | null }[] }>;
         for (const t of st0 ?? []) if (t.gid && !seenSign.has(t.gid)) { seenSign.add(t.gid); secTasks.push(t); }
       }
       // Status = Approved is the source of truth: rows whose section move has
@@ -2613,13 +2759,15 @@ ${built.email.body}`;
       try {
         let offA = "";
         for (let pg = 0; pg < 4; pg++) {
-          const rA = await fetch(`${ASANA}/projects/${PENDING_APPS_PROJECT}/tasks?limit=100&opt_fields=name,permalink_url,completed,modified_at,custom_fields.gid,custom_fields.enum_value.gid,custom_fields.enum_value.name,custom_fields.enum_value.color${offA ? `&offset=${encodeURIComponent(offA)}` : ""}`,
+          const rA = await fetch(`${ASANA}/projects/${PENDING_APPS_PROJECT}/tasks?limit=100&opt_fields=name,permalink_url,completed,modified_at,custom_fields.gid,custom_fields.enum_value.gid,custom_fields.enum_value.name,custom_fields.enum_value.color,custom_fields.multi_enum_values.name,custom_fields.multi_enum_values.color${offA ? `&offset=${encodeURIComponent(offA)}` : ""}`,
             { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
           const jA = await rA.json().catch(() => ({})) as { data?: Array<{ gid: string; name: string; permalink_url?: string; completed?: boolean; modified_at?: string; custom_fields?: { gid?: string; enum_value?: { gid?: string; name?: string; color?: string } | null }[] }>; next_page?: { offset?: string } | null };
           for (const t of jA.data ?? []) {
             if (t.completed || !t.gid || seenSign.has(t.gid)) continue;
             const evA = (t.custom_fields ?? []).find((c) => c.gid === STATUS2_FIELD)?.enum_value;
-            if (evA?.name !== "Approved") continue;
+            const triA = tripleNames(t.custom_fields as never);
+            const preLease = !["Lease Sent", "Lease Signed", "Pending MI", "Cancelled"].includes(triA.stage);
+            if (evA?.name !== "Approved" && !(triA.decision === "Approved" && preLease)) continue;
             seenSign.add(t.gid);
             secTasks.push(t);
           }
@@ -2630,7 +2778,8 @@ ${built.email.body}`;
       const open = secTasks.filter((t) => {
         if (t.completed) return false;
         const evC = ((t as { custom_fields?: { gid?: string; enum_value?: { name?: string } | null }[] }).custom_fields ?? []).find((c) => c.gid === STATUS2_FIELD)?.enum_value;
-        return evC?.name !== "Cancelled"; // off the workbench (team 2026-09-21)
+        const triC = tripleNames((t as { custom_fields?: never[] }).custom_fields);
+        return evC?.name !== "Cancelled" && triC.stage !== "Cancelled"; // off the workbench (team 2026-09-21)
       }).slice(0, 60);
       const luTasks = await openLuTasks().catch(() => [] as Array<{ gid: string; name: string; address: string }>);
       const rows: Array<Record<string, unknown>> = [];
@@ -2669,9 +2818,12 @@ ${built.email.body}`;
           } catch { /* LU detail is best-effort; the row still renders */ }
         }
         const evS = ((t as { custom_fields?: { gid?: string; enum_value?: { name?: string; color?: string } | null }[] }).custom_fields ?? []).find((c) => c.gid === STATUS2_FIELD)?.enum_value;
+        const chipsS = tripleChips((t as { custom_fields?: never[] }).custom_fields);
+        const triS = tripleNames((t as { custom_fields?: never[] }).custom_fields);
         rows.push({
           gid: t.gid, name: t.name, url: t.permalink_url ?? `https://app.asana.com/0/0/${t.gid}`,
-          status: evS?.name ? [{ name: evS.name, color: evS.color ?? "" }] : [],
+          status: chipsS.length ? chipsS : (evS?.name ? [{ name: evS.name, color: evS.color ?? "" }] : []),
+          stage: triS.stage, decision: triS.decision, holds: triS.holds,
           names, address, approvedAround: (t.modified_at ?? "").slice(0, 10),
           luGid: lu?.gid ?? "", luName: lu?.name ?? "", luUrl: lu ? `https://app.asana.com/0/0/${lu.gid}` : "",
           leaseSigned, moveInDate, unitId, buildiumUrl, sagareusUrl,
