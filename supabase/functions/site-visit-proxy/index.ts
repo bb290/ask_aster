@@ -1842,7 +1842,9 @@ app.post("*", async (c) => {
           if (!s0) { notesG.push(`${label} subtask not found.`); return; }
           await asana("PUT", `/tasks/${s0.gid}`, { assignee: who, due_on: due }).then(() => notesG.push(`${label} assigned, due ${due}`)).catch(() => notesG.push(`${label} assign failed.`));
         };
-        await assignSub(/record \| listing video/i, agentG, plusDays(1), "Listing Video");
+        // subtask templates renamed with emoji prefixes (Brittany 2026-09-24):
+        // match on the stable phrase, not the old Record |/Prepare | prefixes
+        await assignSub(/listing video/i, agentG, plusDays(1), "Listing Video");
         // Weekly Site Visit: FILL-BLANK ONLY (Brittany 2026-09-18). An existing
         // assignee or due date stands untouched; a blank one goes to the leasing
         // agent, due with the Listing Video (+1 day).
@@ -1855,7 +1857,7 @@ app.post("*", async (c) => {
             notesG.push(`Weekly Site Visit assigned, due ${plusDays(1)}`);
           }
         } catch { notesG.push("Weekly Site Visit assign failed."); }
-        await assignSub(/prepare \|.*floor plan/i, agentG, plusDays(1), "Floor Plan");
+        await assignSub(/floor plan/i, agentG, plusDays(1), "Floor Plan");
         await assignSub(/weekly activity report/i, agentG, nextTue, "Weekly Activity Report");
         await assignSub(/verify.*zillow.*redfin/i, maryGid, plusDays(2), "Zillow + Redfin verify");
         for (const s0 of subsG) {
