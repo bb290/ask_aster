@@ -2603,10 +2603,15 @@ ${SIG}`,
       // docs -> insufficient/*) and parks the application on the holding list
       // via its Status stage. Automated conditional flows wait for v3.
       const isConditional = String(decision) === "conditional";
+      // All six holds are conditional options (Brittany 2026-09-24): each maps
+      // to the existing email template that fits, and the named Hold below.
       const CONDITIONAL_MAP: Record<string, { decision: Decision; option: string; status: string }> = {
         sec8: { decision: "approved" as Decision, option: "section8", status: STATUS.condSec8 },
+        owner_exception: { decision: "approved" as Decision, option: "owner_exception", status: STATUS.condOwnerException },
         cosigner: { decision: "insufficient" as Decision, option: "cosigner", status: STATUS.pendingCosigner },
         docs: { decision: "insufficient" as Decision, option: "docs", status: STATUS.pendingAddlDocs },
+        balance: { decision: "insufficient" as Decision, option: "landlord_balance", status: STATUS.pendingLandlordBalance },
+        on_hold: { decision: "insufficient" as Decision, option: "on_hold", status: STATUS.onHold },
       };
       if (isConditional && !CONDITIONAL_MAP[option]) {
         return j(headers, 400, { error: "bad_option", message: "Pick a conditional option first. Nothing was changed." });
@@ -2706,13 +2711,16 @@ ${built.email.body}`;
         // Conditionally Approved always carries at least one named Hold
         // (Brittany's rule); a plain docs/co-signer/balance chase stays
         // Decision = Pending and only adds the Hold.
+        const CONDITIONAL_HOLD: Record<string, string> = {
+          sec8: "Sec 8", owner_exception: "Owner Policy Exception", cosigner: "Co-Signer",
+          docs: "Add'l Income Docs", balance: "Balance Owed", on_hold: "On Hold",
+        };
         const triUpd: TripleUpd = isConditional
-          ? (option === "sec8" ? { decision: "Conditionally Approved", addHolds: ["Sec 8"] }
-            : option === "cosigner" ? { decision: "Conditionally Approved", addHolds: ["Co-Signer"] }
-            : { decision: "Conditionally Approved", addHolds: ["Add'l Income Docs"] })
+          ? { decision: "Conditionally Approved", addHolds: [CONDITIONAL_HOLD[option] ?? "Add'l Income Docs"] }
           : effDecision === "declined" ? { decision: "Declined" }
           : effDecision === "insufficient" ? (effOption === "cosigner" ? { addHolds: ["Co-Signer"] }
             : effOption === "landlord_balance" ? { addHolds: ["Balance Owed"] }
+            : effOption === "pet_policy" ? { addHolds: ["Owner Policy Exception"] }
             : { addHolds: ["Add'l Income Docs"] })
           : effOption === "section8" ? { decision: "Conditionally Approved", addHolds: ["Sec 8"] }
           : effOption === "owner_exception" ? { decision: "Conditionally Approved", addHolds: ["Owner Policy Exception"] }

@@ -39,6 +39,7 @@ export const DECISION_OPTIONS: Record<Decision, { key: string; label: string; ne
     { key: "docs", label: "Insufficient documentation" },
     { key: "landlord_balance", label: "Balance owed to landlord" },
     { key: "pet_policy", label: "Pet policy" },
+    { key: "on_hold", label: "On hold" },
   ],
   declined: [
     { key: "income", label: "Income does not meet minimum" },
@@ -151,6 +152,10 @@ const INSUFFICIENT_BLOCKS: Record<string, { flag: string; body?: string; resolva
   pet_policy: {
     flag: "Pet(s) on the application conflict with the advertised pet policy for this property.",
     resolvable: "Owner exception to the pet policy required; we will request it and follow up. Reply to confirm your pet details (type, weight, count) are accurate.",
+  },
+  on_hold: {
+    flag: "Your application is temporarily on hold.",
+    resolvable: "We will follow up with the next step as soon as the hold clears. Reply to this email with any questions.",
   },
 };
 
