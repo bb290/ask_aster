@@ -3942,7 +3942,7 @@ app.post("*", async (c) => {
     // Posts the report + photos + PDF on the picked TURN OVER task (Brittany
     // 2026-08-14: not the Move-Out conduct subtask, which stays incomplete),
     // stamps Move Out Completion Date on the LU task, and appends the work order
-    // items to the Turn Over task's Approved Scope. Deliberately NO verdict, NO
+    // items to the Turn Over task's description (the work order). Deliberately NO verdict, NO
     // tickets, NO deposit language.
     if (action === "moSubmit") {
       const taskGid = String(body.taskGid ?? "");
@@ -4138,17 +4138,18 @@ app.post("*", async (c) => {
         } catch { /* fail-soft: the code still rides the owner email */ }
       }
 
-      // Append findings to this Turn Over task's Approved Scope = initial work order
+      // Append findings to this Turn Over task's DESCRIPTION = initial work
+      // order (the Approved Scope field retired 2026-09-24; the description is
+      // the scope again, as toScope always allowed)
       let scopeAppended = 0;
       if (reqFindings.length) {
         // Required items only: Optional Upgrades are owner choices, never pre-approved scope
         try {
-          const tuTask = await asana("GET", `/tasks/${tuGid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
-          const scopeField = (tuTask.custom_fields ?? []).find((f: { gid: string }) => f.gid === "1216811465429492");
-          const existing = String(scopeField?.display_value ?? "").trim();
+          const tuTask = await asana("GET", `/tasks/${tuGid}?opt_fields=notes`);
+          const existing = String(tuTask?.notes ?? "").trim();
           const block = reqFindings.map((f) => `${f.type}${f.note ? ": " + f.note : ""}`).join("\n");
           const merged = (existing ? existing + "\n" : "") + block;
-          await asana("PUT", `/tasks/${tuGid}`, { custom_fields: { "1216811465429492": merged.slice(0, 4900) } });
+          await asana("PUT", `/tasks/${tuGid}`, { notes: merged.slice(0, 9000) });
           scopeAppended = reqFindings.length;
         } catch { /* fail-soft; scope can be filled by hand */ }
       }
@@ -5190,16 +5191,14 @@ app.post("*", async (c) => {
     }
 
     // ---------- toScope: turn scope for the Inspections tool ----------
-    // Prefers the "Approved Scope" custom field (Brittany is creating it); until it
-    // exists, the Turn Over task's DESCRIPTION is the scope. The widget renders the
-    // lines as checkboxes; all checked = section passed.
+    // The Turn Over task's DESCRIPTION is the scope (the Approved Scope field
+    // retired 2026-09-24). The widget renders the lines as checkboxes; all
+    // checked = section passed.
     if (action === "toScope") {
       const taskGid = String(body.taskGid ?? "").trim();
       if (!taskGid) return j(headers, 400, { error: "missing_task" });
-      const t = await asana("GET", `/tasks/${taskGid}?opt_fields=notes,custom_fields.name,custom_fields.display_value`);
-      const fields = (t?.custom_fields ?? []) as Array<{ name: string; display_value?: string | null }>;
-      const approved = fields.find((f) => /approved\s*scope/i.test(f.name));
-      const scope = String(approved?.display_value || t?.notes || "").slice(0, 4000);
+      const t = await asana("GET", `/tasks/${taskGid}?opt_fields=notes`);
+      const scope = String(t?.notes ?? "").slice(0, 4000);
       return j(headers, 200, { scope });
     }
 
