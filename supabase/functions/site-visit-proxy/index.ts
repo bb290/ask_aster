@@ -3484,11 +3484,12 @@ app.post("*", async (c) => {
       let coordEmail = "", coordName = "", vendorName = "", vendorEmail = "";
       try {
         const toT = await asana("GET", `/tasks/${tgV}?opt_fields=assignee.gid,assignee.name,custom_fields.gid,custom_fields.display_value`);
-        // the assignment comes through the "Vendor" enum (Brittany 2026-09-22);
-        // the older "Turn Over Vendor" enum is the fallback when Vendor is blank
+        // the assignment comes through the "Turn Over Vendor" field 1205841857463978
+        // (Brittany 2026-09-24, replacing the "Vendor" enum as primary); the
+        // "Vendor" enum stays as the fallback when Turn Over Vendor is blank
         const cfV = (toT.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>;
-        vendorName = String(cfV.find((f) => f.gid === "1205263939685412")?.display_value ?? "").trim() ||
-                     String(cfV.find((f) => f.gid === "1205841857463978")?.display_value ?? "").trim();
+        vendorName = String(cfV.find((f) => f.gid === "1205841857463978")?.display_value ?? "").trim() ||
+                     String(cfV.find((f) => f.gid === "1205263939685412")?.display_value ?? "").trim();
         if (toT?.assignee?.gid) {
           const uV = await asana("GET", `/users/${toT.assignee.gid}?opt_fields=email,name`).catch(() => null);
           const emV = String(uV?.email ?? "").toLowerCase();
