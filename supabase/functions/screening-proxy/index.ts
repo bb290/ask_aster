@@ -1828,6 +1828,22 @@ ${SIG}`,
       }
     }
 
+    // ---------- mailNote: correction comment when a declared send failed ----------
+    // The decide/contact comments record the send optimistically (the Gmail
+    // call runs after filing); when it fails, the bench posts the honest
+    // correction here so the task record never claims a send that did not
+    // happen (Brittany 2026-09-24).
+    if (action === "mailNote") {
+      const taskUrl = String((body as { taskUrl?: unknown }).taskUrl ?? "");
+      const gid = (taskUrl.match(/task\/(\d+)/) ?? taskUrl.match(/\/(\d{12,})/))?.[1];
+      const text = String((body as { text?: unknown }).text ?? "").slice(0, 1000);
+      if (!gid || !text) return j(headers, 400, { error: "bad_note" });
+      try {
+        await asanaCall("POST", `/tasks/${gid}/stories`, { text: `EMAIL NOTE\n${text}` });
+        return j(headers, 200, { ok: true });
+      } catch { return j(headers, 502, { error: "note_failed" }); }
+    }
+
     // ---------- enterMoveIn: the signed lease becomes a Buildium lease ----------
     // Gate: the PandaDoc document must be completed (all signatures). Writes:
     // 1) Buildium lease (fixed term, tenants from the application, rent schedule
@@ -2678,10 +2694,19 @@ ${SIG}`,
 
         const MARY = { gid: "1203402971273034", name: "Mary Galvez" };
         const dueOn = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+        // The bench declares how the email leaves (Brittany 2026-09-24): with
+        // Gmail direct send wired up the record says SENT; the draft
+        // instruction stays for declines (vendor block is manual) and for
+        // sessions without a Gmail sender. If a declared direct send then
+        // fails, the bench posts a mailNote correction under this comment.
+        const directSend = String((body as { emailMode?: unknown }).emailMode ?? "") === "direct";
+        const emailLine = directSend
+          ? `Email sent to ${toEmails.join(", ")} from leasing@sagareus.com (cc leasing@) via the workbench.`
+          : `Send the email below from leasing@sagareus.com (draft only; review before sending).`;
         const comment = `MANAGER DECISION: ${headlineOut}
-Assigned to ${MARY.name}, due ${dueOn}. Send the email below from leasing@sagareus.com (draft only; review before sending).
+Assigned to ${MARY.name}, due ${dueOn}. ${emailLine}
 
-EMAIL DRAFT
+${directSend ? "EMAIL" : "EMAIL DRAFT"}
 Subject: ${built.email.subject}
 
 ${built.email.body}`;

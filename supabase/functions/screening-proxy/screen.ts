@@ -15,6 +15,7 @@
 
 import { getDocument } from "pdfjs-dist/legacy";
 import * as mupdf from "mupdf";
+import { PhotonImage, resize, SamplingFilter } from "@cf-wasm/photon";
 import type { EngineResult, HouseholdInput } from "./engine.ts";
 import { TIERS } from "./engine.ts";
 
@@ -58,7 +59,7 @@ type MupdfDocument = {
 
 export type Extracted =
   | { kind: "text"; name: string; pages: number; text: string }
-  | { kind: "images"; name: string; pages: number; pngs: string[] }
+  | { kind: "images"; name: string; pages: number; pngs: string[]; mime?: string }
   | { kind: "pdf"; name: string; pages: number; dataBase64: string }
   | { kind: "failed"; name: string; error: string };
 
@@ -149,9 +150,41 @@ export function extractPdf(bytes: Uint8Array, name: string, rasterBudget = MAX_P
   })();
 }
 
-/** Raster images (jpeg/png uploads) pass straight through to vision. */
+/** The data URI must carry the image's REAL type: a JPEG labeled image/png
+ * is a provider 400 ("photo id.jpg", 2026-09-24). Sniff the magic bytes. */
+function sniffImageMime(b: Uint8Array): string {
+  if (b.length > 2 && b[0] === 0xFF && b[1] === 0xD8) return "image/jpeg";
+  if (b.length > 3 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4E && b[3] === 0x47) return "image/png";
+  if (b.length > 11 && b[0] === 0x52 && b[1] === 0x49 && b[2] === 0x46 && b[3] === 0x46 && b[8] === 0x57 && b[9] === 0x45 && b[10] === 0x42 && b[11] === 0x50) return "image/webp";
+  if (b.length > 2 && b[0] === 0x47 && b[1] === 0x49 && b[2] === 0x46) return "image/gif";
+  return "image/png";
+}
+
+// The provider's per-image ceiling is 5MB AFTER base64 (x4/3), so raw bytes
+// past ~3.5MB risk a bare 400. Phone photos routinely land 8-12MB.
+const IMG_PASSTHROUGH_MAX = 3_500_000;
+
+/** Raster images (jpeg/png uploads) go to vision with their real mime;
+ * oversized phone photos are downscaled first (long edge 1568px, the
+ * model's optimal, JPEG q80 via photon wasm; this mupdf build has no
+ * image handlers), falling back to pass-through if decoding fails. */
 export function imageAsExtracted(bytes: Uint8Array, name: string): Extracted {
-  return { kind: "images", name, pages: 1, pngs: [bytesToBase64(bytes)] };
+  const mime = sniffImageMime(bytes);
+  if (bytes.byteLength > IMG_PASSTHROUGH_MAX) {
+    try {
+      const img = PhotonImage.new_from_byteslice(bytes);
+      const w = img.get_width(), h = img.get_height();
+      const scale = Math.min(1, 1568 / Math.max(w, h, 1));
+      const outImg = scale < 1 ? resize(img, Math.round(w * scale), Math.round(h * scale), SamplingFilter.CatmullRom) : img;
+      const jpg = outImg.get_bytes_jpeg(80);
+      if (outImg !== img) outImg.free();
+      img.free();
+      if (jpg?.length && jpg.length < bytes.byteLength) {
+        return { kind: "images", name, pages: 1, pngs: [bytesToBase64(jpg)], mime: "image/jpeg" };
+      }
+    } catch { /* pass the original through; the provider may still take it */ }
+  }
+  return { kind: "images", name, pages: 1, pngs: [bytesToBase64(bytes)], mime };
 }
 
 // ------------------------------------------------------------- parsing
@@ -242,8 +275,9 @@ async function parseBatch(docs: Extracted[], contextText: string, allowEmpty = f
       parts.push({ type: "text", text: `\n===== DOCUMENT: ${d.name} (${d.pages} pages, extracted text) =====\n${d.text}` });
     } else if (d.kind === "images") {
       parts.push({ type: "text", text: `\n===== DOCUMENT: ${d.name} (${d.pages} pages, scanned; page images follow) =====` });
+      const m = d.mime ?? "image/png";
       for (const png of d.pngs) {
-        parts.push({ type: "image_url", image_url: { url: `data:image/png;base64,${png}` } });
+        parts.push({ type: "image_url", image_url: { url: `data:${m};base64,${png}` } });
       }
     } else if (d.kind === "pdf") {
       parts.push({ type: "text", text: `\n===== DOCUMENT: ${d.name} (PDF, attached) =====` });
