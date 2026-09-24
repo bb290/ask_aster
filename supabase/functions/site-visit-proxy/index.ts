@@ -1859,7 +1859,9 @@ app.post("*", async (c) => {
         } catch { notesG.push("Weekly Site Visit assign failed."); }
         await assignSub(/floor plan/i, agentG, plusDays(1), "Floor Plan");
         await assignSub(/weekly activity report/i, agentG, nextTue, "Weekly Activity Report");
-        await assignSub(/verify.*zillow.*redfin/i, maryGid, plusDays(2), "Zillow + Redfin verify");
+        // renamed "Update | Zillow + Redfin links" (Brittany 2026-09-24); match
+        // the stable pair, either generation
+        await assignSub(/zillow\s*\+?\s*(and\s*)?redfin/i, maryGid, plusDays(2), "Zillow + Redfin links");
         for (const s0 of subsG) {
           // "Update | List Date..." completes too (Brittany 2026-09-19): the button
           // writes List Date itself. The combined List/Lease-Signed/Move-In variant
