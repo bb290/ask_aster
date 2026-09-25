@@ -139,11 +139,11 @@ const ST2_CANCELLED = "1218716498458224";
 const F_STAGE = "1218844007644664";
 const F_DECISION = "1218843918385357";
 const F_HOLDS = "1218843872406896";
+// Revised by Brittany 2026-09-25: the intake stages collapsed into Initial
+// Review, with what is outstanding carried as Holds; Negotiating added.
 const STAGE_OPT: Record<string, string> = {
-  "Pending Showing": "1218844007644665", "Pending App(s)": "1218844007644666",
-  "Pending App Fee": "1218844007644667", "Pending Income Docs": "1218844007644668",
-  "Ready for Review": "1218844007644669", "Enhanced Review": "1218844007644670",
-  "Mgr Review": "1218844007644671", "Lease Sent": "1218844007644672",
+  "Initial Review": "1218844007644665", "Mgr Review": "1218844007644671",
+  "Negotiating": "1218873507535180", "Lease Sent": "1218844007644672",
   "Lease Signed": "1218844007644673", "Pending MI": "1218844007644674",
   "Cancelled": "1218844007644675",
 };
@@ -152,10 +152,15 @@ const DEC_OPT: Record<string, string> = {
   "Conditionally Approved": "1218843918385360", "Declined": "1218843918385361",
 };
 const HOLD_OPT: Record<string, string> = {
+  "Pending Showing": "1218871533373041", "Income Docs": "1218871533373042",
+  "Applications": "1218871533373043", "Bank Docs": "1218871533373044",
+  "App Fee": "1218871533373045", "Co-Signer": "1218843872406899",
   "Sec 8": "1218843872406897", "Owner Policy Exception": "1218843872406898",
-  "Co-Signer": "1218843872406899", "Add'l Income Docs": "1218843872406900",
-  "Balance Owed": "1218843872406901", "On Hold": "1218843872406902",
+  "Balance Owed": "1218843872406901",
 };
+// holds that mean a decision-side condition (vs an intake doc chase): these
+// pull the file onto the holding list / Pending Docs section
+const CONDITION_HOLDS = ["Sec 8", "Owner Policy Exception", "Co-Signer", "Balance Owed"];
 const SEC_LEASE_SENT = "1217174552914951";
 const SEC_PENDING_MGR = "1217174694944319";
 const SEC_NEW_INCOMPLETE = "1217174650640615";
@@ -175,24 +180,23 @@ async function applyTriple(gid: string, upd: TripleUpd): Promise<{ stage: string
   if (upd.decision && DEC_OPT[upd.decision]) writes[F_DECISION] = DEC_OPT[upd.decision];
   if (upd.holds || upd.addHolds) writes[F_HOLDS] = holds.map((h) => HOLD_OPT[h]).filter(Boolean);
   if (Object.keys(writes).length) await asanaCall("PUT", `/tasks/${gid}`, { custom_fields: writes }).catch(() => {});
-  // title prefix: late stages and Cancelled win; then a real decision; then the stage
+  // No title renames: the triple carries the status, the task keeps its own
+  // name (team feedback 2026-09-25). stripStatusPrefix stays for READING the
+  // legacy prefixes still on old tasks.
+  // section sync: the bench moves sections itself so the Asana rules are
+  // optional. Doc-chase holds during Initial Review stay in New/Incomplete;
+  // condition holds (or any hold after the file reached Mgr Review) park the
+  // file on the Pending Docs / holding section.
   try {
-    const bare = stripStatusPrefix(String(t.name ?? ""));
-    const pfx = ["Lease Sent", "Lease Signed", "Pending MI", "Cancelled"].includes(stage) ? stage
-      : (decision && decision !== "Pending") ? decision : stage;
-    const wanted = pfx && bare ? `${pfx.toUpperCase()} | ${bare}` : String(t.name ?? "");
-    if (bare && wanted !== t.name) await asanaCall("PUT", `/tasks/${gid}`, { name: wanted }).catch(() => {});
-  } catch { /* prefix is best-effort */ }
-  // section sync: the bench moves sections itself so the Asana rules are optional
-  try {
+    const heldBack = holds.some((h) => CONDITION_HOLDS.includes(h)) || (holds.length > 0 && stage === "Mgr Review");
     const sec = stage === "Cancelled" ? SEC_COMPLETE
       : decision === "Declined" ? SEC_COMPLETE
       : (stage === "Lease Signed" || stage === "Pending MI") ? SEC_MOVEIN_PENDING
       : stage === "Lease Sent" ? SEC_LEASE_SENT
       : decision === "Conditionally Approved" ? SEC_PENDING_DOCS
-      : (holds.length && decision !== "Approved") ? SEC_PENDING_DOCS
+      : (heldBack && decision !== "Approved") ? SEC_PENDING_DOCS
       : decision === "Approved" ? SEC_APPROVED
-      : (stage === "Mgr Review" || stage === "Enhanced Review") ? SEC_PENDING_MGR
+      : (stage === "Mgr Review" || stage === "Negotiating") ? SEC_PENDING_MGR
       : stage ? SEC_NEW_INCOMPLETE : "";
     if (sec) await asanaCall("POST", `/tasks/${gid}/addProject`, { project: PENDING_APPS_PROJECT, section: sec }).catch(() => {});
   } catch { /* section move is best-effort */ }
@@ -200,11 +204,11 @@ async function applyTriple(gid: string, upd: TripleUpd): Promise<{ stage: string
 }
 // old-vocabulary translation: every existing caller keeps its gids
 const OLD_TO_TRIPLE: Record<string, TripleUpd> = {
-  [STATUS.pendingShowing]: { stage: "Pending Showing" },
-  [STATUS.pendingApps]: { stage: "Pending App(s)" },
-  [STATUS.pendingIncomeDocs]: { stage: "Pending Income Docs" },
-  [STATUS.complete]: { stage: "Ready for Review" },
-  [STATUS.pendingEnhanced]: { stage: "Enhanced Review" },
+  [STATUS.pendingShowing]: { stage: "Initial Review", addHolds: ["Pending Showing"] },
+  [STATUS.pendingApps]: { stage: "Initial Review", addHolds: ["Applications"] },
+  [STATUS.pendingIncomeDocs]: { stage: "Initial Review", addHolds: ["Income Docs"] },
+  [STATUS.complete]: { stage: "Initial Review", holds: [] }, // every item in
+  [STATUS.pendingEnhanced]: { stage: "Initial Review", addHolds: ["Bank Docs"] },
   [STATUS.pendingMgr]: { stage: "Mgr Review" },
   [STATUS.approved]: { decision: "Approved" },
   [STATUS.approvedLeaseSent]: { stage: "Lease Sent", decision: "Approved" },
@@ -212,16 +216,17 @@ const OLD_TO_TRIPLE: Record<string, TripleUpd> = {
   [STATUS.condSec8]: { decision: "Conditionally Approved", addHolds: ["Sec 8"] },
   [STATUS.condOwnerException]: { decision: "Conditionally Approved", addHolds: ["Owner Policy Exception"] },
   [STATUS.pendingCosigner]: { addHolds: ["Co-Signer"] },
-  [STATUS.pendingAddlDocs]: { addHolds: ["Add'l Income Docs"] },
+  [STATUS.pendingAddlDocs]: { addHolds: ["Income Docs"] },
   [STATUS.pendingLandlordBalance]: { addHolds: ["Balance Owed"] },
   [STATUS.exceptionPet]: { addHolds: ["Owner Policy Exception"] },
   [STATUS.declined]: { decision: "Declined" },
-  [STATUS.onHold]: { addHolds: ["On Hold"] },
+  // On Hold was disabled 2026-09-25; a voided lease goes back to Negotiating
+  [STATUS.onHold]: { stage: "Negotiating" },
 };
 const OLD2_TO_TRIPLE: Record<string, TripleUpd> = Object.fromEntries(
   Object.entries(STATUS2).map(([oldGid, ddGid]) => [ddGid, OLD_TO_TRIPLE[oldGid]]).filter(([, v]) => v)
 ) as Record<string, TripleUpd>;
-OLD2_TO_TRIPLE["1218685241682741"] = { stage: "Pending App Fee" };
+OLD2_TO_TRIPLE["1218685241682741"] = { stage: "Initial Review", addHolds: ["App Fee"] };
 OLD2_TO_TRIPLE[ST2_LEASING_DONE] = { stage: "Pending MI", decision: "Approved" };
 OLD2_TO_TRIPLE[ST2_CANCELLED] = { stage: "Cancelled" };
 // combined display chips: stage, then a real decision, then each hold
@@ -252,10 +257,11 @@ const PREFIX_TOKENS = [
   "Approved - Lease Sent",
   "APPROVED", "REJECTED", "DECLINED", "LEASE SENT", "CO-SIGNER NEEDED",
   "PENDING SEC 8", "Additional Docs Needed",
-  // Status split vocabulary (2026-09-24)
+  // Status split vocabulary (2026-09-24; revised 2026-09-25)
   "Pending Showing", "Pending App(s)", "Pending App Fee", "Ready for Review",
   "Enhanced Review", "Mgr Review", "Lease Signed", "Pending MI",
-  "Conditionally Approved", "Pending",
+  "Conditionally Approved", "Pending", "Initial Review", "Negotiating",
+  "Pending Bank Docs",
 ].sort((a, b) => b.length - a.length);
 export function stripStatusPrefix(name: string): string {
   let out = name.trim();
@@ -1548,11 +1554,11 @@ Thank you for submitting your application for ${address || "the property"}! We h
 
 Acceptable income documentation:
 
-- Your last two full months of official paystubs (screenshots of banking apps, self-generated documents, and unsigned letters do not qualify)
-- Or a signed offer letter on company letterhead with HR contact information
-- Or platform earnings statements covering the most recent 60 days for gig or contract work
-- Self-employed or 1099 applicants: previous year's full federal tax return (Form 1040 plus Schedule C, E, F, or K-1s as applicable; business returns 1120, 1120S, 1065 when personal income depends on business profitability)
-- Housing voucher holders: your official voucher award letter
+• Your last two full months of official paystubs (screenshots of banking apps, self-generated documents, and unsigned letters do not qualify)
+• Or a signed offer letter on company letterhead with HR contact information
+• Or platform earnings statements covering the most recent 60 days for gig or contract work
+• Self-employed or 1099 applicants: previous year's full federal tax return (Form 1040 plus Schedule C, E, F, or K-1s as applicable; business returns 1120, 1120S, 1065 when personal income depends on business profitability)
+• Housing voucher holders: your official voucher award letter
 
 NEXT STEP: Reply to this email with your income documents and we will start your review right away.
 
@@ -1605,11 +1611,11 @@ Thank you for submitting your application for ${address}! We have received it an
 
 Acceptable income documentation:
 
-- Your last two full months of official paystubs (screenshots of banking apps, self-generated documents, and unsigned letters do not qualify)
-- Or a signed offer letter on company letterhead with HR contact information
-- Or platform earnings statements covering the most recent 60 days for gig or contract work
-- Self-employed or 1099 applicants: previous year's full federal tax return (Form 1040 plus Schedule C, E, F, or K-1s as applicable; business returns 1120, 1120S, 1065 when personal income depends on business profitability)
-- Housing voucher holders: your official voucher award letter
+• Your last two full months of official paystubs (screenshots of banking apps, self-generated documents, and unsigned letters do not qualify)
+• Or a signed offer letter on company letterhead with HR contact information
+• Or platform earnings statements covering the most recent 60 days for gig or contract work
+• Self-employed or 1099 applicants: previous year's full federal tax return (Form 1040 plus Schedule C, E, F, or K-1s as applicable; business returns 1120, 1120S, 1065 when personal income depends on business profitability)
+• Housing voucher holders: your official voucher award letter
 
 NEXT STEP: Reply to this email with your income documents and we will start your review right away.
 
@@ -2584,9 +2590,12 @@ ${SIG}`,
             const ev = (t.custom_fields ?? []).find((c) => c.gid === STATUS2_FIELD)?.enum_value;
             const tri = tripleNames(t.custom_fields as never);
             const late = ["Lease Sent", "Lease Signed", "Pending MI", "Cancelled"].includes(tri.stage);
-            const HOLD_LIST = ["Sec 8", "Owner Policy Exception", "Co-Signer", "Add'l Income Docs", "Balance Owed"];
             const oldCond = !!ev && COND_STATUSES2.includes(ev.gid ?? "");
-            const newCond = !late && (tri.decision === "Conditionally Approved" || tri.holds.some((h) => HOLD_LIST.includes(h)));
+            // condition holds always hold the file; a doc-chase hold only
+            // counts once the file already reached Mgr Review (2026-09-25)
+            const newCond = !late && (tri.decision === "Conditionally Approved"
+              || tri.holds.some((h) => CONDITION_HOLDS.includes(h))
+              || (tri.holds.length > 0 && tri.stage === "Mgr Review"));
             if (!oldCond && !newCond) continue;
             const chips = tripleChips(t.custom_fields as never);
             rows.push({
@@ -2627,7 +2636,6 @@ ${SIG}`,
         cosigner: { decision: "insufficient" as Decision, option: "cosigner", status: STATUS.pendingCosigner },
         docs: { decision: "insufficient" as Decision, option: "docs", status: STATUS.pendingAddlDocs },
         balance: { decision: "insufficient" as Decision, option: "landlord_balance", status: STATUS.pendingLandlordBalance },
-        on_hold: { decision: "insufficient" as Decision, option: "on_hold", status: STATUS.onHold },
       };
       if (isConditional && !CONDITIONAL_MAP[option]) {
         return j(headers, 400, { error: "bad_option", message: "Pick a conditional option first. Nothing was changed." });
@@ -2665,7 +2673,13 @@ ${SIG}`,
         const firsts = names.split(/[+,/]|\band\b/).map((n) => n.trim().split(/\s+/)[0]).filter(Boolean);
         const applicantFirst = firsts.join(" and ");
 
-        const built = buildDecision({ decision: effDecision, option: effOption, options: isConditional ? [] : optionsList, text, comment: mgrComment, applicantFirst, address });
+        // co-signer emails name the actual shortfall from the Pass/Fail card
+        // (team 2026-09-25): credit fail, income fail, or both
+        const pfRaw = ((body as { passFail?: Record<string, unknown> }).passFail ?? {}) as Record<string, unknown>;
+        const incomeFail = String(pfRaw.income ?? "").toLowerCase() === "fail";
+        const creditFail = String(pfRaw.credit ?? "").toLowerCase() === "fail";
+        const cosignerNeed = incomeFail && creditFail ? "income and credit" : creditFail ? "credit" : "income";
+        const built = buildDecision({ decision: effDecision, option: effOption, options: isConditional ? [] : optionsList, text, comment: mgrComment, applicantFirst, address, cosignerNeed });
         const headlineOut = isConditional ? `Conditionally Approved - ${built.headline}` : built.headline;
 
         // Recipients: Buildium group members via the Applicant ID field,
@@ -2686,7 +2700,11 @@ ${SIG}`,
         if (!toEmails.length) {
           toEmails = [...new Set((task.notes ?? "").match(/[\w.+-]+@[\w-]+\.[\w.]+/g) ?? [])].slice(0, 6);
         }
-        const emailOut = { subject: built.email.subject, body: built.email.body, to: toEmails, cc: "leasing@sagareus.com" };
+        // the bench preview is editable (team 2026-09-25): edited subject/body
+        // ride the final call and are what gets filed and sent
+        const subjOv = String((body as { emailSubject?: unknown }).emailSubject ?? "").trim();
+        const bodyOv = String((body as { emailBody?: unknown }).emailBody ?? "").trim();
+        const emailOut = { subject: subjOv || built.email.subject, body: bodyOv || built.email.body, to: toEmails, cc: "leasing@sagareus.com" };
 
         if (previewOnly) {
           return j(headers, 200, { preview: true, headline: headlineOut, email: emailOut });
@@ -2707,9 +2725,9 @@ ${SIG}`,
 Assigned to ${MARY.name}, due ${dueOn}. ${emailLine}
 
 ${directSend ? "EMAIL" : "EMAIL DRAFT"}
-Subject: ${built.email.subject}
+Subject: ${emailOut.subject}
 
-${built.email.body}`;
+${emailOut.body}`;
         wrote = true;
         await asanaCall("POST", `/tasks/${gid}/stories`, { text: comment });
         await asanaCall("PUT", `/tasks/${gid}`, { assignee: MARY.gid, due_on: dueOn });
@@ -2738,15 +2756,15 @@ ${built.email.body}`;
         // Decision = Pending and only adds the Hold.
         const CONDITIONAL_HOLD: Record<string, string> = {
           sec8: "Sec 8", owner_exception: "Owner Policy Exception", cosigner: "Co-Signer",
-          docs: "Add'l Income Docs", balance: "Balance Owed", on_hold: "On Hold",
+          docs: "Income Docs", balance: "Balance Owed",
         };
         const triUpd: TripleUpd = isConditional
-          ? { decision: "Conditionally Approved", addHolds: [CONDITIONAL_HOLD[option] ?? "Add'l Income Docs"] }
+          ? { decision: "Conditionally Approved", addHolds: [CONDITIONAL_HOLD[option] ?? "Income Docs"] }
           : effDecision === "declined" ? { decision: "Declined" }
           : effDecision === "insufficient" ? (effOption === "cosigner" ? { addHolds: ["Co-Signer"] }
             : effOption === "landlord_balance" ? { addHolds: ["Balance Owed"] }
             : effOption === "pet_policy" ? { addHolds: ["Owner Policy Exception"] }
-            : { addHolds: ["Add'l Income Docs"] })
+            : { addHolds: ["Income Docs"] })
           : effOption === "section8" ? { decision: "Conditionally Approved", addHolds: ["Sec 8"] }
           : effOption === "owner_exception" ? { decision: "Conditionally Approved", addHolds: ["Owner Policy Exception"] }
           : { decision: "Approved" };

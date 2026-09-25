@@ -24,6 +24,7 @@ export interface DecideInput {
   comment?: string; // manager comment, inserted into the email verbatim
   applicantFirst: string; // greeting name(s), best-effort from task name
   address: string; // property address, best-effort from task name
+  cosignerNeed?: string; // "income" | "credit" | "income and credit", from the Pass/Fail card
 }
 
 export const DECISION_OPTIONS: Record<Decision, { key: string; label: string; needsText?: boolean }[]> = {
@@ -39,7 +40,6 @@ export const DECISION_OPTIONS: Record<Decision, { key: string; label: string; ne
     { key: "docs", label: "Insufficient documentation" },
     { key: "landlord_balance", label: "Balance owed to landlord" },
     { key: "pet_policy", label: "Pet policy" },
-    { key: "on_hold", label: "On hold" },
   ],
   declined: [
     { key: "income", label: "Income does not meet minimum" },
@@ -64,8 +64,8 @@ function approvedEmail(opt: string, first: string, address: string, text: string
 
 Great news! Your application for ${address} has been approved.
 
-- We will send the lease for electronic signature shortly.
-- The unit is held once the lease is fully signed and the move-in funds are received.
+• We will send the lease for electronic signature shortly.
+• The unit is held once the lease is fully signed and the move-in funds are received.
 
 NEXT STEP: Watch your inbox for the lease and sign promptly.
 
@@ -81,7 +81,7 @@ ${SIGNATURE}`,
 
 Good news! Your application for ${address} has been approved with the following adjusted terms:
 
-- ${text || "[Manager: enter the counter offer terms]"}
+• ${text || "[Manager: enter the counter offer terms]"}
 
 NEXT STEP: Reply to this email to accept these terms or to discuss. Once we hear back, we will prepare the lease.
 
@@ -107,8 +107,8 @@ ${SIGNATURE}`,
 
 Good news! Sagareus has approved your application for ${address}. The next steps run through your Housing Authority:
 
-- Request for Tenancy Approval (RFTA) paperwork
-- Housing Authority inspection
+• Request for Tenancy Approval (RFTA) paperwork
+• Housing Authority inspection
 
 We will start the paperwork on our side and coordinate with your case worker. These steps can take a little time, so the sooner your portion of the RFTA is submitted, the better.
 
@@ -135,15 +135,17 @@ const INSUFFICIENT_BLOCKS: Record<string, { flag: string; body?: string; resolva
   docs: {
     flag: "Income documentation does not meet our verification standards.",
     body: `Acceptable documentation:
-    - Your last two full months of official paystubs (screenshots of banking apps, self-generated documents, and unsigned letters do not qualify)
-    - Or a signed offer letter on company letterhead with HR contact information
-    - Or platform earnings statements covering the most recent 60 days for gig or contract work
-    - Self-employed or 1099 applicants: previous year's full federal tax return (Form 1040 plus Schedule C, E, F, or K-1s as applicable; business returns 1120, 1120S, 1065 when personal income depends on business profitability)`,
+    • Your last two full months of official paystubs (screenshots of banking apps, self-generated documents, and unsigned letters do not qualify)
+    • Or a signed offer letter on company letterhead with HR contact information
+    • Or platform earnings statements covering the most recent 60 days for gig or contract work
+    • Self-employed or 1099 applicants: previous year's full federal tax return (Form 1040 plus Schedule C, E, F, or K-1s as applicable; business returns 1120, 1120S, 1065 when personal income depends on business profitability)`,
     resolvable: "Reply with documentation that meets the standard and we will rerun your screening.",
   },
+  // flag/resolvable are rewritten per the Pass/Fail card at build time: the
+  // email names income, credit, or both as the shortfall (team 2026-09-25)
   cosigner: {
     flag: "The application does not meet the income standard for the property on its own.",
-    resolvable: "Add a co-signer who meets the income standard. Reply to this email and we will send the co-signer application link.",
+    resolvable: "Add a co-signer who qualifies. Reply to this email and we will send the co-signer application link.",
   },
   landlord_balance: {
     flag: "Outstanding balance owed to a prior landlord.",
@@ -153,19 +155,18 @@ const INSUFFICIENT_BLOCKS: Record<string, { flag: string; body?: string; resolva
     flag: "Pet(s) on the application conflict with the advertised pet policy for this property.",
     resolvable: "Owner exception to the pet policy required; we will request it and follow up. Reply to confirm your pet details (type, weight, count) are accurate.",
   },
-  on_hold: {
-    flag: "Your application is temporarily on hold.",
-    resolvable: "We will follow up with the next step as soon as the hold clears. Reply to this email with any questions.",
-  },
 };
 
-export function insufficientEmailMulti(opts: string[], comment: string, first: string, address: string): { subject: string; body: string } {
-  const blocks = opts.map((k) => INSUFFICIENT_BLOCKS[k]).filter(Boolean);
+export function insufficientEmailMulti(opts: string[], comment: string, first: string, address: string, cosignerNeed?: string): { subject: string; body: string } {
+  const need = cosignerNeed || "income";
+  const blocks = opts.map((k) => k === "cosigner"
+    ? { ...INSUFFICIENT_BLOCKS.cosigner, flag: `The application does not meet the ${need} standard for the property on its own.` }
+    : INSUFFICIENT_BLOCKS[k]).filter(Boolean);
   const items = blocks.map((b) =>
-    `- ${b.flag}${b.body ? "\n    " + b.body.split("\n").join("\n    ") : ""}\n    RESOLVABLE: ${b.resolvable}`
+    `• ${b.flag}${b.body ? "\n    " + b.body.split("\n").join("\n    ") : ""}\n    RESOLVABLE: ${b.resolvable}`
   );
   if (comment.trim()) {
-    items.push(`- ${comment.trim().split("\n").join("\n    ")}`);
+    items.push(`• ${comment.trim().split("\n").join("\n    ")}`);
   }
   const n = blocks.length;
   return {
@@ -211,9 +212,9 @@ ${SIGNATURE}`,
 
 Thank you for applying for ${address}. We need income documentation that meets our verification standards to complete your screening. Acceptable documents include:
 
-- Your last two full months of official paystubs (screenshots of banking apps, self-generated documents, and unsigned letters do not qualify)
-- Or a signed offer letter on company letterhead with HR contact information
-- Or platform earnings statements covering the most recent 60 days for gig or contract work
+• Your last two full months of official paystubs (screenshots of banking apps, self-generated documents, and unsigned letters do not qualify)
+• Or a signed offer letter on company letterhead with HR contact information
+• Or platform earnings statements covering the most recent 60 days for gig or contract work
 
 Reply to this email with the documents and we will complete your review right away.
 
@@ -230,8 +231,8 @@ Thank you for applying for ${address}. Our screening shows an outstanding balanc
 
 Your application can move forward if you provide either:
 
-- Proof the balance has been paid or settled, or
-- Documentation of an established payment plan in good standing with the previous landlord
+• Proof the balance has been paid or settled, or
+• Documentation of an established payment plan in good standing with the previous landlord
 
 Reply to this email with the documentation and we will rerun your screening.
 
@@ -258,7 +259,7 @@ Thank you for your application for ${address}. After careful review against our 
 ADVERSE ACTION NOTICE
 
 Reason for this decision:
-- ${DECLINE_REASON[opt] ?? DECLINE_REASON.docs}
+• ${DECLINE_REASON[opt] ?? DECLINE_REASON.docs}
 
 This decision was based in whole or in part on information obtained through a consumer screening report. The screening vendor did not make this decision and cannot explain why it was made.
 
@@ -266,8 +267,8 @@ Screening vendor (consumer reporting agency):
 [STAFF: copy the vendor name, address, and phone from the cover page of the screening report before sending. Do not send with this placeholder.]
 
 Your rights under the Fair Credit Reporting Act:
-- You may request a free copy of your consumer report from the screening vendor within 60 days of this notice.
-- You have the right to dispute directly with the screening vendor the accuracy or completeness of any information in the report.
+• You may request a free copy of your consumer report from the screening vendor within 60 days of this notice.
+• You have the right to dispute directly with the screening vendor the accuracy or completeness of any information in the report.
 
 Sagareus Property Management evaluates every application against the same objective criteria. We accept all lawful sources of income. If your circumstances change, you are welcome to apply again.
 
@@ -294,7 +295,7 @@ ${SIGNATURE}`);
   if (input.decision === "insufficient") {
     const keys = (input.options?.length ? input.options : [input.option]).filter((k) => opts.some((o) => o.key === k));
     const labels = keys.map((k) => opts.find((o) => o.key === k)?.label ?? k).join(" + ");
-    return { headline: labels || opt.label, email: insufficientEmailMulti(keys, input.comment ?? "", first, address) };
+    return { headline: labels || opt.label, email: insufficientEmailMulti(keys, input.comment ?? "", first, address, input.cosignerNeed) };
   }
   const e = declineEmail(input.option, first, address);
   if (input.comment?.trim()) {
