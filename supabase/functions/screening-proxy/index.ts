@@ -2655,7 +2655,7 @@ ${SIG}`,
       const previewOnly = (body as { previewOnly?: unknown }).previewOnly === true;
       let wrote = false;
       try {
-        const task = await asanaCall("GET", `/tasks/${gid}?opt_fields=name,permalink_url,notes,custom_fields.name,custom_fields.number_value`) as { name?: string; permalink_url?: string; notes?: string; custom_fields?: { name?: string; number_value?: number | null }[] };
+        const task = await asanaCall("GET", `/tasks/${gid}?opt_fields=name,permalink_url,notes,parent.gid,custom_fields.name,custom_fields.number_value`) as { name?: string; permalink_url?: string; notes?: string; parent?: { gid?: string } | null; custom_fields?: { name?: string; number_value?: number | null }[] };
         // Names/address, best-effort from the task title conventions:
         //   "Pending Mgr Review | [Nth ]Application / Names / Address"
         //   "[prefix ]Application <Address - unit // Names>"
@@ -2679,7 +2679,21 @@ ${SIG}`,
         const incomeFail = String(pfRaw.income ?? "").toLowerCase() === "fail";
         const creditFail = String(pfRaw.credit ?? "").toLowerCase() === "fail";
         const cosignerNeed = incomeFail && creditFail ? "income and credit" : creditFail ? "credit" : "income";
-        const built = buildDecision({ decision: effDecision, option: effOption, options: isConditional ? [] : optionsList, text, comment: mgrComment, applicantFirst, address, cosignerNeed });
+        // co-signer template extras (Brittany 2026-09-25): the stat bullets
+        // from the application task and the listing link from the parent LU
+        // (the co-signer applies through the property's listing page)
+        const numOf = (re: RegExp) => (task.custom_fields ?? []).find((c) => re.test(String(c.name ?? "")))?.number_value ?? null;
+        const medianCredit = numOf(/median credit/i);
+        const qualifyingIncome = numOf(/qualifying monthly income/i);
+        let listingUrl = "";
+        const wantsCosigner = option === "cosigner" || effOption === "cosigner" || optionsList.includes("cosigner");
+        if (wantsCosigner && task.parent?.gid) {
+          try {
+            const lu = await asanaCall("GET", `/tasks/${task.parent.gid}?opt_fields=custom_fields.name,custom_fields.display_value`) as { custom_fields?: { name?: string; display_value?: string | null }[] };
+            listingUrl = String((lu.custom_fields ?? []).find((f) => /sagareus listing/i.test(String(f.name ?? "")))?.display_value ?? "").trim();
+          } catch { /* the template shows an editable placeholder instead */ }
+        }
+        const built = buildDecision({ decision: effDecision, option: effOption, options: isConditional ? [] : optionsList, text, comment: mgrComment, applicantFirst, address, cosignerNeed, medianCredit, qualifyingIncome, listingUrl });
         const headlineOut = isConditional ? `Conditionally Approved - ${built.headline}` : built.headline;
 
         // Recipients: Buildium group members via the Applicant ID field,

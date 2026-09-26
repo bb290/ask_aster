@@ -25,6 +25,9 @@ export interface DecideInput {
   applicantFirst: string; // greeting name(s), best-effort from task name
   address: string; // property address, best-effort from task name
   cosignerNeed?: string; // "income" | "credit" | "income and credit", from the Pass/Fail card
+  medianCredit?: number | null; // Median Credit Score field, for the co-signer email stat line
+  qualifyingIncome?: number | null; // Qualifying Monthly Income field, same
+  listingUrl?: string; // the LU's Sagareus Listing Link, where the co-signer applies
 }
 
 export const DECISION_OPTIONS: Record<Decision, { key: string; label: string; needsText?: boolean }[]> = {
@@ -127,6 +130,38 @@ ${SIGNATURE}`,
   };
 }
 
+// Standalone co-signer request (Brittany's template, 2026-09-25). Reason and
+// stat bullets flex per the Pass/Fail card: credit shows Median Household
+// Credit, income shows Qualifying Monthly Income, both show both. **text**
+// renders bold in the HTML part; the send strips the markers from plain text.
+export function cosignerEmail(first: string, address: string, need: string, medianCredit?: number | null, qualifyingIncome?: number | null, listingUrl?: string): { subject: string; body: string } {
+  const reqWord = need === "income and credit" ? "income and credit requirements" : `${need} requirement`;
+  const stats: string[] = [];
+  if (need.includes("credit") && medianCredit != null) stats.push(`• Median Household Credit: ${medianCredit}`);
+  if (need.includes("income") && qualifyingIncome != null) stats.push(`• Qualifying Monthly Income: $${Math.round(qualifyingIncome).toLocaleString("en-US")}`);
+  const applyAt = (listingUrl ?? "").trim() || "[paste the Sagareus listing link]";
+  return {
+    subject: "Your Sagareus application: co-signer or lease guarantee needed",
+    body: `Hi ${first},
+
+Thank you for applying for ${address}.
+
+Unfortunately, the application does not meet the ${reqWord} for the property.
+${stats.length ? "\n" + stats.join("\n") + "\n" : ""}
+**Options to Resolve**
+
+• Add a co-signer: the co-signer must submit an application here: ${applyAt}
+
+• If a co-signer is unavailable, you may choose to apply for Lease Guarantee Coverage: https://www.theguarantors.com/renter
+
+**Next Step**
+
+Please confirm which option works for you.
+
+${SIGNATURE}`,
+  };
+}
+
 // Multi-issue insufficient email, modeled on the manager's revised draft
 // (Selena + Kyle task, 2026-08-05): every checked issue is flagged with its
 // own "Resolvable:" line; the manager's comment is inserted verbatim as
@@ -145,7 +180,7 @@ const INSUFFICIENT_BLOCKS: Record<string, { flag: string; body?: string; resolva
   // email names income, credit, or both as the shortfall (team 2026-09-25)
   cosigner: {
     flag: "The application does not meet the income standard for the property on its own.",
-    resolvable: "Add a co-signer who qualifies. Reply to this email and we will send the co-signer application link.",
+    resolvable: "Add a co-signer who qualifies (they submit an application via the property's listing page), or apply for Lease Guarantee Coverage: https://www.theguarantors.com/renter",
   },
   landlord_balance: {
     flag: "Outstanding balance owed to a prior landlord.",
@@ -295,6 +330,15 @@ ${SIGNATURE}`);
   if (input.decision === "insufficient") {
     const keys = (input.options?.length ? input.options : [input.option]).filter((k) => opts.some((o) => o.key === k));
     const labels = keys.map((k) => opts.find((o) => o.key === k)?.label ?? k).join(" + ");
+    // co-signer alone gets Brittany's standalone template (2026-09-25); the
+    // manager comment rides above the signature like the other templates
+    if (keys.length === 1 && keys[0] === "cosigner") {
+      const e = cosignerEmail(first, address, input.cosignerNeed || "income", input.medianCredit, input.qualifyingIncome, input.listingUrl);
+      if (input.comment?.trim()) e.body = e.body.replace(SIGNATURE, `${input.comment.trim()}
+
+${SIGNATURE}`);
+      return { headline: labels || opt.label, email: e };
+    }
     return { headline: labels || opt.label, email: insufficientEmailMulti(keys, input.comment ?? "", first, address, input.cosignerNeed) };
   }
   const e = declineEmail(input.option, first, address);
