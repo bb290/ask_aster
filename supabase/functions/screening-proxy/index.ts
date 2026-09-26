@@ -321,6 +321,29 @@ const COND_STATUSES2: readonly string[] = ["1218663502335171", "1218663318816597
 // ---- v2 stage 2: lease negotiation fields + PandaDoc ----
 const F_APPLICANT_EMAILS = "1218658616141558";
 const F_APPLICANT_NAMES = "1218658174527268";
+// Applicants (Tier 2 combine, 2026-09-26): "First Last <email>, ..." in
+// Resident 1..N order replaces the two singles, so a name can never drift out
+// of step with its email. Parses back to the same names/emails strings the
+// lease flows already consume; falls back to the singles while both exist.
+const F_APPLICANTS = "1218889334263260";
+function parseApplicants(raw: string): { names: string; emails: string } {
+  const names: string[] = [], emails: string[] = [];
+  for (const tok of String(raw ?? "").split(/[;,]/).map((x) => x.trim()).filter(Boolean)) {
+    const m = tok.match(/^(.*?)\s*<([^>]+)>$/);
+    if (m) { if (m[1].trim()) names.push(m[1].trim()); emails.push(m[2].trim()); }
+    else if (/@/.test(tok)) emails.push(tok);
+    else names.push(tok);
+  }
+  return { names: names.join(", "), emails: emails.join(", ") };
+}
+function composeApplicants(names: string[], emails: string[]): string {
+  const out: string[] = [];
+  for (let i = 0; i < Math.max(names.length, emails.length); i++) {
+    const nm = names[i] ?? "", em = emails[i] ?? "";
+    out.push(nm && em ? `${nm} <${em}>` : (nm || `<${em}>`));
+  }
+  return out.join(", ").slice(0, 1024);
+}
 const F_DESIRED_START = "1218658616145008";
 const F_LEASE_START = "1218658616145235";
 const F_TERM_MONTHS = "1218658506629868";
@@ -362,7 +385,8 @@ async function leaseContext(gid: string) {
   const str = (fid: string) => String(cf.find((x) => x.gid === fid)?.display_value ?? cf.find((x) => x.gid === fid)?.text_value ?? "").trim();
   const ctx = {
     appName: t.name ?? "", appUrl: t.permalink_url ?? "",
-    names: str(F_APPLICANT_NAMES), emails: str(F_APPLICANT_EMAILS),
+    names: parseApplicants(str(F_APPLICANTS)).names || str(F_APPLICANT_NAMES),
+    emails: parseApplicants(str(F_APPLICANTS)).emails || str(F_APPLICANT_EMAILS),
     desiredStart: str(F_DESIRED_START).slice(0, 10), leaseStart: str(F_LEASE_START).slice(0, 10),
     termMonths: num(F_TERM_MONTHS), approvedRent: num(F_APPROVED_RENT),
     pets: str(F_PETS_MOVEIN), paymentPlanMonths: num(F_PAYMENT_PLAN),
@@ -1887,7 +1911,7 @@ ${SIG}`,
         // same rule as the Draft Lease form defaults (2026-09-21)
         const lastMonth = (ctx.tacoma || /not required|none|^no$/i.test(ctx.lastMonthRent)) ? null : (rent != null ? Math.round(rent) : null);
         const planMonths = ctx.paymentPlanMonths != null && ctx.paymentPlanMonths >= 2 ? Math.min(6, Math.round(ctx.paymentPlanMonths)) : 0;
-        const namesList = ctx.names.split(",").map((x) => x.trim()).filter(Boolean);
+        const namesList = ctx.names.split(/[;,]/).map((x) => x.trim()).filter(Boolean);
         const emailsList = ctx.emails.split(/[,;\s]+/).map((x) => x.trim()).filter((x) => /@/.test(x));
         const notes: string[] = [];
         // ---- 1. Buildium lease ----
@@ -2096,7 +2120,7 @@ ${SIG}`,
       const terms = ((body as { terms?: Record<string, unknown> }).terms ?? {}) as Record<string, unknown>;
       const s = (k: string) => String(terms[k] ?? "").trim();
       const n = (k: string) => { const v = Number(terms[k]); return Number.isFinite(v) ? v : null; };
-      const namesList = s("names").split(",").map((x) => x.trim()).filter(Boolean);
+      const namesList = s("names").split(/[;,]/).map((x) => x.trim()).filter(Boolean);
       const emailsList = s("emails").split(/[,;\s]+/).map((x) => x.trim()).filter((x) => /@/.test(x));
       if (!namesList.length) return j(headers, 400, { error: "bad_terms", message: "Enter the resident names (comma separated) first." });
       if (emailsList.length < namesList.length) return j(headers, 400, { error: "bad_terms", message: `Enter ${namesList.length} resident email(s), in the same order as the names.` });
@@ -2239,8 +2263,7 @@ ${SIG}`,
         const writes: Record<string, unknown> = {
           [F_LEASE_DOC_ID]: doc.id,
           [F_APPROVED_RENT]: Math.round(rent),
-          [F_APPLICANT_NAMES]: namesList.join(", "),
-          [F_APPLICANT_EMAILS]: emailsList.slice(0, namesList.length).join(", "),
+          [F_APPLICANTS]: composeApplicants(namesList, emailsList.slice(0, namesList.length)),
         };
         if (n("termMonths") != null) writes[F_TERM_MONTHS] = Math.round(n("termMonths") as number);
         if (n("paymentPlanMonths") != null) writes[F_PAYMENT_PLAN] = Math.round(n("paymentPlanMonths") as number);

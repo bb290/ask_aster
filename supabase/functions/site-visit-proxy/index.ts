@@ -44,6 +44,16 @@ function kvGet(text: string, label: string): string {
   const m = String(text ?? "").match(re);
   return m ? m[1].trim() : "";
 }
+// Owner Contact (Tier 2 combine, 2026-09-26): "Name: ... / Email: ..." lines on
+// the LU replace Owner Name(s) + Owner e-mail(s), which stay attached to
+// Client Relations 2.0 (onboarding writes them there). Combined first, old
+// singles as fallback while both exist on the LU.
+function ownerFromCf(cf: Array<{ name?: string; display_value?: string | null }>): { name: string; email: string } {
+  const oc = String(cf.find((f) => /^owner contact$/i.test(String(f.name ?? "")))?.display_value ?? "");
+  const name = kvGet(oc, "Name") || String(cf.find((f) => /owner name/i.test(String(f.name ?? "")))?.display_value ?? "").trim();
+  const email = (kvGet(oc, "Email") || String(cf.find((f) => /owner e-?mail/i.test(String(f.name ?? "")))?.display_value ?? "")).replace(/;/g, ",").trim();
+  return { name, email };
+}
 function kvSet(text: string, label: string, value: string, order: string[]): string {
   const parts: Record<string, string> = {};
   for (const lab of order) parts[lab] = kvGet(text, lab);
@@ -1064,8 +1074,8 @@ app.post("*", async (c) => {
         listDate: listDate ? String(listDate).slice(0, 10) : null,
         moveIn: moveIn ? String(moveIn).slice(0, 10) : null,
         leaseSigned: leaseSigned ? String(leaseSigned).slice(0, 10) : null,
-        ownerName: get(/owner name/i),
-        ownerEmail: get(/owner e-?mail/i).replace(/;/g, ",").trim(),
+        ownerName: ownerFromCf(cf).name,
+        ownerEmail: ownerFromCf(cf).email,
         slot1: kvGet(String(get(/preferred showing slots/i)), "Slot 1") || get(/preferred showing slot 1/i),
         zillow: kvGet(String(get(/zillow \+ redfin/i)), "Zillow") || get(/^🙌?\s*zillow$/i),
         redfin: kvGet(String(get(/zillow \+ redfin/i)), "Redfin") || get(/^🙌?\s*redfin$/i),
@@ -1409,8 +1419,7 @@ app.post("*", async (c) => {
         const luT = await asana("GET", `/tasks/${luGidD}?opt_fields=name,assignee.gid,custom_fields.gid,custom_fields.name,custom_fields.display_value`) as { name?: string; assignee?: { gid?: string } | null; custom_fields?: Array<{ gid: string; name?: string; display_value: string | null }> };
         addressD = addressFromTaskName(String(luT.name ?? "")) || String(luT.name ?? "");
         agentD = String(luT.assignee?.gid ?? "");
-        ownerEmailD = String((luT.custom_fields ?? []).find((f) => /owner e-?mail/i.test(String(f.name ?? "")))?.display_value ?? "").replace(/;/g, ",").trim();
-        ownerNameD = String((luT.custom_fields ?? []).find((f) => /owner name/i.test(String(f.name ?? "")))?.display_value ?? "").trim();
+        ({ email: ownerEmailD, name: ownerNameD } = ownerFromCf((luT.custom_fields ?? []) as Array<{ name?: string; display_value?: string | null }>));
         oldList = String((luT.custom_fields ?? []).find((f) => f.gid === LD_FD)?.display_value ?? "").slice(0, 10);
         await asana("PUT", `/tasks/${luGidD}`, { custom_fields: { [LD_FD]: null } });
         notesD.push(`List Date cleared${oldList ? ` (was ${oldList})` : ""}; Go Live re-stamps it at relist, so DOM restarts.`);
@@ -1827,8 +1836,7 @@ app.post("*", async (c) => {
       try {
         const luT = await asana("GET", `/tasks/${luGidG}?opt_fields=name,custom_fields.gid,custom_fields.name,custom_fields.display_value`);
         const cfG = (luT.custom_fields ?? []) as Array<{ gid: string; name: string; display_value: string | null }>;
-        ownerEmailG = String(cfG.find((f) => /owner e-?mail/i.test(f.name))?.display_value ?? "").replace(/;/g, ",").trim();
-        ownerNameG = String(cfG.find((f) => /owner name/i.test(f.name))?.display_value ?? "").trim();
+        ({ email: ownerEmailG, name: ownerNameG } = ownerFromCf(cfG));
         const linkF = cfG.find((f) => /sagareus listing link/i.test(f.name));
         try { await asana("PUT", `/tasks/${luGidG}`, { custom_fields: { "1213182838328964": { date: todayG } } }); }
         catch { await asana("PUT", `/tasks/${luGidG}`, { custom_fields: { "1213182838328964": todayG } }).catch(() => notesG.push("List Date field write failed.")); }
@@ -2203,7 +2211,7 @@ app.post("*", async (c) => {
       let ownerEmail = "";
       try {
         const lu = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
-        ownerEmail = String(((lu.custom_fields ?? []).find((f: { name: string }) => /owner e-?mail/i.test(f.name)) ?? {}).display_value ?? "").replace(/;/g, ",").trim();
+        ownerEmail = ownerFromCf((lu.custom_fields ?? []) as Array<{ name?: string; display_value?: string | null }>).email;
       } catch { /* non-fatal */ }
       const subtasks = await asana("GET", `/tasks/${hit.gid}/subtasks?limit=100&opt_fields=name`);
       // combined subtask (Brittany 2026-09-24): "Send | Leasing Plan" replaces
@@ -3447,7 +3455,7 @@ app.post("*", async (c) => {
           const luTask = (subs ?? []).find((t: { name: string }) => /^(lu|tp|pre.?lease)\s*\|/i.test(t.name));
           if (luTask) {
             const lu = await asana("GET", `/tasks/${luTask.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
-            ownerEmail = String(((lu.custom_fields ?? []).find((f: { name: string }) => /owner e-?mail/i.test(f.name)) ?? {}).display_value ?? "").replace(/;/g, ",").trim();
+            ownerEmail = ownerFromCf((lu.custom_fields ?? []) as Array<{ name?: string; display_value?: string | null }>).email;
           }
         }
       } catch { /* fail-soft */ }
@@ -4052,7 +4060,7 @@ app.post("*", async (c) => {
           if (luTask) {
             luGid = luTask.gid;
             const lu = await asana("GET", `/tasks/${luGid}?opt_fields=custom_fields.name,custom_fields.display_value`);
-            ownerEmail = String(((lu.custom_fields ?? []).find((f: { name: string }) => /owner e-?mail/i.test(f.name)) ?? {}).display_value ?? "").replace(/;/g, ",").trim();
+            ownerEmail = ownerFromCf((lu.custom_fields ?? []) as Array<{ name?: string; display_value?: string | null }>).email;
           }
         } catch { /* fail-soft: owner email just stays blank */ }
       }
@@ -5081,8 +5089,8 @@ app.post("*", async (c) => {
           message: "No open LU / TP / PreLease task for this unit, so there is nowhere to save the owner. Populate from a Unit ID first.",
         });
       }
-      const tO = await asana("GET", `/tasks/${luGidO}?opt_fields=name,custom_fields.gid,custom_fields.name`);
-      const cfO = ((tO.custom_fields ?? []) as Array<{ gid: string; name: string }>);
+      const tO = await asana("GET", `/tasks/${luGidO}?opt_fields=name,custom_fields.gid,custom_fields.name,custom_fields.display_value`);
+      const cfO = ((tO.custom_fields ?? []) as Array<{ gid: string; name: string; display_value?: string | null }>);
       const findF = (re: RegExp) => String(cfO.find((f) => re.test(String(f.name)))?.gid ?? "");
       const savedO: string[] = [];
       const blockedO: string[] = [];
@@ -5095,11 +5103,14 @@ app.post("*", async (c) => {
           savedO.push(label);
         } catch { blockedO.push(label + " (Asana rejected the write)"); }
       };
-      if (body.ownerName !== undefined) {
-        await writeOne("Owner Name", findF(/owner name/i), String(body.ownerName ?? "").trim().slice(0, 160));
-      }
-      if (body.ownerEmail !== undefined) {
-        await writeOne("Owner Email", findF(/owner e-?mail/i), String(body.ownerEmail ?? "").trim().slice(0, 240));
+      // Tier 2 combine (2026-09-26): both parts land in Owner Contact; a part
+      // the bench did not send keeps its current value
+      {
+        const ocGid = findF(/^owner contact$/i);
+        let ocVal = String(cfO.find((f) => f.gid === ocGid)?.display_value ?? "");
+        if (body.ownerName !== undefined) ocVal = kvSet(ocVal, "Name", String(body.ownerName ?? "").trim().slice(0, 160), ["Name", "Email"]);
+        if (body.ownerEmail !== undefined) ocVal = kvSet(ocVal, "Email", String(body.ownerEmail ?? "").trim().slice(0, 240), ["Name", "Email"]);
+        await writeOne("Owner Contact", ocGid, ocVal);
       }
       if (!savedO.length) {
         return j(headers, 502, {

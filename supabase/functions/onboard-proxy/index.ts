@@ -390,25 +390,30 @@ async function obFieldSettings(): Promise<Map<string, { gid: string; type: strin
   const byName = new Map<string, { gid: string; type: string; options: { gid: string; name: string }[] }>();
   for (const st of settings ?? []) {
     const f = st.custom_field;
-    byName.set(String(f.name).toLowerCase(), { gid: f.gid, type: f.resource_subtype, options: f.enum_options ?? [] });
+    byName.set(obFieldKey(String(f.name)), { gid: f.gid, type: f.resource_subtype, options: f.enum_options ?? [] });
   }
   return byName;
+}
+// field names match without their emoji prefix, so renaming "🙆 Owner Name(s)"
+// to "Owner Name(s)" cannot break the wizard (2026-09-26)
+function obFieldKey(name: string): string {
+  return String(name).toLowerCase().replace(/^[^a-z0-9]+/, "").trim();
 }
 function obMapAnswers(byName: Map<string, { gid: string; type: string; options: { gid: string; name: string }[] }>, answers: Record<string, string>): Record<string, unknown> {
   const cf: Record<string, unknown> = {};
   const setText = (name: string, val: string) => {
-    const f = byName.get(name.toLowerCase());
+    const f = byName.get(obFieldKey(name));
     if (f && val) cf[f.gid] = String(val).slice(0, 1000);
   };
   const setEnum = (name: string, val: string) => {
-    const f = byName.get(name.toLowerCase());
+    const f = byName.get(obFieldKey(name));
     if (!f || !val) return;
     const hit = f.options.find((o) => o.name.toLowerCase() === val.toLowerCase()) ??
       f.options.find((o) => val.toLowerCase().startsWith(o.name.slice(0, 12).toLowerCase()) || o.name.toLowerCase().startsWith(val.slice(0, 12).toLowerCase()));
     if (hit) cf[f.gid] = hit.gid;
   };
   const setMulti = (name: string, val: string) => {
-    const f = byName.get(name.toLowerCase());
+    const f = byName.get(obFieldKey(name));
     if (!f || !val) return;
     const gids = String(val).split(",").map((v) => v.trim()).filter(Boolean).map((v) => {
       const hit = f.options.find((o) => o.name.toLowerCase() === v.toLowerCase()) ??
@@ -418,7 +423,7 @@ function obMapAnswers(byName: Map<string, { gid: string; type: string; options: 
     if (gids.length) cf[f.gid] = gids;
   };
   const setNum = (name: string, val: string) => {
-    const f = byName.get(name.toLowerCase());
+    const f = byName.get(obFieldKey(name));
     const n = Number(val);
     if (f && Number.isFinite(n) && n > 0) cf[f.gid] = n;
   };
@@ -570,7 +575,12 @@ async function obValidApprover(email: string, unitId: string): Promise<{ ok: boo
   if (!lu) return { ok: false, isTeam: false };
   try {
     const t = await asana("GET", `/tasks/${lu.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
-    const raw = String(((t.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>).find((f) => /owner e-?mail/i.test(f.name))?.display_value ?? "");
+    const cfA = (t.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
+    // Owner Contact ("Name: ... / Email: ..." lines) replaced the LU's owner
+    // singles 2026-09-26; fall back to the old field while both exist
+    const oc = String(cfA.find((f) => /^owner contact$/i.test(f.name))?.display_value ?? "");
+    const ocEmail = (oc.match(/(?:^|\n)\s*Email\s*:\s*([^\n]*)/i) ?? [])[1] ?? "";
+    const raw = ocEmail || String(cfA.find((f) => /owner e-?mail/i.test(f.name))?.display_value ?? "");
     const owners = raw.split(/[;,]/).map((x) => x.trim().toLowerCase()).filter(Boolean);
     return { ok: owners.includes(e), isTeam: false };
   } catch { return { ok: false, isTeam: false }; }
