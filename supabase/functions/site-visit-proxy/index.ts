@@ -31,6 +31,25 @@ const BUILDIUM_ID = Deno.env.get("BUILDIUM_CLIENT_ID") ?? "";
 const BUILDIUM_SECRET = Deno.env.get("BUILDIUM_CLIENT_SECRET") ?? "";
 const WORKSPACE = "706990140225747";
 const LEASING_LU_PROJECT = "1213171756304238";
+// Tier 1 combined key-value fields (Brittany 2026-09-26): each replaces 2-3
+// singles. Format is "Label: value" lines; values may span lines until the
+// next label. Old single fields stay frozen until Brittany deletes them.
+const LU_SHOWING_SLOTS = "1218889144475347";  // Slot 1 / Slot 2
+const LU_ZR_LINKS = "1218889284185185";       // Zillow / Redfin
+const LS_SCREEN_CRIT = "1218889144473591";    // Credit / Income
+const LS_INSPECT_LINKS = "1218889284194156";  // Move In / Most Recent / Pre-Move Out
+const LS_UTIL_REPORTS = "1218888960689765";   // Flat Fee / Estimated
+function kvGet(text: string, label: string): string {
+  const re = new RegExp(`(?:^|\n)\s*${label}\s*:\s*([\s\S]*?)(?=\n[A-Za-z][A-Za-z0-9 \-]{0,22}:\s|$)`, "i");
+  const m = String(text ?? "").match(re);
+  return m ? m[1].trim() : "";
+}
+function kvSet(text: string, label: string, value: string, order: string[]): string {
+  const parts: Record<string, string> = {};
+  for (const lab of order) parts[lab] = kvGet(text, lab);
+  parts[label] = value;
+  return order.filter((l) => parts[l]).map((l) => `${l}: ${parts[l]}`).join("\n").slice(0, 1024);
+}
 const UNIT_SETTINGS_PROJECT = "1213032009308835";
 const PROPERTY_SETTINGS_PROJECT = "1211134623744906";
 const MAINTENANCE_PROJECT = "1210320631715650"; // Maintenance 2.0
@@ -645,8 +664,10 @@ app.post("*", async (c) => {
       let slot1 = "";
       if (source !== "manual") try {
         const lu = await asana("GET", `/tasks/${taskGid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+        const sC = (lu.custom_fields ?? []).find((f: { name: string }) => /preferred showing slots/i.test(f.name));
+        if (sC?.display_value) slot1 = kvGet(String(sC.display_value), "Slot 1");
         const s1 = (lu.custom_fields ?? []).find((f: { name: string }) => /preferred showing slot 1/i.test(f.name));
-        if (s1?.display_value) slot1 = String(s1.display_value);
+        if (!slot1 && s1?.display_value) slot1 = String(s1.display_value);
       } catch { /* non-fatal */ }
 
       // 3) Turn Over Coordinator = assignee of the "Turn Over | <address>" task
@@ -1045,9 +1066,9 @@ app.post("*", async (c) => {
         leaseSigned: leaseSigned ? String(leaseSigned).slice(0, 10) : null,
         ownerName: get(/owner name/i),
         ownerEmail: get(/owner e-?mail/i).replace(/;/g, ",").trim(),
-        slot1: get(/preferred showing slot 1/i),
-        zillow: get(/zillow/i),
-        redfin: get(/redfin/i),
+        slot1: kvGet(String(get(/preferred showing slots/i)), "Slot 1") || get(/preferred showing slot 1/i),
+        zillow: kvGet(String(get(/zillow \+ redfin/i)), "Zillow") || get(/^🙌?\s*zillow$/i),
+        redfin: kvGet(String(get(/zillow \+ redfin/i)), "Redfin") || get(/^🙌?\s*redfin$/i),
         sagareusUrl: get(/sagareus listing link/i),
         priceHistory,
       });
@@ -1991,13 +2012,16 @@ app.post("*", async (c) => {
           if (/^https?:\/\/\S+$/.test(u0) && u0.toLowerCase().includes(k)) toWrite.push([k, u0.slice(0, 500)]);
         }
         if (toWrite.length) {
-          const tV = await asana("GET", `/tasks/${luGidV}?opt_fields=custom_fields.gid,custom_fields.name`);
-          const cfV = (tV.custom_fields ?? []) as Array<{ gid: string; name: string }>;
+          const tV = await asana("GET", `/tasks/${luGidV}?opt_fields=custom_fields.gid,custom_fields.display_value`);
+          const cfV = (tV.custom_fields ?? []) as Array<{ gid: string; display_value?: string | null }>;
           const cfUpd: Record<string, string> = {};
+          // combined Zillow + Redfin Links field (2026-09-26)
+          let zrVal = String(cfV.find((f0) => f0.gid === LU_ZR_LINKS)?.display_value ?? "");
           for (const [k, u1] of toWrite) {
-            const fV = cfV.find((f0) => new RegExp(k, "i").test(String(f0.name)));
-            if (fV) { cfUpd[fV.gid] = u1; savedUrls.push(k); }
+            zrVal = kvSet(zrVal, k === "redfin" ? "Redfin" : "Zillow", u1, ["Zillow", "Redfin"]);
+            savedUrls.push(k);
           }
+          if (zrVal) cfUpd[LU_ZR_LINKS] = zrVal;
           if (Object.keys(cfUpd).length) await asana("PUT", `/tasks/${luGidV}`, { custom_fields: cfUpd });
         }
       } catch { savedUrls.length = 0; /* the story still records; paste on the task by hand */ }
@@ -2595,11 +2619,16 @@ app.post("*", async (c) => {
             petPolicy: lv("1217446589255794"), petRent: lv("1217450345262256"), petDeposit: lv("1217450833264180"),
             securityDeposit: lv("1217515853935577"), moveInSpecial: lv("1217446589879104"),
             lastMonthRent: lv("1217446710797252"), specialTerms: lv("1217446589881673"),
-            minCredit: lv("1217446728640049"), minIncome: lv("1217446770195125"),
-            utilDesc: lv("1217515337017428"), ffReport: lv("1217533821059479"), estReport: lv("1217533868879515"),
+            minCredit: kvGet(lv(LS_SCREEN_CRIT), "Credit") || lv("1217446728640049"),
+            minIncome: kvGet(lv(LS_SCREEN_CRIT), "Income") || lv("1217446770195125"),
+            utilDesc: lv("1217515337017428"),
+            ffReport: kvGet(lv(LS_UTIL_REPORTS), "Flat Fee") || lv("1217533821059479"),
+            estReport: kvGet(lv(LS_UTIL_REPORTS), "Estimated") || lv("1217533868879515"),
             utilProviders: lv("1217921018573269"),
-            preparedBy: lv("1217516811159332"), inspectUrl: lv("1217515237891095"),
-            recentInspectUrl: lv("1217718959198830"), preMoveOutUrl: lv("1217719249318990"),
+            preparedBy: lv("1217516811159332"),
+            inspectUrl: kvGet(lv(LS_INSPECT_LINKS), "Move In") || lv("1217515237891095"),
+            recentInspectUrl: kvGet(lv(LS_INSPECT_LINKS), "Most Recent") || lv("1217718959198830"),
+            preMoveOutUrl: kvGet(lv(LS_INSPECT_LINKS), "Pre-Move Out") || lv("1217719249318990"),
             bdRent: lv("1217624971001054"),
             targetMoveIn: lv("1217740384009759").slice(0, 10),
             landscaping: lv("1217741708866530"),
@@ -2989,17 +3018,16 @@ app.post("*", async (c) => {
         unitId: "1213183515622826", petPolicy: "1217446589255794", startingRent: "1217446589856415",
         currentRent: "1217446658742575", estimatedRent: "1217530253031654", minRent: "1217446710834881",
         targetRent: "1217446658749360", securityDeposit: "1217515853935577",
-        moveInSpecial: "1217446589879104", minCredit: "1217446728640049", minIncome: "1217446770195125",
+        moveInSpecial: "1217446589879104",
         lastMonthRent: "1217446710797252", specialTerms: "1217446589881673",
         priceAdjustmentPlan: "1217448328664674", photoReview: "1217448327991331",
         petRent: "1217450345262256", petDeposit: "1217450833264180",
-        utilDesc: "1217515337017428", flatFeeReport: "1217533821059479", estReport: "1217533868879515",
+        utilDesc: "1217515337017428",
         utilProviders: "1217921018573269",
         preparedBy: "1217516811159332", compsData: "1217516812648029",
-        turnProposal: "1217509139690271", inspectUrl: "1217515237891095",
+        turnProposal: "1217509139690271",
         securitySystem: "1217535226939178", hoaMoveIn: "1217622037538954",
         depositHeld: "1217530249320839", targetDaysVacant: "1217530249349847",
-        recentInspectUrl: "1217718959198830", preMoveOutUrl: "1217719249318990",
         bdRent: "1217624971001054",
         turnAuth: "1217611635986386",
       };
@@ -3039,6 +3067,24 @@ app.post("*", async (c) => {
         const v = String(body[k] ?? "").slice(0, 10);
         if (/^\d{4}-\d{2}-\d{2}$/.test(v)) cf[gid] = { date: v };
       }
+      // Tier 1 combined fields (2026-09-26): the bench form still sends the
+      // parts separately; a blank part keeps the existing value, mirroring the
+      // skip-empty behavior the single fields had.
+      try {
+        const curC = taskGid ? await asana("GET", `/tasks/${taskGid}?opt_fields=custom_fields.gid,custom_fields.display_value`) : { custom_fields: [] };
+        const curCf = (curC.custom_fields ?? []) as Array<{ gid: string; display_value?: string | null }>;
+        const curOf = (g: string) => String(curCf.find((f) => f.gid === g)?.display_value ?? "");
+        const compose = (gid: string, parts: Array<[string, string]>) => {
+          const cur = curOf(gid);
+          const lines = parts
+            .map(([lab, key]) => { const v = String(body[key] ?? "").trim() || kvGet(cur, lab); return v ? `${lab}: ${v}` : ""; })
+            .filter(Boolean);
+          if (lines.length) cf[gid] = lines.join("\n").slice(0, 1024);
+        };
+        compose(LS_SCREEN_CRIT, [["Credit", "minCredit"], ["Income", "minIncome"]]);
+        compose(LS_INSPECT_LINKS, [["Move In", "inspectUrl"], ["Most Recent", "recentInspectUrl"], ["Pre-Move Out", "preMoveOutUrl"]]);
+        compose(LS_UTIL_REPORTS, [["Flat Fee", "flatFeeReport"], ["Estimated", "estReport"]]);
+      } catch { /* combined fields skip this push; the next push writes them */ }
       // the owner page URL is recorded on the task itself (Leasing Plan URL field,
       // added by Brittany 2026-08-17) so the team can open it straight from Asana
       cf["1217557090620385"] = `https://www.sagareus.com/leasing-plan?p=${slug}`;

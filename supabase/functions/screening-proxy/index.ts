@@ -292,7 +292,6 @@ async function setStatus2_(gid: string, opt2: string) {
   if (upd) await applyTriple(gid, upd).catch(() => {});
 }
 // ---- Screen + Sign v2 application fields (created 2026-09-20, Brittany-approved) ----
-const F_HOUSEHOLD_SIZE = "1218658174503778";
 const F_MEDIAN_CREDIT = "1218658616135258";
 const F_QUAL_INCOME = "1218658506648570";
 const PF_FIELDS = {
@@ -306,6 +305,13 @@ const LS_PROJECT_ID = "1217446710785429";
 const UNIT_ID_FIELD = "1213183515622826";
 const LS_MIN_CREDIT = "1217446728640049";
 const LS_MIN_INCOME = "1217446770195125";
+// combined Screening Criteria field ("Credit: ... / Income: ..." lines)
+// replaced the two singles on Listing Settings (Tier 1 combine, 2026-09-26)
+const LS_SCREEN_CRIT = "1218889144473591";
+function kvGet(text: string, label: string): string {
+  const m = String(text ?? "").match(new RegExp(`(?:^|\n)\s*${label}\s*:\s*([\s\S]*?)(?=\n[A-Za-z][A-Za-z0-9 \-]{0,22}:\s|$)`, "i"));
+  return m ? m[1].trim() : "";
+}
 const LS_CURRENT_RENT = "1218160030285805";
 const LS_STARTING_RENT = "1217446589856415";
 // Status stages that put an application on the Conditionally Approved holding list
@@ -361,7 +367,6 @@ async function leaseContext(gid: string) {
     termMonths: num(F_TERM_MONTHS), approvedRent: num(F_APPROVED_RENT),
     pets: str(F_PETS_MOVEIN), paymentPlanMonths: num(F_PAYMENT_PLAN),
     leaseDocId: str(F_LEASE_DOC_ID),
-    householdSize: num(F_HOUSEHOLD_SIZE),
     luGid: t.parent?.gid ?? "", address: "", tacoma: false, flatFee: null as number | null,
     listedRent: null as number | null, securityDeposit: null as number | null,
     lastMonthRent: "", petRent: null as number | null, petPolicy: "", concessions: "", lsUrl: "",
@@ -2538,7 +2543,6 @@ ${SIG}`,
           desiredStart,
           medianCredit: num(F_MEDIAN_CREDIT),
           qualIncome: num(F_QUAL_INCOME),
-          householdSize: num(F_HOUSEHOLD_SIZE),
           passFail: { income: en(PF_FIELDS.income.field), credit: en(PF_FIELDS.credit.field), rentalhx: en(PF_FIELDS.rentalhx.field) },
           minCredit: "", minIncome: "", listedRent: null as number | null, lsUrl: "", address: "",
         };
@@ -2555,8 +2559,8 @@ ${SIG}`,
                 const lcf = ls.custom_fields ?? [];
                 const lstr = (fid: string) => String(lcf.find((x) => x.gid === fid)?.display_value ?? "").trim();
                 const lnum = (fid: string) => { const f = lcf.find((x) => x.gid === fid); return f?.number_value ?? null; };
-                out.minCredit = lstr(LS_MIN_CREDIT);
-                out.minIncome = lstr(LS_MIN_INCOME);
+                out.minCredit = kvGet(lstr(LS_SCREEN_CRIT), "Credit") || lstr(LS_MIN_CREDIT);
+                out.minIncome = kvGet(lstr(LS_SCREEN_CRIT), "Income") || lstr(LS_MIN_INCOME);
                 out.listedRent = lnum(LS_CURRENT_RENT) ?? lnum(LS_STARTING_RENT);
                 out.lsUrl = ls.permalink_url ?? "";
               }
