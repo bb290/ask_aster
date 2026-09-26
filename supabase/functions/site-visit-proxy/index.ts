@@ -40,7 +40,7 @@ const LS_SCREEN_CRIT = "1218889144473591";    // Credit / Income
 const LS_INSPECT_LINKS = "1218889284194156";  // Move In / Most Recent / Pre-Move Out
 const LS_UTIL_REPORTS = "1218888960689765";   // Flat Fee / Estimated
 function kvGet(text: string, label: string): string {
-  const re = new RegExp(`(?:^|\n)\s*${label}\s*:\s*([\s\S]*?)(?=\n[A-Za-z][A-Za-z0-9 \-]{0,22}:\s|$)`, "i");
+  const re = new RegExp("(?:^|\\n)\\s*" + label + "\\s*:\\s*([\\s\\S]*?)(?=\\n[A-Za-z][A-Za-z0-9 \\-]{0,22}:\\s|$)", "i");
   const m = String(text ?? "").match(re);
   return m ? m[1].trim() : "";
 }

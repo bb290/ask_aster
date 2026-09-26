@@ -309,7 +309,8 @@ const LS_MIN_INCOME = "1217446770195125";
 // replaced the two singles on Listing Settings (Tier 1 combine, 2026-09-26)
 const LS_SCREEN_CRIT = "1218889144473591";
 function kvGet(text: string, label: string): string {
-  const m = String(text ?? "").match(new RegExp(`(?:^|\n)\s*${label}\s*:\s*([\s\S]*?)(?=\n[A-Za-z][A-Za-z0-9 \-]{0,22}:\s|$)`, "i"));
+  const re = new RegExp("(?:^|\\n)\\s*" + label + "\\s*:\\s*([\\s\\S]*?)(?=\\n[A-Za-z][A-Za-z0-9 \\-]{0,22}:\\s|$)", "i");
+  const m = String(text ?? "").match(re);
   return m ? m[1].trim() : "";
 }
 const LS_CURRENT_RENT = "1218160030285805";
