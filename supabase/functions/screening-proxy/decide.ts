@@ -139,7 +139,12 @@ export function cosignerEmail(first: string, address: string, need: string, medi
   const stats: string[] = [];
   if (need.includes("credit") && medianCredit != null) stats.push(`• Median Household Credit: ${medianCredit}`);
   if (need.includes("income") && qualifyingIncome != null) stats.push(`• Qualifying Monthly Income: $${Math.round(qualifyingIncome).toLocaleString("en-US")}`);
-  const applyAt = (listingUrl ?? "").trim() || "[paste the Sagareus listing link]";
+  // [text](url) renders as a real hyperlink in the HTML part; the plain-text
+  // send converts it to "text: url" (Brittany 2026-09-25)
+  const url = (listingUrl ?? "").trim();
+  const applyLine = url
+    ? `• Add a co-signer: the co-signer must submit an [application here](${url}).`
+    : "• Add a co-signer: the co-signer must submit an application here: [paste the Sagareus listing link]";
   return {
     subject: "Your Sagareus application: co-signer or lease guarantee needed",
     body: `Hi ${first},
@@ -150,9 +155,9 @@ Unfortunately, the application does not meet the ${reqWord} for the property.
 ${stats.length ? "\n" + stats.join("\n") + "\n" : ""}
 **Options to Resolve**
 
-• Add a co-signer: the co-signer must submit an application here: ${applyAt}
+${applyLine}
 
-• If a co-signer is unavailable, you may choose to apply for Lease Guarantee Coverage: https://www.theguarantors.com/renter
+• If a co-signer is unavailable, you may choose to [apply for Lease Guarantee Coverage](https://www.theguarantors.com/renter).
 
 **Next Step**
 
@@ -180,7 +185,7 @@ const INSUFFICIENT_BLOCKS: Record<string, { flag: string; body?: string; resolva
   // email names income, credit, or both as the shortfall (team 2026-09-25)
   cosigner: {
     flag: "The application does not meet the income standard for the property on its own.",
-    resolvable: "Add a co-signer who qualifies (they submit an application via the property's listing page), or apply for Lease Guarantee Coverage: https://www.theguarantors.com/renter",
+    resolvable: "Add a co-signer who qualifies (they submit an application via the property's listing page), or [apply for Lease Guarantee Coverage](https://www.theguarantors.com/renter).",
   },
   landlord_balance: {
     flag: "Outstanding balance owed to a prior landlord.",
