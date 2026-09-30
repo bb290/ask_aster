@@ -4504,13 +4504,20 @@ app.post("*", async (c) => {
     if (action === "warListing") {
       if (!BUILDIUM_ID || !BUILDIUM_SECRET) return j(headers, 500, { error: "buildium_not_configured" });
       const address = String(body.address ?? "").trim();
-      if (!address) return j(headers, 400, { error: "missing_address" });
-      const m = await matchSettings(address);
-      if (m.ambiguous) return j(headers, 404, { error: "ambiguous", message: `Multiple units match (${m.ambiguous.join(", ")}). Listing updates need a single unit.` });
-      if (!m.hit) return j(headers, 404, { error: "unit_not_found", message: "No Unit Settings task matches this address, so there is no Buildium unit to update." });
-      const task = await asana("GET", `/tasks/${m.hit.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
-      const uid = String((task.custom_fields ?? []).find((f: { name: string }) => /^unit id$/i.test(f.name))?.display_value ?? "").trim();
-      if (!/^\d+$/.test(uid)) return j(headers, 404, { error: "no_unit_id", message: "The Unit Settings task has no Unit ID; add it in Asana to enable listing updates." });
+      // Unit ID first (Brittany's standing rule): the bench sends the row's
+      // Unit ID, so the address match is only a fallback for callers without
+      // one. Address matching flagged 10650 NE 9th Pl #1520 as "ambiguous"
+      // and hid a live listing (2026-09-30).
+      let uid = String(body.unitId ?? "").replace(/\D/g, "");
+      if (!uid) {
+        if (!address) return j(headers, 400, { error: "missing_address" });
+        const m = await matchSettings(address);
+        if (m.ambiguous) return j(headers, 404, { error: "ambiguous", message: `Multiple units match (${m.ambiguous.join(", ")}). Listing updates need a single unit.` });
+        if (!m.hit) return j(headers, 404, { error: "unit_not_found", message: "No Unit Settings task matches this address, so there is no Buildium unit to update." });
+        const task = await asana("GET", `/tasks/${m.hit.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
+        uid = String((task.custom_fields ?? []).find((f: { name: string }) => /^unit id$/i.test(f.name))?.display_value ?? "").trim();
+        if (!/^\d+$/.test(uid)) return j(headers, 404, { error: "no_unit_id", message: "The Unit Settings task has no Unit ID; add it in Asana to enable listing updates." });
+      }
       const BH = { "x-buildium-client-id": BUILDIUM_ID, "x-buildium-client-secret": BUILDIUM_SECRET };
       const ru = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}`, { headers: BH });
       if (!ru.ok) return j(headers, 502, { error: "buildium_failed", message: "Buildium didn't answer for that unit." });
