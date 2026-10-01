@@ -2152,15 +2152,18 @@ app.post("*", async (c) => {
       const SV_DEV_TASK = "1216867978492127";            // "Site Visit" under Team Tools | Bugs & Feature Requests (renamed from Field Tools 2026-09-19)
       const BB = "1203784854198936";                     // Brittany
       const todayStr = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+      const fbSender = String(body.sender ?? "").trim().slice(0, 120);
       const sub = await asana("POST", `/tasks/${SV_DEV_TASK}/subtasks`, {
         name: `Site Visit Feedback // ${todayStr}`,
         assignee: BB,
         due_on: todayStr,
         notes: text
+          + (fbSender ? `\n\n- ${fbSender}` : "")
           + (address ? `\n\nProperty loaded at the time: ${address}` : "")
           + "\n\nSubmitted via the Site Visit widget Team Feedback button. Done by Claude on behalf of the submitting agent.",
       });
-      return j(headers, 200, { ok: true, url: `https://app.asana.com/0/0/${sub.gid}` });
+      // gid lets the widget attach feedback screenshots via the photo action
+      return j(headers, 200, { ok: true, gid: sub.gid, url: `https://app.asana.com/0/0/${sub.gid}` });
     }
 
     // ---------- plFeedback / toFeedback: staff feedback -> subtask on each tool's dev task ----------
