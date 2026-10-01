@@ -3615,7 +3615,14 @@ app.post("*", async (c) => {
             notes: "Bugs and feature requests for the Turn Over Dispatch field tool on /field.",
           });
         }
-        await postStory(fbTask!.gid, fbText + "\n\n- " + (fbFrom || "unnamed") + ", via the Turn Over Dispatch feedback button");
+        // each feedback item is its own subtask to work through, not a comment
+        // (Brittany 2026-10-01); the first line names it, the full text + sender
+        // live in the description
+        const fbLine = fbText.split("\n")[0].trim().slice(0, 120) || "Feedback";
+        await asana("POST", `/tasks/${fbTask!.gid}/subtasks`, {
+          name: fbLine,
+          notes: fbText + "\n\n- " + (fbFrom || "unnamed") + ", via the Turn Over Dispatch feedback button",
+        });
         return j(headers, 200, { ok: true });
       } catch {
         return j(headers, 200, { ok: false, error: "feedback_failed" });
