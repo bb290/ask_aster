@@ -1218,10 +1218,10 @@ app.post("*", async (c) => {
         }
       } catch { /* index stays empty: gate falls back to vacancy-or-listed, lead column blank */ }
       for (let pg = 0; pg < 12; pg++) {
-        const r0 = await fetch(`${ASANA}/projects/${LEASING_LU_PROJECT}/tasks?completed_since=${sinceQ}&limit=100&opt_fields=name,completed,assignee.name,custom_fields.gid,custom_fields.name,custom_fields.display_value${offQ ? `&offset=${encodeURIComponent(offQ)}` : ""}`,
+        const r0 = await fetch(`${ASANA}/projects/${LEASING_LU_PROJECT}/tasks?completed_since=${sinceQ}&limit=100&opt_fields=name,completed,assignee.name,parent.gid,custom_fields.gid,custom_fields.name,custom_fields.display_value${offQ ? `&offset=${encodeURIComponent(offQ)}` : ""}`,
           { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
         const j0 = await r0.json().catch(() => ({}));
-        for (const t of (j0.data ?? []) as Array<{ gid: string; name: string; completed?: boolean; assignee?: { name?: string } | null; custom_fields?: Array<{ gid: string; name: string; display_value: string | null }> }>) {
+        for (const t of (j0.data ?? []) as Array<{ gid: string; name: string; completed?: boolean; assignee?: { name?: string } | null; parent?: { gid?: string } | null; custom_fields?: Array<{ gid: string; name: string; display_value: string | null }> }>) {
           if (!/^(LU|TP|PreLease)\s*\|/i.test(t.name)) continue;
           if (t.completed) {
             const cfC = t.custom_fields ?? [];
@@ -1252,7 +1252,19 @@ app.post("*", async (c) => {
           const leaseSigned = staleSigned ? "" : leaseSignedRaw;
           const moOwn = String(cfQ.find((f) => f.gid === "1213182815411738")?.display_value ?? "").slice(0, 10);
           const moDone = String(cfQ.find((f) => f.gid === "1214521745467158")?.display_value ?? "").slice(0, 10);
-          const unitIdQ = String(cfQ.find((f) => f.gid === UID_F)?.display_value ?? "").trim() || (moIdx.uidByAddr[normAddr(address)] ?? "");
+          let unitIdQ = String(cfQ.find((f) => f.gid === UID_F)?.display_value ?? "").trim();
+          if (!unitIdQ && t.parent?.gid) {
+            // LU created without a Unit ID (326 NE 125th #1, 2026-10-02; 3038 37th
+            // Ave SW before it): the id lives on the Leasing parent. Adopt it and
+            // write it back so the LU heals for every later lookup. Same pattern
+            // as leaseContext (2026-09-23). Unit ID first, address never.
+            try {
+              const parQ = await asana("GET", `/tasks/${t.parent.gid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
+              unitIdQ = String(((parQ.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>).find((f) => f.gid === UID_F)?.display_value ?? "").replace(/\D/g, "");
+              if (unitIdQ) await asana("PUT", `/tasks/${t.gid}`, { custom_fields: { [UID_F]: unitIdQ } }).catch(() => null);
+            } catch { /* best-effort; the row still renders */ }
+          }
+          if (!unitIdQ) unitIdQ = moIdx.uidByAddr[normAddr(address)] ?? "";
           const moSched = /^\d{4}-\d{2}-\d{2}$/.test(moOwn) ? moOwn : (moIdx.byUid[unitIdQ] ?? moIdx.byAddr[normAddr(address)] ?? "");
           const moDoneAll = /^\d{4}-\d{2}-\d{2}$/.test(moDone) ? moDone : (moIdx.doneByUid[unitIdQ] ?? moIdx.doneByAddr[normAddr(address)] ?? "");
           const vacant = /^\d{4}-\d{2}-\d{2}$/.test(moDoneAll) || (/^\d{4}-\d{2}-\d{2}$/.test(moSched) && moSched <= todayQ);
