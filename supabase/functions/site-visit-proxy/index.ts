@@ -259,8 +259,14 @@ function weekdayFromText(text: string): number | null {
 }
 
 function addressFromSettingsName(name: string): string {
-  // "Settings // 2813 Southwest 28th Street, Redmond" -> "2813 Southwest 28th Street, Redmond"
-  return name.split("//").slice(1).join("//").trim();
+  // "Settings // 2813 Southwest 28th Street, Redmond" -> "2813 Southwest 28th Street, Redmond".
+  // Status tags sometimes ride the name ("Settings // OFF BOARDING // 16162 126th
+  // Ave SE, Renton" hid unit 439659 from the pickers, 2026-10-02), so the address
+  // starts at the first "//" segment that begins with a digit; names without a
+  // digit-leading segment keep the old everything-after-the-prefix behavior.
+  const segs = name.split("//").slice(1).map((s) => s.trim()).filter(Boolean);
+  const addrAt = segs.findIndex((s) => /^\d/.test(s));
+  return (addrAt >= 0 ? segs.slice(addrAt) : segs).join(" // ").trim();
 }
 
 // Leasing vacancies via paged project listing, NOT workspace search: search caps at 100
