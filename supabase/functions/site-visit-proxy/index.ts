@@ -3817,19 +3817,29 @@ app.post("*", async (c) => {
         if (!pgK) return j(headers, 200, { ok: true, code: "" });
         const ptK = await asana("GET", `/tasks/${pgK}?opt_fields=custom_fields.gid,custom_fields.display_value`);
         const fK = ((ptK.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>).find((x) => x.gid === "1218512667092355");
-        // owner name + email from the LU/TP/PreLease sibling, for the email previews
-        let ownerNameK = "", ownerEmailK = "";
+        // owner name + email from the LU/TP/PreLease sibling, for the email previews.
+        // Also the LU's Do Not List value (Vincent ask 1219236873185401, 2026-10-06):
+        // when set (Owner Selling / Moving Back In / Self Listing / Others) the owner
+        // email must not say a vendor was dispatched. An offboarding LU has no Unit
+        // ID, so this is the parent walk, never a Unit ID search. Prefer the open
+        // LU sibling, else the newest one (a relisted unit can carry several).
+        let ownerNameK = "", ownerEmailK = "", doNotListK = "";
         try {
-          const subsK = await asana("GET", `/tasks/${pgK}/subtasks?limit=100&opt_fields=name`);
-          const luK = ((subsK ?? []) as Array<{ gid: string; name: string }>).find((t) => /^(lu|tp|pre.?lease)\s*\|/i.test(t.name));
+          const subsK = await asana("GET", `/tasks/${pgK}/subtasks?limit=100&opt_fields=name,completed,created_at`);
+          const lusK = ((subsK ?? []) as Array<{ gid: string; name: string; completed?: boolean; created_at?: string }>)
+            .filter((t) => /^(lu|tp|pre.?lease)\s*\|/i.test(t.name))
+            .sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")));
+          const luK = lusK.find((t) => !t.completed) ?? lusK[0];
           if (luK) {
-            const luT = await asana("GET", `/tasks/${luK.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
-            const cfK = (luT.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
-            ownerNameK = String(cfK.find((f) => /owner name/i.test(f.name))?.display_value ?? "").trim().slice(0, 160);
-            ownerEmailK = String(cfK.find((f) => /owner e-?mail/i.test(f.name))?.display_value ?? "").replace(/;/g, ",").trim().slice(0, 200);
+            const luT = await asana("GET", `/tasks/${luK.gid}?opt_fields=custom_fields.gid,custom_fields.name,custom_fields.display_value`);
+            const cfK = (luT.custom_fields ?? []) as Array<{ gid: string; name: string; display_value: string | null }>;
+            ({ name: ownerNameK, email: ownerEmailK } = ownerFromCf(cfK));
+            ownerNameK = ownerNameK.slice(0, 160);
+            ownerEmailK = ownerEmailK.slice(0, 200);
+            doNotListK = String(cfK.find((f) => f.gid === "1214787859185273")?.display_value ?? "").trim().slice(0, 60);
           }
         } catch { /* previews fall back to the token */ }
-        return j(headers, 200, { ok: true, code: String(fK?.display_value ?? "").trim().slice(0, 40), ownerName: ownerNameK, ownerEmail: ownerEmailK });
+        return j(headers, 200, { ok: true, code: String(fK?.display_value ?? "").trim().slice(0, 40), ownerName: ownerNameK, ownerEmail: ownerEmailK, doNotList: doNotListK });
       } catch { return j(headers, 200, { ok: false, code: "" }); }
     }
 
@@ -4080,6 +4090,7 @@ app.post("*", async (c) => {
       let luGid: string | null = null;
       let moGid: string | null = null;
       let ownerEmail = "";
+      let doNotList9 = "";
       if (parentGid) {
         try {
           const subs = await asana("GET", `/tasks/${parentGid}/subtasks?limit=100&opt_fields=name`);
@@ -4087,8 +4098,11 @@ app.post("*", async (c) => {
           const luTask = (subs ?? []).find((t: { name: string }) => /^(lu|tp|pre.?lease)\s*\|/i.test(t.name));
           if (luTask) {
             luGid = luTask.gid;
-            const lu = await asana("GET", `/tasks/${luGid}?opt_fields=custom_fields.name,custom_fields.display_value`);
-            ownerEmail = ownerFromCf((lu.custom_fields ?? []) as Array<{ name?: string; display_value?: string | null }>).email;
+            const lu = await asana("GET", `/tasks/${luGid}?opt_fields=custom_fields.gid,custom_fields.name,custom_fields.display_value`);
+            const luCf9 = (lu.custom_fields ?? []) as Array<{ gid?: string; name?: string; display_value?: string | null }>;
+            ownerEmail = ownerFromCf(luCf9).email;
+            // Do Not List (ask 1219236873185401): no Go Live nudge for a unit we are not relisting
+            doNotList9 = String(luCf9.find((f) => f.gid === "1214787859185273")?.display_value ?? "").trim();
           }
         } catch { /* fail-soft: owner email just stays blank */ }
       }
@@ -4302,7 +4316,7 @@ app.post("*", async (c) => {
       // Date is deliberately NOT touched (Brittany 2026-09-22: targets stay as set
       // so target-vs-actual can be compared later).
       let goLiveSet = false, goLiveLead = "";
-      if (showReady9.toLowerCase() === "yes") {
+      if (showReady9.toLowerCase() === "yes" && !doNotList9) {
         const LSP9 = "1217446710785429", UIDF9 = "1213183515622826", LEADF9 = "1217446711292696";
         let lsGid9 = "";
         let leadGid9 = "";
@@ -4339,6 +4353,7 @@ app.post("*", async (c) => {
         ok: true,
         luNoted,
         goLiveSet, goLiveLead,
+        doNotList: doNotList9,
         omAssigned,
         // photos + PDF attach here too: the Turn Over task carries everything
         conductGid: tuGid,
