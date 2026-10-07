@@ -1584,9 +1584,24 @@ app.post("/onboard-proxy", async (c) => {
           }
         } catch { /* best-effort */ }
         try {
-          const streetNo = (hit.address.match(/^\d+/) ?? [""])[0];
-          const th = await asana("GET", `/workspaces/${FEED_WS}/typeahead?resource_type=task&query=${encodeURIComponent(hit.address.slice(0, 40))}&count=20&opt_fields=name`);
-          const lu = (th ?? []).find((x: { name: string }) => /^(LU|TP|PreLease)\s*\|/i.test(x.name) && (!streetNo || x.name.includes(streetNo)));
+          // Unit ID only, never the address (Brittany 2026-10-07: "Everything should
+          // be based off the unit ID with property ID as fall back. No address
+          // parsing"). The LU / TP / PreLease task comes from the Leasing | LU
+          // project by Unit ID (open first, else newest); the Turn Over task is
+          // reached by walking the Leasing parent found on Human View by Unit ID.
+          // No Unit ID on the Listing Settings task = these stay blank.
+          const UNIT_F4 = "1213183515622826";
+          const uidT = String((t.custom_fields ?? []).find((f: { gid: string; display_value: string | null }) => String(f.gid) === UNIT_F4)?.display_value ?? "").trim();
+          const byUid = async (proj: string) => {
+            if (!/^\d+$/.test(uidT)) return [] as Array<{ gid: string; name: string; completed?: boolean; created_at?: string }>;
+            return ((await asana("GET",
+              `/workspaces/${FEED_WS}/tasks/search?projects.any=${proj}&custom_fields.${UNIT_F4}.value=${uidT}&opt_fields=name,completed,created_at`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean; created_at?: string }>;
+          };
+          const pickOpen = (arr: Array<{ gid: string; name: string; completed?: boolean; created_at?: string }>, re: RegExp) => {
+            const m = arr.filter((x) => re.test(String(x.name))).sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")));
+            return m.find((x) => !x.completed) ?? m[0] ?? null;
+          };
+          const lu = pickOpen(await byUid("1213171756304238"), /^(LU|TP|PreLease)\s*\|/i);
           if (lu) {
             const lt = await asana("GET", `/tasks/${lu.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
             const cfs = (lt.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
@@ -1602,7 +1617,12 @@ app.post("/onboard-proxy", async (c) => {
             metrics.showings = gn(/#\s*of\s*showings/i);
             metrics.applications = gn(/#\s*of\s*applications/i);
           }
-          const to = (th ?? []).find((x: { name: string }) => /^turn\s*over\s*\|/i.test(x.name) && (!streetNo || x.name.includes(streetNo)));
+          let to: { gid: string; name: string } | null = null;
+          const parT = pickOpen(await byUid("1208297375044026"), /^leasing\s*\|/i);
+          if (parT) {
+            const kidsT = ((await asana("GET", `/tasks/${parT.gid}/subtasks?limit=100&opt_fields=name,completed,created_at`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean; created_at?: string }>;
+            to = pickOpen(kidsT, /^turn\s*over\s*\|/i);
+          }
           if (to) {
             const tt = await asana("GET", `/tasks/${to.gid}?opt_fields=custom_fields.gid,custom_fields.name,custom_fields.display_value`);
             const tcf = (tt.custom_fields ?? []) as Array<{ gid: string; name: string; display_value: string | null }>;
@@ -1621,7 +1641,8 @@ app.post("/onboard-proxy", async (c) => {
         const unitSettings: Record<string, string> = {};
         try {
           // Settings task by Unit ID first (stable key; #A/#B units make address
-          // matching ambiguous — Brittany 2026-08-17), typeahead as the fallback.
+          // matching ambiguous — Brittany 2026-08-17), Property ID as the fallback
+          // (2026-10-07; the address typeahead fallback is gone).
           const UNIT_SETTINGS_PROJECT = "1213032009308835";
           const UNIT_ID_F = "1213183515622826";
           const uidLS = String((t.custom_fields ?? []).find((f: { gid: string; display_value: string | null }) => String(f.gid) === UNIT_ID_F)?.display_value ?? "").trim();
@@ -1641,14 +1662,34 @@ app.post("/onboard-proxy", async (c) => {
                   `/workspaces/${FEED_WS}/tasks/search?projects.any=${settingsProj}&custom_fields.${UNIT_ID_F}.value=${uidLS}&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
                 const pick = found.find((tk) => !tk.completed) ?? found[0];
                 if (pick) stGid = pick.gid;
-              } catch { /* fall through to the typeahead */ }
+              } catch { /* fall through to the Property ID lookup */ }
             }
           }
-          if (!stGid) {
-            const th2 = await asana("GET", `/workspaces/${FEED_WS}/typeahead?resource_type=task&query=${encodeURIComponent("Settings // " + hit.address.slice(0, 40))}&count=10&opt_fields=name`);
-            const streetNo2 = (hit.address.match(/^\d+/) ?? [""])[0];
-            const st = (th2 ?? []).find((x: { name: string }) => /^settings\s*\/\//i.test(x.name) && (!streetNo2 || x.name.includes(streetNo2)));
-            if (st) stGid = st.gid;
+          // Property ID fallback (Brittany 2026-10-07: Unit ID, then Property ID,
+          // never the address): Buildium gives the unit's PropertyId, and the
+          // Property Settings task is found on its Property ID field. No match =
+          // blank unit details, never a guessed task.
+          if (!stGid && /^\d+$/.test(uidLS)) {
+            try {
+              const B_ID2 = Deno.env.get("BUILDIUM_CLIENT_ID") ?? "";
+              const B_SEC2 = Deno.env.get("BUILDIUM_CLIENT_SECRET") ?? "";
+              if (B_ID2 && B_SEC2) {
+                const ru2 = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uidLS)}`, { headers: { "x-buildium-client-id": B_ID2, "x-buildium-client-secret": B_SEC2 } });
+                const pid2 = ru2.ok ? String(((await ru2.json().catch(() => ({}))) as Record<string, unknown>).PropertyId ?? "").trim() : "";
+                if (/^\d+$/.test(pid2)) {
+                  const foundP = ((await asana("GET",
+                    `/workspaces/${FEED_WS}/tasks/search?projects.any=${PROPERTY_SETTINGS_PROJECT}&custom_fields.${FEED_PID_FIELD}.value=${pid2}&opt_fields=name,completed,custom_fields.gid,custom_fields.display_value`)) ?? []) as Array<{ gid: string; completed?: boolean; custom_fields?: Array<{ gid: string; display_value: string | null }> }>;
+                  // the property's Settings tasks can include per-unit ones: take the
+                  // one whose Unit ID matches, else the property-level task (no Unit
+                  // ID), never another unit's task
+                  const uidOfP = (tk: { custom_fields?: Array<{ gid: string; display_value: string | null }> }) => String((tk.custom_fields ?? []).find((f) => String(f.gid) === UNIT_ID_F)?.display_value ?? "").trim();
+                  const openP = foundP.filter((tk) => !tk.completed);
+                  const pickP = openP.find((tk) => uidOfP(tk) === uidLS) ?? openP.find((tk) => !uidOfP(tk)) ??
+                    foundP.find((tk) => uidOfP(tk) === uidLS) ?? foundP.find((tk) => !uidOfP(tk));
+                  if (pickP) stGid = pickP.gid;
+                }
+              }
+            } catch { /* blank unit details */ }
           }
           if (stGid) {
             const stt = await asana("GET", `/tasks/${stGid}?opt_fields=custom_fields.name,custom_fields.display_value`);
@@ -2324,10 +2365,26 @@ app.post("/onboard-proxy", async (c) => {
         // back out. Lines the crew added by hand are never touched.
         let scopeNote = "";
         try {
-          const streetNo3 = (hit.address.match(/^\d+/) ?? [""])[0];
-          const th3 = await asana("GET", `/workspaces/${FEED_WS}/typeahead?resource_type=task&query=${encodeURIComponent("Turn Over " + hit.address.slice(0, 34))}&count=20&opt_fields=name`);
-          const to = ((th3 ?? []) as Array<{ gid: string; name: string }>)
-            .find((x) => /^turn\s*over\s*\|/i.test(x.name) && (!streetNo3 || x.name.includes(streetNo3)));
+          // Unit ID, never the address (Brittany 2026-10-07): this call WRITES the
+          // crew's work order, so a near-miss on a sibling unit would be the worst
+          // kind of wrong. Listing Settings Unit ID -> Leasing parent on Human
+          // View -> its open Turn Over subtask.
+          const UNIT_F5 = "1213183515622826";
+          const tLs5 = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
+          const uid5 = String(((tLs5.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>).find((f) => String(f.gid) === UNIT_F5)?.display_value ?? "").trim();
+          let to: { gid: string; name: string } | null = null;
+          if (/^\d+$/.test(uid5)) {
+            const pars5 = ((await asana("GET",
+              `/workspaces/${FEED_WS}/tasks/search?projects.any=1208297375044026&custom_fields.${UNIT_F5}.value=${uid5}&opt_fields=name,completed,created_at`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean; created_at?: string }>;
+            const par5 = pars5.filter((x) => /^leasing\s*\|/i.test(String(x.name)))
+              .sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")));
+            const p5 = par5.find((x) => !x.completed) ?? par5[0];
+            if (p5) {
+              const kids5 = ((await asana("GET", `/tasks/${p5.gid}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+              const tos5 = kids5.filter((x) => /^turn\s*over\s*\|/i.test(String(x.name)));
+              to = tos5.find((x) => !x.completed) ?? tos5[0] ?? null;
+            }
+          }
           if (to) {
             const tt = await asana("GET", `/tasks/${to.gid}?opt_fields=notes`);
             const scopeRaw = String((tt as { notes?: string })?.notes ?? "");
@@ -2341,7 +2398,7 @@ app.post("/onboard-proxy", async (c) => {
               scopeNote = `The Turn Over task's work order now lists ${approved.length} approved item${approved.length === 1 ? "" : "s"}.`;
             }
           } else {
-            scopeNote = "No Turn Over task found for this address, so the work order was not updated.";
+            scopeNote = "No Turn Over task found for this unit (by Unit ID), so the work order was not updated.";
           }
         } catch { scopeNote = "Could not update the Turn Over task's work order; please copy the approved items over by hand."; }
         const bodyHtml = [
