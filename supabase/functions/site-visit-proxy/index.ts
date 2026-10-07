@@ -2719,9 +2719,13 @@ app.post("*", async (c) => {
             ? "PreLease" : (String(luHitO.name).match(/^(LU|TP)/i) || [""])[0].toUpperCase();
           const lu = await asana("GET", `/tasks/${luHitO.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
           const cfo = (lu.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
-          const go = (re: RegExp) => String(cfo.find((f) => re.test(f.name))?.display_value ?? "").trim();
-          luOwnerName = go(/owner name/i).slice(0, 160);
-          luOwnerEmail = go(/owner e-?mail/i).replace(/;/g, ",").trim().slice(0, 240);
+          // Owner Contact (Tier 2 combined field) first, legacy singles as fallback.
+          // Until 2026-10-07 this read only the legacy names while ownerSave wrote
+          // Owner Contact, so a saved owner never came back on repopulate
+          // (Plan + Propose feedback 1219237601948194).
+          const ownerO = ownerFromCf(cfo);
+          luOwnerName = ownerO.name.slice(0, 160);
+          luOwnerEmail = ownerO.email.slice(0, 240);
         }
       } catch { /* owner block stays blank */ }
       // Buildium rental owners are the DEFAULT identity; anything saved on the
