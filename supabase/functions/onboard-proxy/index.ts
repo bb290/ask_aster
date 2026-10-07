@@ -1630,19 +1630,18 @@ app.post("/onboard-proxy", async (c) => {
             // Unit Settings first (multifamily); single-family / townhouse / condo units
             // have no Unit Settings task, so fall back to Property Settings, which
             // carries the same Unit ID field (Brittany 2026-08-20).
+            // Targeted search on the Unit ID field (2026-10-07): the previous page
+            // scan stopped at 500 tasks per project, and Unit Settings passed 700,
+            // so units past page 5 (1506 S G St #4, Unit ID 354539) rendered the
+            // owner page with blank unit details.
             for (const settingsProj of [UNIT_SETTINGS_PROJECT, PROPERTY_SETTINGS_PROJECT]) {
               if (stGid) break;
-              let offU = "";
-              for (let pg = 0; pg < 5 && !stGid; pg++) {
-                const ru = await fetch(`${ASANA}/projects/${settingsProj}/tasks?limit=100&opt_fields=custom_fields.gid,custom_fields.display_value${offU ? `&offset=${encodeURIComponent(offU)}` : ""}`,
-                  { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
-                const ju = await ru.json().catch(() => ({}));
-                for (const tk of (ju.data ?? []) as Array<{ gid: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>) {
-                  if (String((tk.custom_fields ?? []).find((f) => String(f.gid) === UNIT_ID_F)?.display_value ?? "").trim() === uidLS) { stGid = tk.gid; break; }
-                }
-                offU = ju.next_page?.offset ?? "";
-                if (!offU) break;
-              }
+              try {
+                const found = ((await asana("GET",
+                  `/workspaces/${FEED_WS}/tasks/search?projects.any=${settingsProj}&custom_fields.${UNIT_ID_F}.value=${uidLS}&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+                const pick = found.find((tk) => !tk.completed) ?? found[0];
+                if (pick) stGid = pick.gid;
+              } catch { /* fall through to the typeahead */ }
             }
           }
           if (!stGid) {
