@@ -623,6 +623,111 @@ async function maintVisitTasks(): Promise<Array<{ gid: string; address: string }
   return recs;
 }
 
+// ---------- Lookup (saga-lookup widget, Brittany 2026-10-20) ----------
+// Read-only unit details for leasing + ops in the field. The whole tool sits
+// behind one shared password (LOOKUP_PASSWORD secret): lkUnlock trades it for a
+// signed 12-hour token, and lkList / lkUnit return nothing without one, so the
+// public team key in /field page source never exposes unit data. The keybox code
+// and unit status ride behind the same token. Field source rules come from the
+// Outline "Property Settings" doc: unit task first, property task when the unit
+// field is blank (single-family: the property task is the unit), lease fields
+// from the unit's Lease Settings task, keybox from the Leasing parent's
+// [Onsite] Key Box (its only home, Brittany 2026-09-15). Never returns client
+// fields (fees, communication, termination), Owner Preferences, Housing
+// Authority, Pass Through %, or resident names.
+const LOOKUP_PASSWORD = Deno.env.get("LOOKUP_PASSWORD") ?? "";
+const LK_TTL_MS = 12 * 3600 * 1000;
+const LK_KEYBOX_F = "1218512667092355"; // [Onsite] Key Box on the Leasing parent
+const LK_UNIT_ID_F = "1213183515622826";
+const lkEnc = new TextEncoder();
+function lkB64(bytes: Uint8Array): string {
+  let s = "";
+  bytes.forEach((b) => s += String.fromCharCode(b));
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+// signing key = password + PAT, hashed: changing the password logs every phone out
+async function lkSig(msg: string): Promise<string> {
+  const raw = await crypto.subtle.digest("SHA-256", lkEnc.encode(`lookup|${LOOKUP_PASSWORD}|${ASANA_PAT}`));
+  const key = await crypto.subtle.importKey("raw", raw, { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return lkB64(new Uint8Array(await crypto.subtle.sign("HMAC", key, lkEnc.encode(msg))));
+}
+function lkSame(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+}
+async function lkTokenOk(token: string): Promise<boolean> {
+  if (!LOOKUP_PASSWORD) return false;
+  const [exp, sig] = String(token ?? "").split(".");
+  if (!/^\d+$/.test(exp ?? "") || Number(exp) < Date.now()) return false;
+  return lkSame(sig ?? "", await lkSig(exp));
+}
+// wrong-password brake per caller: 5 misses = 15 minute lockout, plus a delay
+// on every miss (per warm instance)
+const lkFails = new Map<string, { n: number; at: number }>();
+
+type LkCf = Array<{ gid: string; name: string; display_value: string | null }>;
+type LkRow = { gid: string; address: string; uid: string; kind: "unit" | "single" };
+let lkListCache: { at: number; rows: LkRow[] } | null = null;
+async function lkPaged(project: string, fields: string): Promise<Array<Record<string, unknown>>> {
+  const out: Array<Record<string, unknown>> = [];
+  let off = "";
+  for (let page = 0; page < 15; page++) {
+    const res = await fetch(`${ASANA}/projects/${project}/tasks?completed_since=now&limit=100&opt_fields=${fields}${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
+      { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+    const json = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(`asana lookup page ${page} -> ${res.status}`);
+    out.push(...((json.data ?? []) as Array<Record<string, unknown>>));
+    off = json.next_page?.offset ?? "";
+    if (!off) break;
+  }
+  return out;
+}
+// Unit Settings units, plus single-family Property Settings tasks (no unit child)
+async function lkList(): Promise<LkRow[]> {
+  if (lkListCache && Date.now() - lkListCache.at < 10 * 60 * 1000) return lkListCache.rows;
+  const fields = "name,parent.gid,custom_fields.gid,custom_fields.display_value";
+  const [units, props] = await Promise.all([lkPaged(UNIT_SETTINGS_PROJECT, fields), lkPaged(PROPERTY_SETTINGS_PROJECT, fields)]);
+  const uidOf = (t: Record<string, unknown>) =>
+    String(((t.custom_fields ?? []) as LkCf).find((f) => f.gid === LK_UNIT_ID_F)?.display_value ?? "").trim();
+  const rows: LkRow[] = [];
+  const parents = new Set<string>();
+  for (const t of units) {
+    const name = String(t.name ?? "");
+    if (!/^settings\s*\/\//i.test(name)) continue;
+    const p = (t.parent as { gid?: string } | null)?.gid;
+    if (p) parents.add(p);
+    rows.push({ gid: String(t.gid), address: addressFromSettingsName(name), uid: uidOf(t), kind: "unit" });
+  }
+  for (const t of props) {
+    const name = String(t.name ?? "");
+    if (!/^settings\s*\/\//i.test(name) || parents.has(String(t.gid))) continue;
+    rows.push({ gid: String(t.gid), address: addressFromSettingsName(name), uid: uidOf(t), kind: "single" });
+  }
+  rows.sort((a, b) => a.address.localeCompare(b.address));
+  lkListCache = { at: Date.now(), rows };
+  return rows;
+}
+// Occupied unless an open Leasing parent says otherwise: Move Out Completion set
+// = Vacant (also new properties vacant from day one), Tenant Move-Out set = Moving Out
+function lkStatus(uid: string, idx: { byUid: Record<string, string>; doneByUid: Record<string, string> }): string {
+  if (uid && idx.doneByUid[uid]) return "Vacant";
+  if (uid && idx.byUid[uid]) return "Moving Out";
+  return "Occupied";
+}
+function lkDate(v: string): string {
+  const d = String(v ?? "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(d)) return "";
+  return `${d.slice(5, 7)}/${d.slice(8, 10)}/${d.slice(0, 4)}`;
+}
+const LK_UTIL: Record<string, string> = {
+  "tenant account": "Tenant",
+  "sagareus account - 100% pass through": "Sagareus, pass through",
+  "sagareus account - flat fee": "Sagareus, flat fee",
+  "none": "None",
+};
+
 app.options("*", (c) => new Response(null, { status: 204, headers: corsHeaders(c.req.header("origin")) }));
 
 app.post("*", async (c) => {
@@ -5607,6 +5712,181 @@ app.post("*", async (c) => {
     }
 
     // TEMP: identity probe (remove after PAT swap verification)
+    // ---------- lkUnlock / lkList / lkUnit: the Lookup widget (see helpers) ----------
+    if (action === "lkUnlock") {
+      if (!LOOKUP_PASSWORD) return j(headers, 503, { error: "not_configured", message: "Lookup isn't set up yet. Tell Brittany." });
+      const who = (c.req.header("x-forwarded-for") ?? "").split(",")[0].trim() || "anon";
+      const f = lkFails.get(who);
+      if (f && f.n >= 5 && Date.now() - f.at < 15 * 60 * 1000) {
+        return j(headers, 429, { error: "locked", message: "Too many tries. Wait 15 minutes." });
+      }
+      if (!lkSame(String(body.password ?? ""), LOOKUP_PASSWORD)) {
+        lkFails.set(who, { n: (f && Date.now() - f.at < 15 * 60 * 1000 ? f.n : 0) + 1, at: Date.now() });
+        await new Promise((r) => setTimeout(r, 800));
+        return j(headers, 401, { error: "bad_password", message: "Wrong password." });
+      }
+      lkFails.delete(who);
+      const exp = String(Date.now() + LK_TTL_MS);
+      return j(headers, 200, { ok: true, token: `${exp}.${await lkSig(exp)}`, exp: Number(exp) });
+    }
+
+    if (action === "lkList" || action === "lkUnit") {
+      if (!(await lkTokenOk(String(body.token ?? "")))) return j(headers, 401, { error: "locked", message: "Enter the password." });
+      const [rows, idx] = await Promise.all([lkList(), moveOutIndex()]);
+
+      if (action === "lkList") {
+        return j(headers, 200, { ok: true, units: rows.map((r) => ({ gid: r.gid, address: r.address, kind: r.kind, status: lkStatus(r.uid, idx) })) });
+      }
+
+      // only tasks the list offers: the token never reads arbitrary Asana tasks
+      const row = rows.find((r) => r.gid === String(body.gid ?? ""));
+      if (!row) return j(headers, 404, { error: "not_found", message: "That unit isn't in the list anymore. Search again." });
+      const cfQ = "custom_fields.gid,custom_fields.name,custom_fields.display_value";
+      const ut = await asana("GET", `/tasks/${row.gid}?opt_fields=name,parent.gid,${cfQ}`);
+      const ucf = (ut.custom_fields ?? []) as LkCf;
+      let pcf: LkCf = [];
+      if (row.kind === "unit" && ut.parent?.gid) {
+        try { pcf = ((await asana("GET", `/tasks/${ut.parent.gid}?opt_fields=${cfQ}`)).custom_fields ?? []) as LkCf; } catch { /* unit fields only */ }
+      }
+      const pick = (cf: LkCf, re: RegExp) => {
+        const hit = cf.find((x) => re.test(String(x.name ?? "").trim()));
+        return hit ? String(hit.display_value ?? "").trim() : null;
+      };
+      // unit first, property when the unit field is blank or missing
+      const g = (re: RegExp): string => pick(ucf, re) || pick(pcf, re) || "";
+      const gp = (re: RegExp): string => pick(pcf, re) || pick(ucf, re) || "";
+      const multi = row.kind === "unit";
+
+      // lease: the unit's Lease Settings task, open first, oldest first (the
+      // current resident's lease wins over a future one)
+      let lcf: LkCf = [];
+      if (/^\d+$/.test(row.uid)) {
+        try {
+          const r = await fetch(`${ASANA}/workspaces/${WORKSPACE}/tasks/search?projects.any=${LEASE_SETTINGS_PROJECT}&custom_fields.${LK_UNIT_ID_F}.value=${row.uid}&opt_fields=completed,created_at,${cfQ}`,
+            { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+          const ls = (((await r.json().catch(() => ({}))) as { data?: unknown }).data ?? []) as Array<{ completed?: boolean; created_at?: string; custom_fields?: LkCf }>;
+          ls.sort((a, b) => Number(!!a.completed) - Number(!!b.completed) || String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")));
+          lcf = ls[0]?.custom_fields ?? [];
+        } catch { /* lease rows read Not Checked Yet */ }
+      }
+      const gl = (re: RegExp): string => pick(lcf, re) || "";
+
+      // keybox: the open Leasing parent's [Onsite] Key Box
+      let keybox = "";
+      const master = row.uid ? idx.masterByUid[row.uid] : "";
+      if (master) {
+        try {
+          const mt = await asana("GET", `/tasks/${master}?opt_fields=custom_fields.gid,custom_fields.display_value`);
+          keybox = String(((mt.custom_fields ?? []) as LkCf).find((x) => x.gid === LK_KEYBOX_F)?.display_value ?? "").trim();
+        } catch { /* shows No Key Box On File */ }
+      }
+
+      type R = { label: string; value: string | null; note?: string; link?: string };
+      const txt = (label: string, v: string, note = ""): R => ({ label, value: v || null, ...(note ? { note } : {}) });
+      const yearAgo = new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10);
+      // service dates: 12/31/9999 = does not apply (row hidden); over a year old flagged
+      const svc = (label: string, raw: string): R | null => {
+        const d = raw.slice(0, 10);
+        if (d.startsWith("9999")) return null;
+        if (!lkDate(d)) return txt(label, "");
+        return txt(label, lkDate(d), d < yearAgo ? "Over a year ago" : "");
+      };
+      const keep = (xs: Array<R | null>) => xs.filter(Boolean) as R[];
+
+      const parkType = gp(/^parking type$/i), storType = gp(/^storage type$/i);
+      const leaseSpot = (v: string) => (v && !/^(included|none)$/i.test(v) ? v : "");
+      const parkIds = leaseSpot(gl(/^parking$/i)), storIds = leaseSpot(gl(/^storage$/i));
+      const parking = parkType ? parkStorLine(parkType, parkIds, "Spot") : "";
+      const storage = storType ? parkStorLine(storType, storIds, "Storage") : (storIds || "");
+
+      const reg = gp(/^rental registration expiration$/i).slice(0, 10);
+      const today = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+      const regRow: R | null = reg.startsWith("9999") ? null
+        : lkDate(reg) ? txt("Rental Registration", `Expires ${lkDate(reg)}`, reg < today ? "Expired" : "")
+        : txt("Rental Registration", "");
+
+      const hoaDues = gp(/^hoa dues$/i), hoaBook = gp(/^hoa playbook$/i);
+      const hoaRow: R = /^none$/i.test(hoaDues) ? txt("HOA", "No HOA")
+        : hoaDues || hoaBook ? { label: "HOA", value: hoaDues ? `Dues ${hoaDues.replace(/^paid by/i, "paid by")}` : "Yes", ...(hoaBook ? { link: hoaBook } : {}) }
+        : txt("HOA", "");
+
+      const asset = gp(/^asset storage$/i);
+      const util = (label: string, re: RegExp): R => {
+        const v = g(re);
+        return txt(label, LK_UTIL[v.toLowerCase()] ?? v);
+      };
+      const pets = gl(/^pets$/i), petTerm = gl(/^pet lease term$/i);
+
+      const sections: Array<{ title: string; rows: R[] }> = [
+        { title: "Unit", rows: keep([
+          txt("Mailbox", g(/^mailbox$/i)),
+          txt("Parking", parking),
+          txt("Heating", g(/^heating type$/i)),
+          txt("Cooling", g(/^cooling$/i)),
+          txt("HVAC Filter", g(/^hvac filter$/i)),
+          txt("Laundry", g(/^laundry$/i)),
+          txt("EV Charger", g(/^ev charger$/i)),
+          txt("Internet", g(/^internet provider$/i)),
+          txt("Playbook", gp(/^playbook$/i)),
+          hoaRow,
+          txt("Asset Storage", asset),
+          regRow,
+        ]) },
+        { title: "Maintenance", rows: keep([
+          svc("HVAC Service", g(/^hvac servicing completed$/i)),
+          svc("Dryer Vent", g(/^dryer vent cleaning completed$/i)),
+          (() => { const d = g(/^hot water heater install$/i).slice(0, 10); return d.startsWith("9999") ? null : txt("Water Heater Installed", lkDate(d)); })(),
+          svc("Annual Inspection", g(/^annual inspection completed$/i)),
+          txt("Appliances", g(/^appliances$/i)),
+          txt("Landscaping", gp(/^landscaping maintenance$/i)),
+          txt("Pest Control", gp(/^pest control$/i)),
+          ...(multi ? [txt("Common Area Cleaning", gp(/^common area cleaning$/i))] : []),
+          svc("Roof Cleaning", gp(/^roof cleaning completed$/i)),
+          svc("Septic Pump", gp(/^septic pump date$/i)),
+          svc("Backflow Test", gp(/^backflow testing date$/i)),
+          ...(multi ? [
+            svc("Coin Pickup", gp(/^coin pickup completed$/i)),
+            svc("Multifamily Inspection", gp(/^multifamily inspection date$/i)),
+            svc("Fire Inspection", gp(/^fire inspection date$/i)),
+            svc("Elevator Inspection", gp(/^elevator inspection date$/i)),
+          ] : []),
+        ]) },
+        { title: "Utilities", rows: [
+          util("Electric", /^utilities - electricity$/i),
+          util("Gas", /^utilities - gas$/i),
+          util("Water", /^utilities - water$/i),
+          util("Sewer / Storm", /^utilities - sewer/i),
+          util("Garbage", /^utilities - garbage$/i),
+          util("Oil", /^utilities - oil$/i),
+          util("Internet", /^utilities - internet$/i),
+          txt("Providers", gp(/^utilities$/i)),
+        ] },
+        { title: "Lease", rows: [
+          txt("Pets", pets, petTerm ? `Pet Lease Term: ${petTerm}` : ""),
+          txt("ESA", gl(/^esa$/i)),
+          txt("Vehicles", gl(/^vehicles$/i)),
+          txt("Storage", storage),
+        ] },
+      ];
+
+      const chips: string[] = [lkStatus(row.uid, idx)];
+      if (pets && !/^none$/i.test(pets)) chips.push(pets.replace(/\b\w/g, (ch) => ch.toUpperCase()));
+      if (hoaRow.value && hoaRow.value !== "No HOA") chips.push("HOA");
+
+      return j(headers, 200, {
+        ok: true,
+        address: row.address,
+        chips,
+        top: [
+          { label: "Keybox Code", value: keybox || null, empty: "No Key Box On File" },
+          { label: "Keys Storage", value: g(/^keys storage$/i) || null },
+          { label: "Keys Common Area", value: gp(/^keys common area$/i) || null },
+        ],
+        sections,
+        asanaUrl: `https://app.asana.com/0/0/${row.gid}`,
+      });
+    }
+
     if (action === "whoami") {
       const out: Record<string, string> = {};
       for (const [label, tok] of [["ASANA_PAT", Deno.env.get("ASANA_PAT")], ["ASANA_API_TOKEN", Deno.env.get("ASANA_API_TOKEN")]] as Array<[string, string | undefined]>) {
