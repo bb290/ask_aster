@@ -3390,10 +3390,17 @@ app.post("*", async (c) => {
             .filter((s) => !s.completed && /^modify\s/i.test(String(s.name)));
         } catch { /* best-effort */ }
       }
-      if (!isDraft) cf[PS_F] = wasApproved ? PS_OPT["Revised"] : PS_OPT["Sent"];
+      // Owner Managed Listing (feedback 1219659478918810): the plan saves straight to
+      // Team Lead Approved (no owner approval round, no fan-out), the LU is marked Do
+      // Not List = Owner Self Listing, and no staff leasing work is assigned until an
+      // applicant is approved. The plan email still goes to the owner.
+      const ownerListing = String(body.listManaged ?? "") === "owner";
+      const psOut = ownerListing ? "Team Lead Approved" : (wasApproved ? "Revised" : "Sent");
+      if (!isDraft) cf[PS_F] = PS_OPT[psOut];
       // revision state field: machine state for the page banner (You asked / What we did);
       // approvals reset on every push, lsAccept rebuilds them
-      const rnState = { appr: {}, req: openModify.map((m) => ({ s: String(m.name).replace(/^modify\s+/i, "").replace(/\s*\|.*$/, "").slice(0, 40), t: String(m.notes ?? "").split(/\r?\n/).find((l) => l.trim() && !/^section:/i.test(l)) ?? "" })).slice(0, 4), resp: respToOwner, d: new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10) };
+      const rnDay = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+      const rnState = { appr: ownerListing ? { lp: { d: rnDay, by: "Owner Managed Listing" }, to: { d: rnDay, by: "Owner Managed Listing" } } : {}, req: openModify.map((m) => ({ s: String(m.name).replace(/^modify\s+/i, "").replace(/\s*\|.*$/, "").slice(0, 40), t: String(m.notes ?? "").split(/\r?\n/).find((l) => l.trim() && !/^section:/i.test(l)) ?? "" })).slice(0, 4), resp: respToOwner, d: new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10) };
       if (!isDraft) cf[RN_F] = JSON.stringify(rnState).slice(0, 1020);
       // One bad field rejects an entire batched write ("Custom field is not on given
       // object"), silently losing every other field. Batch first for speed; on failure
@@ -3419,7 +3426,9 @@ app.post("*", async (c) => {
       } else if (Object.keys(cf).length) {
         await writeCf(taskGid, cf);
         if (!isDraft) await asana("POST", `/tasks/${taskGid}/stories`, {
-          text: "Listing Settings updated from the PreListing Workbench. Done by Claude on behalf of the listing agent.",
+          text: "Listing Settings updated from the PreListing Workbench." +
+            (ownerListing ? " Owner Managed Listing: plan saved as Team Lead Approved; the Lease Up task is marked Do Not List (Owner Self Listing), so no staff leasing work is assigned until an applicant is approved." : "") +
+            " Done by Claude on behalf of the listing agent.",
         }).catch(() => null);
       }
       // auto-complete the unit's open Modify tasks, each closed quoting the response (Brittany 2026-08-17)
@@ -3476,9 +3485,22 @@ app.post("*", async (c) => {
               else luNotes.push("lu price fields not found");
             } catch { luNotes.push("lu prices failed"); }
           }
-          // Final push only: LU due 1 day before Target List Date, assigned to the
-          // Team Lead from Listing Settings (Leasing Agent as fallback) (Brittany 2026-08-21)
+          // Do Not List follows the Listing Management choice on every final push:
+          // Owner Managed sets Owner Self Listing; switching back clears ONLY that
+          // value (an Owner Selling / Moving Back In flag set by hand stays)
           if (!isDraft) {
+            try {
+              const DNL_F = "1214787859185273", DNL_SELF = "1214787859185276";
+              const luD = await asana("GET", `/tasks/${luHit9.gid}?opt_fields=custom_fields.gid,custom_fields.enum_value.gid`);
+              const curDnl = String(((luD.custom_fields ?? []) as Array<{ gid: string; enum_value?: { gid?: string } | null }>).find((f) => f.gid === DNL_F)?.enum_value?.gid ?? "");
+              if (ownerListing && curDnl !== DNL_SELF) { await asana("PUT", `/tasks/${luHit9.gid}`, { custom_fields: { [DNL_F]: DNL_SELF } }); luNotes.push("lu do not list: owner self listing"); }
+              else if (!ownerListing && curDnl === DNL_SELF) { await asana("PUT", `/tasks/${luHit9.gid}`, { custom_fields: { [DNL_F]: null } }); luNotes.push("lu do not list cleared"); }
+            } catch { luNotes.push("lu do not list failed"); }
+          }
+          // Final push only: LU due 1 day before Target List Date, assigned to the
+          // Team Lead from Listing Settings (Leasing Agent as fallback) (Brittany 2026-08-21).
+          // Skipped for an Owner Managed Listing: no staff leasing work until an applicant.
+          if (!isDraft && !ownerListing) {
             try {
               const upd9: Record<string, unknown> = {};
               const tld9 = String(body.targetListDate ?? "").slice(0, 10);
@@ -3504,7 +3526,7 @@ app.post("*", async (c) => {
         taskGid,
         taskUrl: `https://app.asana.com/0/0/${taskGid}`,
         leasingUrl: `https://www.sagareus.com/leasing-plan?p=${slug}`,
-        planStatus: wasApproved ? "Revised" : "Sent",
+        planStatus: isDraft ? undefined : psOut,
         modifyClosed,
         luNotes,
         fieldErrors,

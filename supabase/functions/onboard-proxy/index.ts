@@ -1814,6 +1814,7 @@ app.post("/onboard-proxy", async (c) => {
         // just the note to the page, like turnNote (Brittany 2026-08-27)
         let planNote = "";
         let turnManaged = "";
+        let listManaged = "";
         try {
           const cdRaw = String(((t.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>).find((f) => /comps data/i.test(String(f.name)))?.display_value ?? "");
           if (cdRaw) {
@@ -1821,13 +1822,15 @@ app.post("/onboard-proxy", async (c) => {
             planNote = scrub(String(cdj?.planNote ?? "")).slice(0, 800);
             // Owner Managed Turn Over flag rides here too (team 2026-09-15)
             if (String(cdj?.turnManaged ?? "") === "owner") turnManaged = "owner";
+            // Owner Managed Listing (feedback 1219659478918810) rides here as well
+            if (String(cdj?.listManaged ?? "") === "owner") listManaged = "owner";
           }
         } catch { /* no note */ }
         // open change requests pause the approve buttons on the page; best-effort
         // here because lsAccept/lsApprove enforce the same gate server-side
         let pendingMods: string[] = [];
         try { pendingMods = await obOpenMods(hit.gid); } catch { /* view stays usable */ }
-        return j(headers, 200, { ok: true, address: hit.address, fields, team, approval, dates, metrics, unitSettings, turn, turnNote: turnRaw.slice(0, 2000), planNote, turnManaged, planStatus: psVal, approvals: apprOut, revision: { req: rnV.req, resp: rnV.resp, d: rnV.d }, pendingMods, lastUpdated: String(t.modified_at ?? "").slice(0, 10), createdAt: String(t.created_at ?? "").slice(0, 10) });
+        return j(headers, 200, { ok: true, address: hit.address, fields, team, approval, dates, metrics, unitSettings, turn, turnNote: turnRaw.slice(0, 2000), planNote, turnManaged, listManaged, planStatus: psVal, approvals: apprOut, revision: { req: rnV.req, resp: rnV.resp, d: rnV.d }, pendingMods, lastUpdated: String(t.modified_at ?? "").slice(0, 10), createdAt: String(t.created_at ?? "").slice(0, 10) });
       }
 
       // lsDraft: the Draft Listing section — photos, listing description, and the
