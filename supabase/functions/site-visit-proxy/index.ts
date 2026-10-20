@@ -639,6 +639,8 @@ const LOOKUP_PASSWORD = Deno.env.get("LOOKUP_PASSWORD") ?? "";
 const LK_TTL_MS = 12 * 3600 * 1000;
 const LK_KEYBOX_F = "1218512667092355"; // [Onsite] Key Box on the Leasing parent
 const LK_UNIT_ID_F = "1213183515622826";
+const LK_LISTING_PROJECT = "1217446710785429"; // Listing Settings
+const LK_PROVIDERS_F = "1217921018573269";     // Utility Providers on Listing Settings
 const lkEnc = new TextEncoder();
 function lkB64(bytes: Uint8Array): string {
   let s = "";
@@ -5779,6 +5781,22 @@ app.post("*", async (c) => {
       }
       const gl = (re: RegExp): string => pick(lcf, re) || "";
 
+      // utility providers: the unit's Listing Settings task (Brittany 2026-10-20),
+      // open first, newest first
+      let providers = "";
+      if (/^\d+$/.test(row.uid)) {
+        try {
+          const r = await fetch(`${ASANA}/workspaces/${WORKSPACE}/tasks/search?projects.any=${LK_LISTING_PROJECT}&custom_fields.${LK_UNIT_ID_F}.value=${row.uid}&opt_fields=completed,created_at,custom_fields.gid,custom_fields.display_value`,
+            { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+          const ls = (((await r.json().catch(() => ({}))) as { data?: unknown }).data ?? []) as Array<{ completed?: boolean; created_at?: string; custom_fields?: LkCf }>;
+          ls.sort((a, b) => Number(!!a.completed) - Number(!!b.completed) || String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")));
+          for (const t of ls) {
+            providers = String((t.custom_fields ?? []).find((x) => x.gid === LK_PROVIDERS_F)?.display_value ?? "").trim();
+            if (providers) break;
+          }
+        } catch { /* reads Not Checked Yet */ }
+      }
+
       // keybox: the open Leasing parent's [Onsite] Key Box
       let keybox = "";
       const master = row.uid ? idx.masterByUid[row.uid] : "";
@@ -5790,6 +5808,14 @@ app.post("*", async (c) => {
       }
 
       type R = { label: string; value: string | null; note?: string; link?: string };
+      // Outline playbook links: the first sagareus.getoutline.com URL becomes the
+      // row's link; any other text stays as the value
+      const lkLinkRow = (label: string, raw: string): R => {
+        const m = raw.match(/https:\/\/sagareus\.getoutline\.com\/\S+/);
+        if (!m) return { label, value: raw || null };
+        const rest = raw.replace(m[0], "").trim();
+        return { label, value: rest || null, link: m[0] };
+      };
       const txt = (label: string, v: string, note = ""): R => ({ label, value: v || null, ...(note ? { note } : {}) });
       const yearAgo = new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10);
       // service dates: 12/31/9999 = does not apply (row hidden); over a year old flagged
@@ -5835,7 +5861,7 @@ app.post("*", async (c) => {
           txt("Laundry", g(/^laundry$/i)),
           txt("EV Charger", g(/^ev charger$/i)),
           txt("Internet", g(/^internet provider$/i)),
-          txt("Playbook", gp(/^playbook$/i)),
+          lkLinkRow("Playbook", gp(/^playbook$/i)),
           hoaRow,
           txt("Asset Storage", asset),
           regRow,
@@ -5867,7 +5893,7 @@ app.post("*", async (c) => {
           util("Garbage", /^utilities - garbage$/i),
           util("Oil", /^utilities - oil$/i),
           util("Internet", /^utilities - internet$/i),
-          txt("Providers", gp(/^utilities$/i)),
+          txt("Providers", providers),
         ] },
         { title: "Lease", rows: [
           txt("Pets", pets, petTerm ? `Pet Lease Term: ${petTerm}` : ""),
@@ -5891,7 +5917,6 @@ app.post("*", async (c) => {
           { label: "Keys Common Area", value: gp(/^keys common area$/i) || null },
         ],
         sections,
-        asanaUrl: `https://app.asana.com/0/0/${row.gid}`,
       });
     }
 
