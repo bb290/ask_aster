@@ -394,7 +394,7 @@ function obUnitLine(u: Record<string, string>): string {
 }
 function obDump(kind: string, address: string, sectionsDump: { title: string; rows: { q: string; a: string }[] }[], units: ObUnit[], inProgress: boolean, answers: Record<string, string> = {}): { lines: string[]; htmlNotes: string } {
   const stamp = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 16).replace("T", " ");
-  const head = inProgress ? `INITIAL ONBOARDING (IN PROGRESS) | ${address}` : `INITIAL ONBOARDING SUBMISSION (${kind.replace("_", " ")}) | ${address}`;
+  const head = inProgress ? `${kind === "tenant_placement" ? "TENANT PLACEMENT" : "INITIAL"} ONBOARDING (IN PROGRESS) | ${address}` : `${kind === "tenant_placement" ? "TENANT PLACEMENT" : "INITIAL"} ONBOARDING SUBMISSION (${kind.replace("_", " ")}) | ${address}`;
   const sub = inProgress
     ? `The owner is still working through the /onboard wizard. Last synced ${stamp} (Seattle time); answers below update as they go.`
     : `Submitted via the /onboard wizard on ${stamp} (Seattle time).`;
@@ -764,8 +764,8 @@ app.post("/onboard-proxy", async (c) => {
     // hers, due the following day, as they come in); every obProgress save rolls the due date
     // forward, so an active wizard stays due tomorrow and surfaces the day the owner goes quiet.
     if (action === "obStart") {
-      const kind = ["new_client", "add_property", "add_unit"].includes(String(body.kind)) ? String(body.kind) : "new_client";
-      const TITLE: Record<string, string> = { new_client: "Initial Onboarding", add_property: "Add Property", add_unit: "Add Unit" };
+      const kind = ["new_client", "add_property", "add_unit", "tenant_placement"].includes(String(body.kind)) ? String(body.kind) : "new_client";
+      const TITLE: Record<string, string> = { new_client: "Initial Onboarding", add_property: "Add Property", add_unit: "Add Unit", tenant_placement: "Tenant Placement" };
       const address = String(body.address ?? "").trim().slice(0, 200);
       const ownerName = String(body.ownerName ?? "").trim().slice(0, 80);
       const ownerEmail = String(body.ownerEmail ?? "").trim().slice(0, 120);
@@ -780,9 +780,10 @@ app.post("/onboard-proxy", async (c) => {
         });
         await asana("POST", `/sections/${OB_WIP_SECTION}/addTask`, { task: task.gid }).catch(() => null);
         // Existing-client adds also spawn the Client Relations tracking task NOW, with the
-        // staff PMA step assigned to Brittany due today (Brittany 2026-08-03)
+        // staff PMA step assigned to Brittany due today (Brittany 2026-08-03). Tenant
+        // Placement does not: staff create its Leasing TP task (Brittany 2026-10-20)
         let crUrl = "";
-        if (kind !== "new_client") {
+        if (kind === "add_property" || kind === "add_unit") {
           try {
             const TPL = kind === "add_property" ? "1214028249129139" : "1214029792896122";   // (PROPERTY) / (UNIT) templates
             const SUB = kind === "add_property" ? "Send | PMA - Existing client adding property" : "Verify | PMA - Includes all units";
@@ -831,9 +832,9 @@ app.post("/onboard-proxy", async (c) => {
         if (!/\(IN PROGRESS\)/.test(String(t0.name ?? ""))) return j(headers, 200, { ok: true, finalized: true });
         const byName = await obFieldSettings();
         const cf = obMapAnswers(byName, answers);
-        const { lines, htmlNotes } = obDump("new_client", address || "(address pending)", sectionsDump, units, true, answers);
-        const base: Record<string, unknown> = { due_on: obDuePT(1), custom_fields: Object.keys(cf).length ? cf : undefined };
         const prefix = String(t0.name ?? "").split(" | ")[0].trim() || "Initial Onboarding";
+        const { lines, htmlNotes } = obDump(prefix === "Tenant Placement" ? "tenant_placement" : "new_client", address || "(address pending)", sectionsDump, units, true, answers);
+        const base: Record<string, unknown> = { due_on: obDuePT(1), custom_fields: Object.keys(cf).length ? cf : undefined };
         if (address) base.name = `${prefix} | ${address} (IN PROGRESS)`;
         try { await asana("PUT", `/tasks/${gid}`, { ...base, html_notes: htmlNotes }); }
         catch { await asana("PUT", `/tasks/${gid}`, { ...base, notes: lines.join("\n").slice(0, 60000) }); }
@@ -846,8 +847,8 @@ app.post("/onboard-proxy", async (c) => {
     // project. Nothing here touches Property/Unit Settings; the push is a later staff step.
     if (action === "obSubmit") {
       const OB_PROJECT = OB_PROJECT_GID;
-      const SECTIONS: Record<string, string> = { new_client: "New Submissions", add_property: "Existing Client Requests", add_unit: "Existing Client Requests" };
-      const kind = ["new_client", "add_property", "add_unit"].includes(String(body.kind)) ? String(body.kind) : "new_client";
+      const SECTIONS: Record<string, string> = { new_client: "New Submissions", add_property: "Existing Client Requests", add_unit: "Existing Client Requests", tenant_placement: "New Submissions" };
+      const kind = ["new_client", "add_property", "add_unit", "tenant_placement"].includes(String(body.kind)) ? String(body.kind) : "new_client";
       const address = String(body.address ?? "").trim().slice(0, 200);
       if (!address) return j(headers, 400, { error: "missing_address", message: "Property address is required." });
       const answers = obParseAnswers(body);
@@ -868,7 +869,7 @@ app.post("/onboard-proxy", async (c) => {
       const byName = await obFieldSettings();
       const cf = obMapAnswers(byName, answers);
 
-      const TITLE: Record<string, string> = { new_client: "Initial Onboarding", add_property: "Add Property", add_unit: "Add Unit" };
+      const TITLE: Record<string, string> = { new_client: "Initial Onboarding", add_property: "Add Property", add_unit: "Add Unit", tenant_placement: "Tenant Placement" };
       // obStart may have created the task at the address step: finalize IN PLACE (rename,
       // full dump + fields) instead of creating a duplicate. The task stays assigned to
       // Brittany, due next day, so every submission lands in her My Tasks for review.
@@ -985,7 +986,7 @@ app.post("/onboard-proxy", async (c) => {
       try {
         const OR_KEY = Deno.env.get("OPENROUTER_API_KEY") ?? "";
         if (OR_KEY) {
-          const SYSTEM = "You write the Onboarding Summary for a Sagareus property management onboarding. From the intake below, write: (1) a tight 4-8 sentence operational summary a coordinator can act on (occupancy, transfer situation, access, utilities plan, policies chosen, risks/flags), then (2) a 30-60-90 Day Priorities list, 2-4 bullets per period, grounded ONLY in the intake. Plain text, no markdown headers other than the literal lines 'SUMMARY', '30 DAYS', '60 DAYS', '90 DAYS'. No em dashes. Do not invent facts.";
+          const SYSTEM = (kind === "tenant_placement" ? "This is a TENANT PLACEMENT onboarding: Sagareus markets, screens, and places a resident, and after move in the owner's named contact manages the property (no utilities, maintenance, or accounting transition). " : "") + "You write the Onboarding Summary for a Sagareus property management onboarding. From the intake below, write: (1) a tight 4-8 sentence operational summary a coordinator can act on (occupancy, transfer situation, access, utilities plan, policies chosen, risks/flags), then (2) a 30-60-90 Day Priorities list, 2-4 bullets per period, grounded ONLY in the intake. Plain text, no markdown headers other than the literal lines 'SUMMARY', '30 DAYS', '60 DAYS', '90 DAYS'. No em dashes. Do not invent facts.";
           const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
             method: "POST",
             headers: { "Authorization": `Bearer ${OR_KEY}`, "Content-Type": "application/json" },
