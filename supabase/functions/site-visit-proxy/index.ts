@@ -5732,6 +5732,26 @@ app.post("*", async (c) => {
       return j(headers, 200, { ok: true, token: `${exp}.${await lkSig(exp)}`, exp: Number(exp) });
     }
 
+    // Lookup Team Feedback -> subtask straight on "Team Tools | Bugs & Feature
+    // Requests" (Brittany 2026-10-20), assigned to Brittany, due same day. Token
+    // gated like the rest of Lookup so the public team key can't post.
+    if (action === "lkFeedback") {
+      if (!(await lkTokenOk(String(body.token ?? "")))) return j(headers, 401, { error: "locked", message: "Enter the password." });
+      const text = String(body.text ?? "").trim().slice(0, 4000);
+      const address = String(body.address ?? "").trim().slice(0, 120);
+      if (text.length < 5) return j(headers, 400, { error: "missing_fields" });
+      const todayStr = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+      const sub = await asana("POST", `/tasks/1216868072846283/subtasks`, {
+        name: `Lookup Feedback // ${todayStr}`,
+        assignee: "1203784854198936",
+        due_on: todayStr,
+        notes: text
+          + (address ? `\n\nUnit open at the time: ${address}` : "")
+          + "\n\nSubmitted via the Lookup widget Team Feedback button. Done by Claude on behalf of the submitting team member.",
+      });
+      return j(headers, 200, { ok: true, gid: sub.gid });
+    }
+
     if (action === "lkList" || action === "lkUnit") {
       if (!(await lkTokenOk(String(body.token ?? "")))) return j(headers, 401, { error: "locked", message: "Enter the password." });
       const [rows, idx] = await Promise.all([lkList(), moveOutIndex()]);
