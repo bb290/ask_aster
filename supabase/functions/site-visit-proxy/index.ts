@@ -5977,7 +5977,6 @@ app.post("*", async (c) => {
           svc("Dryer Vent", gd(/^dryer vent cleaning completed$/i)),
           (() => { const d = gd(/^hot water heater install$/i).slice(0, 10); return d.startsWith("9999") ? null : txt("Water Heater Installed", lkDate(d)); })(),
           svc("Annual Inspection", gd(/^annual inspection completed$/i)),
-          txt("Appliances", g(/^appliances$/i)),
           txt("Landscaping", gp(/^landscaping maintenance$/i)),
           txt("Pest Control", gp(/^pest control$/i)),
           ...(multi ? [txt("Common Area Cleaning", gp(/^common area cleaning$/i))] : []),
@@ -5990,6 +5989,7 @@ app.post("*", async (c) => {
             svc("Fire Inspection", gp(/^fire inspection date$/i)),
             svc("Elevator Inspection", gp(/^elevator inspection date$/i)),
           ] : []),
+          txt("Appliances", g(/^appliances$/i)),
         ]) },
         { title: "Utilities", rows: [
           util("Electric", /^utilities - electricity$/i),
