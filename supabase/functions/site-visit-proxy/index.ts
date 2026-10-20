@@ -5754,6 +5754,14 @@ app.post("*", async (c) => {
       };
       // unit first, property when the unit field is blank or missing
       const g = (re: RegExp): string => pick(ucf, re) || pick(pcf, re) || "";
+      // dates: a property 12/31/9999 never stands in for a blank unit date (sync
+      // stamps it on multifamily property tasks, where unit fields do not apply)
+      const gd = (re: RegExp): string => {
+        const u = pick(ucf, re) || "";
+        if (u || row.kind !== "unit") return u;
+        const p = pick(pcf, re) || "";
+        return p.startsWith("9999") ? "" : p;
+      };
       const gp = (re: RegExp): string => pick(pcf, re) || pick(ucf, re) || "";
       const multi = row.kind === "unit";
 
@@ -5833,10 +5841,10 @@ app.post("*", async (c) => {
           regRow,
         ]) },
         { title: "Maintenance", rows: keep([
-          svc("HVAC Service", g(/^hvac servicing completed$/i)),
-          svc("Dryer Vent", g(/^dryer vent cleaning completed$/i)),
-          (() => { const d = g(/^hot water heater install$/i).slice(0, 10); return d.startsWith("9999") ? null : txt("Water Heater Installed", lkDate(d)); })(),
-          svc("Annual Inspection", g(/^annual inspection completed$/i)),
+          svc("HVAC Service", gd(/^hvac servicing completed$/i)),
+          svc("Dryer Vent", gd(/^dryer vent cleaning completed$/i)),
+          (() => { const d = gd(/^hot water heater install$/i).slice(0, 10); return d.startsWith("9999") ? null : txt("Water Heater Installed", lkDate(d)); })(),
+          svc("Annual Inspection", gd(/^annual inspection completed$/i)),
           txt("Appliances", g(/^appliances$/i)),
           txt("Landscaping", gp(/^landscaping maintenance$/i)),
           txt("Pest Control", gp(/^pest control$/i)),
