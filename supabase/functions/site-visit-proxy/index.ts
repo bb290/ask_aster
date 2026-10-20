@@ -5777,7 +5777,7 @@ app.post("*", async (c) => {
           const ls = (((await r.json().catch(() => ({}))) as { data?: unknown }).data ?? []) as Array<{ completed?: boolean; created_at?: string; custom_fields?: LkCf }>;
           ls.sort((a, b) => Number(!!a.completed) - Number(!!b.completed) || String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")));
           lcf = ls[0]?.custom_fields ?? [];
-        } catch { /* lease rows read Not Checked Yet */ }
+        } catch { /* lease rows read None on Record */ }
       }
       const gl = (re: RegExp): string => pick(lcf, re) || "";
 
@@ -5794,7 +5794,7 @@ app.post("*", async (c) => {
             providers = String((t.custom_fields ?? []).find((x) => x.gid === LK_PROVIDERS_F)?.display_value ?? "").trim();
             if (providers) break;
           }
-        } catch { /* reads Not Checked Yet */ }
+        } catch { /* reads None on Record */ }
       }
 
       // keybox: the open Leasing parent's [Onsite] Key Box
