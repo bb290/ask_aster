@@ -303,6 +303,37 @@ const PF_FIELDS = {
 // property's criteria ARE Min Credit / Min Income on its LS task)
 const LS_PROJECT_ID = "1217446710785429";
 const UNIT_ID_FIELD = "1213183515622826";
+// Parking & Storage (Outline "Property Settings" section 6, 2026-10-13); same
+// helpers as site-visit-proxy. The unit's spot ids sit on its lease's Parking /
+// Storage fields in Lease Settings.
+const LEASE_SETTINGS_PROJECT = "1213740462278333";
+const LEASE_PARKING_F = "1219431287505501";
+const LEASE_STORAGE_F = "1219431415139383";
+// spot ids the unit's lease holds; open leases first, oldest first, so the
+// outgoing lease wins over a future one. Blank on Included / None / no access.
+async function leaseSpots(unitId: string): Promise<{ parking: string; storage: string }> {
+  const out = { parking: "", storage: "" };
+  if (!/^\d+$/.test(unitId)) return out;
+  try {
+    const rows = ((await asanaCall("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=${LEASE_SETTINGS_PROJECT}&custom_fields.${UNIT_ID_FIELD}.value=${unitId}&opt_fields=completed,created_at,custom_fields.gid,custom_fields.display_value`)) ?? []) as Array<{ completed?: boolean; created_at?: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>;
+    rows.sort((a, b) => Number(!!a.completed) - Number(!!b.completed) || String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")));
+    const ids = (t: typeof rows[number], gid: string) => {
+      const v = String((t.custom_fields ?? []).find((f) => f.gid === gid)?.display_value ?? "").trim();
+      return v && !/^(included|none)$/i.test(v) ? v : "";
+    };
+    for (const t of rows) {
+      if (!out.parking) out.parking = ids(t, LEASE_PARKING_F);
+      if (!out.storage) out.storage = ids(t, LEASE_STORAGE_F);
+    }
+  } catch { /* type line only */ }
+  return out;
+}
+// "Off-street lot, 1 assigned per unit" + "2" -> "Off-street lot, 1 assigned per unit (Spot 2)"
+function parkStorLine(type: string, ids: string, noun: string): string {
+  const t = type.trim();
+  if (!t || !ids || /^none$/i.test(t)) return t;
+  return `${t} (${noun}${noun === "Spot" && ids.includes(",") ? "s" : ""} ${ids})`;
+}
 const LS_MIN_CREDIT = "1217446728640049";
 const LS_MIN_INCOME = "1217446770195125";
 // combined Screening Criteria field ("Credit: ... / Income: ..." lines)
@@ -462,16 +493,25 @@ async function leaseContext(gid: string) {
       if (ctx.unitId) {
         for (const proj of ["1213032009308835", "1211134623744906"]) {
           try {
-            const hitsU = (await asanaCall("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=${proj}&custom_fields.${UNIT_ID_FIELD}.value=${ctx.unitId}&opt_fields=custom_fields.name,custom_fields.display_value`)) as { custom_fields?: { name?: string; display_value?: string | null }[] }[];
+            const hitsU = (await asanaCall("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=${proj}&custom_fields.${UNIT_ID_FIELD}.value=${ctx.unitId}&opt_fields=parent.gid,custom_fields.name,custom_fields.display_value`)) as { parent?: { gid?: string } | null; custom_fields?: { name?: string; display_value?: string | null }[] }[];
             const ucf = hitsU?.[0]?.custom_fields;
             if (!ucf) continue;
             const ustr = (re: RegExp) => String(ucf.find((f) => re.test(String(f.name ?? "")))?.display_value ?? "").trim();
-            const park = ustr(/^parking$/i), stor = ustr(/^storage$/i), mail = ustr(/^mailbox$/i);
-            if (park && !ctx.parkingInfo) {
-              const lines = park.split(/\n+/).map((x) => x.trim()).filter((x) => x && !/^building:/i.test(x));
-              ctx.parkingInfo = (lines[0] ?? park.split(/\n/)[0]).slice(0, 120);
+            // Parking Type / Storage Type are property-level (2026-10-13; the unit
+            // Parking / Storage fields retired 2026-10-17): a multifamily unit
+            // subtask reads them off its parent, plus the unit's lease spots
+            let pcf = ucf;
+            const pGid = String(hitsU?.[0]?.parent?.gid ?? "");
+            if (pGid && !ustr(/^parking type$/i) && !ustr(/^storage type$/i)) {
+              try { pcf = ((await asanaCall("GET", `/tasks/${pGid}?opt_fields=custom_fields.name,custom_fields.display_value`)) as { custom_fields?: typeof ucf }).custom_fields ?? ucf; } catch { /* unit only */ }
             }
-            if (stor && !ctx.storageInfo) ctx.storageInfo = stor.split(/\n/)[0].trim().slice(0, 120);
+            const pstr = (re: RegExp) => String(pcf.find((f) => re.test(String(f.name ?? "")))?.display_value ?? "").trim();
+            const spots = await leaseSpots(String(ctx.unitId));
+            const park = parkStorLine(pstr(/^parking type$/i), spots.parking, "Spot");
+            const stor = parkStorLine(pstr(/^storage type$/i), spots.storage, "Storage");
+            const mail = ustr(/^mailbox$/i);
+            if (park && !ctx.parkingInfo) ctx.parkingInfo = park.slice(0, 120);
+            if (stor && !ctx.storageInfo) ctx.storageInfo = stor.slice(0, 120);
             if (mail && !ctx.mailboxLocation) {
               ctx.mailboxNumber = (mail.match(/#\s*(\d+)/) ?? [])[1] ?? "";
               ctx.mailboxLocation = mail.split(/\n/)[0].replace(/^mailbox\s*#?\s*\d*[,:.]?\s*/i, "").trim().slice(0, 120);

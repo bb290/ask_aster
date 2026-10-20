@@ -62,6 +62,41 @@ function kvSet(text: string, label: string, value: string, order: string[]): str
 }
 const UNIT_SETTINGS_PROJECT = "1213032009308835";
 const PROPERTY_SETTINGS_PROJECT = "1211134623744906";
+// Parking & Storage (Outline "Property Settings" section 6, 2026-10-13): the
+// property task's Parking Type / Storage Type line says what the property offers,
+// and the unit's own spot ids sit on its lease's Parking / Storage fields in Lease
+// Settings. The unit-level Parking and Storage fields were retired 2026-10-17.
+const LEASE_SETTINGS_PROJECT = "1213740462278333";
+const LEASE_PARKING_F = "1219431287505501";
+const LEASE_STORAGE_F = "1219431415139383";
+// spot ids the unit's lease holds; open leases first, oldest first, so the
+// outgoing lease wins over a future one. Blank on Included / None / no access.
+async function leaseSpots(unitId: string): Promise<{ parking: string; storage: string }> {
+  const out = { parking: "", storage: "" };
+  if (!/^\d+$/.test(unitId)) return out;
+  try {
+    const r = await fetch(`${ASANA}/workspaces/${WORKSPACE}/tasks/search?projects.any=${LEASE_SETTINGS_PROJECT}&custom_fields.1213183515622826.value=${unitId}&opt_fields=completed,created_at,custom_fields.gid,custom_fields.display_value`,
+      { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+    if (!r.ok) return out;
+    const rows = (((await r.json().catch(() => ({}))) as { data?: unknown }).data ?? []) as Array<{ completed?: boolean; created_at?: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>;
+    rows.sort((a, b) => Number(!!a.completed) - Number(!!b.completed) || String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")));
+    const ids = (t: typeof rows[number], gid: string) => {
+      const v = String((t.custom_fields ?? []).find((f) => f.gid === gid)?.display_value ?? "").trim();
+      return v && !/^(included|none)$/i.test(v) ? v : "";
+    };
+    for (const t of rows) {
+      if (!out.parking) out.parking = ids(t, LEASE_PARKING_F);
+      if (!out.storage) out.storage = ids(t, LEASE_STORAGE_F);
+    }
+  } catch { /* type line only */ }
+  return out;
+}
+// "Off-street lot, 1 assigned per unit" + "2" -> "Off-street lot, 1 assigned per unit (Spot 2)"
+function parkStorLine(type: string, ids: string, noun: string): string {
+  const t = type.trim();
+  if (!t || !ids || /^none$/i.test(t)) return t;
+  return `${t} (${noun}${noun === "Spot" && ids.includes(",") ? "s" : ""} ${ids})`;
+}
 const MAINTENANCE_PROJECT = "1210320631715650"; // Maintenance 2.0
 const TURNOVER_PROJECT = "1213171760535170"; // Leasing | Turn Over
 // Lead maintenance coordinator; default assignee for occupied-unit and manual-address
@@ -2464,6 +2499,15 @@ app.post("*", async (c) => {
         const usGid = await scanSettings(UNIT_SETTINGS_PROJ);
         psGid = await scanSettings(PROPERTY_SETTINGS_PROJECT);
         if (!psGid) psGid = matchPropByAddress(await allPropSettings(), fullAddress)?.gid ?? "";
+        // a multifamily unit subtask sits in Property Settings too and carries the Unit
+        // ID, so the search lands on it; the property task is its parent (2026-10-20:
+        // Parking Type / Storage Type / HOA read blank on every multifamily unit)
+        if (psGid) {
+          try {
+            const pp = await asana("GET", `/tasks/${psGid}?opt_fields=parent.gid`);
+            if (pp?.parent?.gid) psGid = String(pp.parent.gid);
+          } catch { /* keep the unit task */ }
+        }
         settingsGid = usGid || psGid;
         if (usGid) cfUnit = ((await asana("GET", `/tasks/${usGid}?opt_fields=${SETTINGS_OPTF}`)).custom_fields ?? []) as typeof cfUnit;
         if (psGid && psGid !== usGid) cfProp = ((await asana("GET", `/tasks/${psGid}?opt_fields=${SETTINGS_OPTF}`)).custom_fields ?? []) as typeof cfProp;
@@ -2472,12 +2516,16 @@ app.post("*", async (c) => {
           const cfFall = usGid ? cfProp : [];
           const g = (re: RegExp) => String(cfAll.find((f) => re.test(f.name))?.display_value ?? "").trim() ||
             String(cfFall.find((f) => re.test(f.name))?.display_value ?? "").trim();
+          // parking + storage = the property's type line plus the unit's lease spots
+          const spots = await leaseSpots(String(uid));
           settings = {
-            laundry: g(/^laundry$/i), parking: g(/^parking$/i), ev: g(/^ev charger$/i),
+            laundry: g(/^laundry$/i), parking: parkStorLine(g(/^parking type$/i), spots.parking, "Spot"), ev: g(/^ev charger$/i),
             cooling: g(/^cooling$/i), heating: g(/^heating type$/i),
             utilities: g(/^utilities$/i), internet: g(/^internet provider$/i),
             landscaping: g(/^landscaping maintenance$/i),
-            storage: g(/^storage$/i), mailbox: g(/^mailbox$/i),
+            storage: parkStorLine(g(/^storage type$/i), spots.storage, "Storage"), mailbox: g(/^mailbox$/i),
+            parkingSpot: spots.parking, storageSpot: spots.storage,
+            hoaPlaybook: g(/^hoa playbook$/i),
             utilityProviders: {
               electricity: g(/^utilities - electricity$/i), gas: g(/^utilities - gas$/i),
               water: g(/^utilities - water$/i), sewer: g(/^utilities - sewer/i),
@@ -2577,7 +2625,11 @@ app.post("*", async (c) => {
           // the leasing answer lives in the widget's own Landscaping select (Brittany 2026-08-21)
           // Security System + HOA Move In Detail moved to Listing Settings (Brittany
           // 2026-08-22): they are plan facts, not unit/property settings
-          const WANTED = [/^laundry$/i, /^parking$/i, /^ev charger$/i, /^cooling$/i, /^heating type$/i, /^storage$/i, /^mailbox$/i, /^internet provider$/i];
+          // Parking Type / Storage Type are property-level since 2026-10-13 (the unit
+          // Parking / Storage fields retired 2026-10-17): on a multifamily unit they
+          // come off the property task and save back there (onProperty)
+          const WANTED = [/^laundry$/i, /^parking type$/i, /^ev charger$/i, /^cooling$/i, /^heating type$/i, /^storage type$/i, /^mailbox$/i, /^internet provider$/i];
+          const PROP_ONLY = [/^parking type$/i, /^storage type$/i];
           const shape = (f: SettingsCF) => ({
             value: String(f.display_value ?? ""),
             selected: f.resource_subtype === "enum"
@@ -2591,6 +2643,9 @@ app.post("*", async (c) => {
             .map((f) => {
               const own = shape(f);
               const fb = fall.find((x) => x.gid === f.gid);
+              if (fall.length && PROP_ONLY.some((re) => re.test(String(f.name ?? "")))) {
+                return { gid: f.gid, name: String(f.name ?? ""), type: "text", value: String(fb?.display_value ?? ""), options: [], selected: null, fromProperty: false, onProperty: true };
+              }
               const borrowed = !own.value.trim() && fb && String(fb.display_value ?? "").trim() ? shape(fb) : null;
               return {
                 gid: f.gid,
@@ -2602,6 +2657,12 @@ app.post("*", async (c) => {
                 fromProperty: !!borrowed,
               };
             });
+          if (fall.length) {
+            for (const f of fall.filter((x) => PROP_ONLY.some((re) => re.test(String(x.name ?? ""))))) {
+              if (settingsFields.some((x) => x.gid === f.gid)) continue;
+              settingsFields.push({ gid: f.gid, name: String(f.name ?? ""), type: String(f.resource_subtype ?? "text"), value: String(f.display_value ?? ""), options: [], selected: null, fromProperty: false, onProperty: true });
+            }
+          }
         }
       } catch { /* best-effort */ }
       // Plan Status + open owner Modify requests from the Listing Settings task (by Unit ID)
@@ -3423,14 +3484,22 @@ app.post("*", async (c) => {
       if (!address) return j(headers, 400, { error: "missing_fields" });
       const ms = await matchSettings(address);
       if (!ms.hit) return j(headers, 200, { ok: true, found: false, us: {} });
-      const st = await asana("GET", `/tasks/${ms.hit.gid}?opt_fields=custom_fields.name,custom_fields.display_value`);
-      const cf = (st.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
+      const st = await asana("GET", `/tasks/${ms.hit.gid}?opt_fields=parent.gid,custom_fields.gid,custom_fields.name,custom_fields.display_value`);
+      const cf = (st.custom_fields ?? []) as Array<{ gid: string; name: string; display_value: string | null }>;
       const g = (re: RegExp) => String(cf.find((f) => re.test(f.name))?.display_value ?? "").trim();
+      // Parking Type / Storage Type sit on the property task: a multifamily unit
+      // subtask reads them off its parent
+      let cfP = cf;
+      if (st.parent?.gid && !g(/^parking type$/i) && !g(/^storage type$/i)) {
+        try { cfP = ((await asana("GET", `/tasks/${st.parent.gid}?opt_fields=custom_fields.name,custom_fields.display_value`)).custom_fields ?? []) as typeof cf; } catch { /* unit only */ }
+      }
+      const gp = (re: RegExp) => String(cfP.find((f) => re.test(f.name))?.display_value ?? "").trim();
+      const spots = await leaseSpots(String(cf.find((f) => f.gid === "1213183515622826")?.display_value ?? "").trim());
       const us = {
         mailbox: g(/^mailbox\s*(number|#)/i) || g(/^mailbox/i),
-        parking: [g(/^parking$/i), g(/^parking detail/i)].filter(Boolean).join(" - "),
+        parking: parkStorLine(gp(/^parking type$/i), spots.parking, "Spot"),
         cooling: g(/^cooling$/i),
-        storage: g(/^storage$/i),
+        storage: parkStorLine(gp(/^storage type$/i), spots.storage, "Storage"),
         ev: g(/^ev charger$/i),
         heat: g(/^heating type$/i),
         internet: g(/^internet provider$/i),
@@ -4928,10 +4997,21 @@ app.post("*", async (c) => {
     if (action === "setUnitSettings") {
       const sg = String(body.settingsGid ?? "").replace(/\D/g, "");
       if (!sg) return j(headers, 400, { error: "missing_settings_gid" });
-      const fields = (body.fields ?? {}) as Record<string, { type?: string; value?: unknown }>;
+      const fields = (body.fields ?? {}) as Record<string, { type?: string; value?: unknown; onProperty?: boolean }>;
+      // Parking Type / Storage Type live on the property task (2026-10-13): those
+      // fields save to propertyGid, which must be a Property Settings task
+      let pg = String(body.propertyGid ?? "").replace(/\D/g, "");
+      if (pg && pg !== sg) {
+        try {
+          const pt = await asana("GET", `/tasks/${pg}?opt_fields=projects.gid`);
+          if (!(pt.projects ?? []).some((p: { gid: string }) => p.gid === PROPERTY_SETTINGS_PROJECT)) pg = "";
+        } catch { pg = ""; }
+      }
+      const target: Record<string, string> = {};
       const cfU: Record<string, unknown> = {};
       for (const [gid, spec] of Object.entries(fields)) {
         if (!/^\d+$/.test(gid)) continue;
+        target[gid] = spec?.onProperty && pg ? pg : sg;
         const ty = String(spec?.type ?? "text");
         if (ty === "enum") {
           const og = String(spec?.value ?? "").replace(/\D/g, "");
@@ -4950,7 +5030,7 @@ app.post("*", async (c) => {
       const failedF: string[] = [];
       for (const [gidF, val] of Object.entries(cfU)) {
         try {
-          await asana("PUT", `/tasks/${sg}`, { custom_fields: { [gidF]: val } });
+          await asana("PUT", `/tasks/${target[gidF] || sg}`, { custom_fields: { [gidF]: val } });
           savedF.push(gidF);
         } catch { failedF.push(gidF); }
       }

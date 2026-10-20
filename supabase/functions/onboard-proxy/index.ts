@@ -18,6 +18,42 @@ const ASANA_PAT = Deno.env.get("ASANA_PAT") ?? "";
 const TEAM_KEY = Deno.env.get("SITE_VISIT_KEY") ?? "";
 const SIGNING_SECRET = Deno.env.get("ONBOARD_SIGNING_SECRET") ?? "";
 const PROPERTY_SETTINGS_PROJECT = "1211134623744906";
+// Parking & Storage (Outline "Property Settings" section 6, 2026-10-13): the
+// property task's Parking Type / Storage Type line says what the property offers,
+// and the unit's own spot ids sit on its lease's Parking / Storage fields in Lease
+// Settings. The unit-level Parking and Storage fields were retired 2026-10-17.
+// Same helpers as site-visit-proxy.
+const LEASE_SETTINGS_PROJECT = "1213740462278333";
+const LEASE_PARKING_F = "1219431287505501";
+const LEASE_STORAGE_F = "1219431415139383";
+// spot ids the unit's lease holds; open leases first, oldest first, so the
+// outgoing lease wins over a future one. Blank on Included / None / no access.
+async function leaseSpots(unitId: string): Promise<{ parking: string; storage: string }> {
+  const out = { parking: "", storage: "" };
+  if (!/^\d+$/.test(unitId)) return out;
+  try {
+    const r = await fetch(`${ASANA}/workspaces/706990140225747/tasks/search?projects.any=${LEASE_SETTINGS_PROJECT}&custom_fields.1213183515622826.value=${unitId}&opt_fields=completed,created_at,custom_fields.gid,custom_fields.display_value`,
+      { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+    if (!r.ok) return out;
+    const rows = (((await r.json().catch(() => ({}))) as { data?: unknown }).data ?? []) as Array<{ completed?: boolean; created_at?: string; custom_fields?: Array<{ gid: string; display_value: string | null }> }>;
+    rows.sort((a, b) => Number(!!a.completed) - Number(!!b.completed) || String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")));
+    const ids = (t: typeof rows[number], gid: string) => {
+      const v = String((t.custom_fields ?? []).find((f) => f.gid === gid)?.display_value ?? "").trim();
+      return v && !/^(included|none)$/i.test(v) ? v : "";
+    };
+    for (const t of rows) {
+      if (!out.parking) out.parking = ids(t, LEASE_PARKING_F);
+      if (!out.storage) out.storage = ids(t, LEASE_STORAGE_F);
+    }
+  } catch { /* type line only */ }
+  return out;
+}
+// "Off-street lot, 1 assigned per unit" + "2" -> "Off-street lot, 1 assigned per unit (Spot 2)"
+function parkStorLine(type: string, ids: string, noun: string): string {
+  const t = type.trim();
+  if (!t || !ids || /^none$/i.test(t)) return t;
+  return `${t} (${noun}${noun === "Spot" && ids.includes(",") ? "s" : ""} ${ids})`;
+}
 const ASANA = "https://app.asana.com/api/1.0";
 const LINK_BASE = "https://www.sagareus.com/onboard";
 const TOKEN_DAYS = 14;
@@ -29,7 +65,7 @@ const OWNER_FIELDS: string[] = [
   "Utilities - Sewer / Storm Drain", "Utilities - Garbage", "Utilities - Oil",
   "Utilities - Internet", "Utilities",
   "Landscaping Maintenance", "Pest Control",
-  "Heating Type", "Cooling", "HVAC Filter", "Laundry", "Parking", "Storage",
+  "Heating Type", "Cooling", "HVAC Filter", "Laundry", "Parking Type", "Storage Type",
   "Appliances", "Mailbox", "EV Charger", "Internet Provider",
   "Hot Water Heater Install", "HVAC Servicing Completed", "Dryer Vent Cleaning Completed",
   "Septic Pump Date", "Roof Cleaning Completed", "Rental Registration Expiration",
@@ -356,7 +392,7 @@ function obUnitLine(u: Record<string, string>): string {
     u.storage ? `Storage: ${u.storage}` : "", u.parking ? `Parking: ${u.parking}${u.parknum ? " #" + u.parknum : ""}` : "",
     u.cooling ? `A/C: ${u.cooling}` : ""].filter(Boolean).join(" | ");
 }
-function obDump(kind: string, address: string, sectionsDump: { title: string; rows: { q: string; a: string }[] }[], units: ObUnit[], inProgress: boolean): { lines: string[]; htmlNotes: string } {
+function obDump(kind: string, address: string, sectionsDump: { title: string; rows: { q: string; a: string }[] }[], units: ObUnit[], inProgress: boolean, answers: Record<string, string> = {}): { lines: string[]; htmlNotes: string } {
   const stamp = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 16).replace("T", " ");
   const head = inProgress ? `INITIAL ONBOARDING (IN PROGRESS) | ${address}` : `INITIAL ONBOARDING SUBMISSION (${kind.replace("_", " ")}) | ${address}`;
   const sub = inProgress
@@ -373,6 +409,14 @@ function obDump(kind: string, address: string, sectionsDump: { title: string; ro
     units.forEach((u) => lines.push(`${u.label}: ${obUnitLine(u)}`));
     lines.push("");
   }
+  // values shaped for the Property Settings task (Outline "Property Settings"
+  // section 6); onboard-asana copies them over once the Settings task exists
+  const ps = obParkStor(answers);
+  if (ps.length) {
+    lines.push("=== PARKING & STORAGE (FOR PROPERTY SETTINGS) ===");
+    ps.forEach(([k, v]) => lines.push(`${k}: ${v}`));
+    lines.push("");
+  }
   lines.push("Photos, leases, and HOA documents: the confirmation screen offers direct upload and link sharing (files land as comments on this task); onboarding@sagareus.com is the fallback.");
   const hesc = (t: string) => String(t).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
   const htmlParts: string[] = [`<b>${hesc(head)}</b>\n${hesc(sub)}\n`];
@@ -382,8 +426,15 @@ function obDump(kind: string, address: string, sectionsDump: { title: string; ro
   if (units.length) {
     htmlParts.push(`\n<b><u>UNITS</u></b>\n<ul>${units.map((u) => `<li><b>${hesc(u.label)}:</b> ${hesc(obUnitLine(u))}</li>`).join("")}</ul>`);
   }
+  if (ps.length) {
+    htmlParts.push(`\n<b><u>PARKING &amp; STORAGE (FOR PROPERTY SETTINGS)</u></b>\n<ul>${ps.map(([k, v]) => `<li><b>${hesc(k)}:</b> ${hesc(v)}</li>`).join("")}</ul>`);
+  }
   htmlParts.push(`\nPhotos, leases, and HOA documents: the confirmation screen offers direct upload and link sharing (files land as comments on this task); onboarding@sagareus.com is the fallback.`);
   return { lines, htmlNotes: `<body>${htmlParts.join("")}</body>`.slice(0, 60000) };
+}
+function obParkStor(answers: Record<string, string>): [string, string][] {
+  return ([["Parking Type", answers.parkingType], ["Parking Spots", answers.parkingSpots], ["Storage Type", answers.storageType], ["Storage Spots", answers.storageSpots]] as [string, string | undefined][])
+    .map(([k, v]): [string, string] => [k, String(v ?? "").trim().slice(0, 300)]).filter(([, v]) => v);
 }
 async function obFieldSettings(): Promise<Map<string, { gid: string; type: string; options: { gid: string; name: string }[] }>> {
   const settings = await asana("GET", `/projects/${OB_PROJECT_GID}/custom_field_settings?limit=100&opt_fields=custom_field.gid,custom_field.name,custom_field.resource_subtype,custom_field.enum_options.gid,custom_field.enum_options.name`);
@@ -435,8 +486,8 @@ function obMapAnswers(byName: Map<string, { gid: string; type: string; options: 
   setText("\u{1F646} Owner Name(s)", answers.ownerNames ?? "");
   setText("\u{1F646} Owner e-mail(s)", answers.ownerEmails ?? "");
   setText("Mailbox", answers.mailbox ?? "");
-  setText("Storage", answers.storage ?? "");
-  setText("Parking", answers.parking ?? "");
+  // Parking / Storage: no Onboarding project fields; the dump's PARKING & STORAGE
+  // block carries them to Property Settings (unit fields retired 2026-10-17)
   setText("Cooling", answers.cooling ?? "");
   setText("EV Charger", answers.ev ?? "");
   setText("Internet Provider", answers.internetProvider ?? "");
@@ -780,7 +831,7 @@ app.post("/onboard-proxy", async (c) => {
         if (!/\(IN PROGRESS\)/.test(String(t0.name ?? ""))) return j(headers, 200, { ok: true, finalized: true });
         const byName = await obFieldSettings();
         const cf = obMapAnswers(byName, answers);
-        const { lines, htmlNotes } = obDump("new_client", address || "(address pending)", sectionsDump, units, true);
+        const { lines, htmlNotes } = obDump("new_client", address || "(address pending)", sectionsDump, units, true, answers);
         const base: Record<string, unknown> = { due_on: obDuePT(1), custom_fields: Object.keys(cf).length ? cf : undefined };
         const prefix = String(t0.name ?? "").split(" | ")[0].trim() || "Initial Onboarding";
         if (address) base.name = `${prefix} | ${address} (IN PROGRESS)`;
@@ -804,7 +855,7 @@ app.post("/onboard-proxy", async (c) => {
       const sectionsDump = obParseSections(body);
 
       // task description: the full structured dump (source of record for unmapped answers)
-      const { lines, htmlNotes } = obDump(kind, address, sectionsDump, units, false);
+      const { lines, htmlNotes } = obDump(kind, address, sectionsDump, units, false, answers);
 
       // find target section
       // Section names drift ("New Submissions" became "New Submissions = Human Review", then was
@@ -1692,15 +1743,28 @@ app.post("/onboard-proxy", async (c) => {
             } catch { /* blank unit details */ }
           }
           if (stGid) {
-            const stt = await asana("GET", `/tasks/${stGid}?opt_fields=custom_fields.name,custom_fields.display_value`);
-            for (const cf of (stt.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>) {
+            const stt = await asana("GET", `/tasks/${stGid}?opt_fields=parent.gid,custom_fields.name,custom_fields.display_value`);
+            const stCf = (stt.custom_fields ?? []) as Array<{ name: string; display_value: string | null }>;
+            for (const cf of stCf) {
               const nm = String(cf.name);
               const val = String(cf.display_value ?? "").trim();
               if (!val) continue;
-              if (/^(laundry|parking|ev charger|cooling|heating type|storage|mailbox|security system|landscaping maintenance|utilities|internet provider|utilities - .+)$/i.test(nm)) {
+              if (/^(laundry|ev charger|cooling|heating type|mailbox|security system|landscaping maintenance|utilities|internet provider|utilities - .+)$/i.test(nm)) {
                 unitSettings[nm] = val.replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "").slice(0, 1000);
               }
             }
+            // the owner page's Parking / Storage rows: property type line (a multifamily
+            // unit subtask reads its parent) plus the unit's lease spots
+            const tv = (cfs: Array<{ name: string; display_value: string | null }>, re: RegExp) => String(cfs.find((f) => re.test(String(f.name)))?.display_value ?? "").trim();
+            let propCf = stCf;
+            if (stt.parent?.gid && !tv(stCf, /^parking type$/i) && !tv(stCf, /^storage type$/i)) {
+              try { propCf = ((await asana("GET", `/tasks/${stt.parent.gid}?opt_fields=custom_fields.name,custom_fields.display_value`)).custom_fields ?? []) as typeof stCf; } catch { /* unit only */ }
+            }
+            const spots = await leaseSpots(uidLS);
+            const pk = parkStorLine(tv(propCf, /^parking type$/i), spots.parking, "Spot");
+            const sto = parkStorLine(tv(propCf, /^storage type$/i), spots.storage, "Storage");
+            if (pk) unitSettings["Parking"] = pk.slice(0, 1000);
+            if (sto) unitSettings["Storage"] = sto.slice(0, 1000);
           }
         } catch { /* best-effort */ }
         // Leasing team cards: Asana says who is assigned, the HubDB directory says who they
