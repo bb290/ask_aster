@@ -1316,7 +1316,7 @@ app.post("*", async (c) => {
       const LD_F = "1213182838328964";  // 💁 List Date
       const UID_F = "1213183515622826"; // Unit ID
       const moIdx = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string>, doneByUid: {} as Record<string, string>, doneByAddr: {} as Record<string, string>, masterByUid: {} as Record<string, string> }));
-      type QRow = { gid: string; url: string; address: string; unitId: string; teamLead: string; agent: string; lsGid: string; listDate: string; state: string; doNotList: string; dom: number | null; moveOut: string | null; moveIn: string; occupiedUntil?: string; modDate: string | null; modOverdue: boolean; firstWeek: boolean; updDate: string | null; signedDate: string; targetListDate?: string; warGid: string; warDue: string | null; warMissing: boolean | null };
+      type QRow = { gid: string; url: string; address: string; unitId: string; teamLead: string; agent: string; lsGid: string; listDate: string; state: string; doNotList: string; dom: number | null; moveOut: string | null; moveIn: string; occupiedUntil?: string; modDate: string | null; modOverdue: boolean; firstWeek: boolean; updDate: string | null; signedDate: string; targetListDate?: string; warGid: string; warDue: string | null; warMissing: boolean | null; moConfirmed: boolean | null; relistPending: boolean };
       const rows: QRow[] = [];
       let offQ = "";
       // completed_since 90 days back (not "now"): the LU task is COMPLETED at lease
@@ -1379,7 +1379,39 @@ app.post("*", async (c) => {
           // (move-out date missing or in the future) stay off the list - even when
           // pre-listed. Not yet listed = Turnover In Progress; lease signed = Move In
           // Pending; listed = Active Listing.
-          const listDate = String(cfQ.find((f) => f.gid === LD_F)?.display_value ?? "").slice(0, 10);
+          let listDate = String(cfQ.find((f) => f.gid === LD_F)?.display_value ?? "").slice(0, 10);
+          // Price History fallback (feedback 1219524014102594, 5025 S 167th St):
+          // a bench Delist clears List Date so Go Live can re-stamp it, but a
+          // relist done straight in Buildium never re-stamps it, and the unit
+          // then failed every gate below (not vacant on the master, not listed)
+          // and dropped off the bench, with Go Live unreachable. The synced
+          // Price History still records the relist, so read it: newest event
+          // a listing -> listed since the newest LISTED date (healed onto the
+          // LU); newest event a delist (last 30 days) -> keep the row on the
+          // bench so Go Live stays reachable.
+          let relistPending = false;
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(listDate)) {
+            try {
+              const phR = String(cfQ.find((f) => /price history/i.test(String(f.name)))?.display_value ?? "");
+              const phP = phR ? JSON.parse(phR) : null;
+              const evR = ((phP && typeof phP === "object" && !Array.isArray(phP)) ? phP.events : phP) as Array<Record<string, unknown>> | null;
+              const evs = (Array.isArray(evR) ? evR : [])
+                .map((e) => ({ type: String(e?.type ?? "").toUpperCase(), date: String(e?.date ?? e?.on ?? "").slice(0, 10) }))
+                .filter((e) => /^\d{4}-\d{2}-\d{2}$/.test(e.date) && e.date <= todayQ);
+              // stable: same-day events keep their written order (DELISTED then LISTED)
+              const sorted = evs.map((e, i) => ({ ...e, i })).sort((a, b) => a.date === b.date ? a.i - b.i : (a.date < b.date ? -1 : 1));
+              const last = sorted[sorted.length - 1];
+              if (last && last.type === "DELISTED") {
+                relistPending = (Date.parse(todayQ + "T12:00:00Z") - Date.parse(last.date + "T12:00:00Z")) / 86400000 <= 30;
+              } else if (last) {
+                const lastListed = [...sorted].reverse().find((e) => e.type === "LISTED");
+                if (lastListed) {
+                  listDate = lastListed.date;
+                  await asana("PUT", `/tasks/${t.gid}`, { custom_fields: { [LD_F]: { date: listDate } } }).catch(() => null);
+                }
+              }
+            } catch { /* unparseable history: row falls through to the normal gates */ }
+          }
           const leaseSignedRaw = String(cfQ.find((f) => /lease signed/i.test(String(f.name)))?.display_value ?? "").trim();
           // STALE lease-signed guard (team 2026-09-16, 423 2nd St #214): a signed
           // date 45+ days old on a still-open task with no upcoming Move in Date is
@@ -1414,7 +1446,7 @@ app.post("*", async (c) => {
           // place) join the queue too (Brittany 2026-09-09, unit 447916) - a live
           // listing needs the weekly loop even before move out. Everything else
           // still requires vacancy.
-          const listedEarly = /^\d{4}-\d{2}-\d{2}$/.test(String(cfQ.find((f) => f.gid === LD_F)?.display_value ?? "").slice(0, 10));
+          const listedEarly = /^\d{4}-\d{2}-\d{2}$/.test(listDate);
           // ... and so do occupied units whose Listing Settings plan is approved
           // or carries a Target List Date (Brittany 2026-09-21, unit 387050):
           // the plan says list early, so the bench must show the row for Go
@@ -1426,7 +1458,7 @@ app.post("*", async (c) => {
             /^\d{4}-\d{2}-\d{2}$/.test(lsHitQ.targetListDate));
           // completed tasks already passed the Move In Pending gate above and can
           // be pre-move-out (PreLease signed early), so vacancy is not required
-          if (!t.completed && !vacant && !(listedEarly && !leaseSigned) && !planReady) continue;
+          if (!t.completed && !vacant && !(listedEarly && !leaseSigned) && !planReady && !(relistPending && !leaseSigned)) continue;
           const occupiedUntil = !vacant && /^\d{4}-\d{2}-\d{2}$/.test(moSched) && moSched > todayQ ? moSched : "";
           // Do Not List (Brittany 2026-08-27): owner selling / self-listing / moving
           // back in / other. Stays visible at the bottom of the queue for awareness,
@@ -1467,7 +1499,17 @@ app.post("*", async (c) => {
           const preListing = !vacant && !listed && !leaseSigned;
           const modOverdue = doNotList || preListing || (cycleDays != null && cycleDays <= 6) ? false
             : (!modDate || Math.floor((Date.parse(todayQ + "T12:00:00Z") - Date.parse(modDate + "T12:00:00Z")) / 86400000) >= 7);
-          rows.push({ gid: t.gid, url: `https://app.asana.com/0/0/${t.gid}`, address, unitId, teamLead: "", agent: String(t.assignee?.name ?? ""), lsGid: "", listDate, state, doNotList, dom, moveOut: /^\d{4}-\d{2}-\d{2}$/.test(moSched) ? moSched : (moDoneAll || null), moveIn: /^\d{4}-\d{2}-\d{2}$/.test(miOpen) ? miOpen : "", occupiedUntil, modDate, modOverdue, firstWeek: state === "leasing" && dom != null && dom <= 6, updDate, signedDate: leaseSigned && /^\d{4}-\d{2}-\d{2}$/.test(lsdQ) ? lsdQ : "", warGid: "", warDue: null, warMissing: null });
+          rows.push({ gid: t.gid, url: `https://app.asana.com/0/0/${t.gid}`, address, unitId, teamLead: "", agent: String(t.assignee?.name ?? ""), lsGid: "", listDate, state, doNotList, dom, moveOut: /^\d{4}-\d{2}-\d{2}$/.test(moSched) ? moSched : (moDoneAll || null), moveIn: /^\d{4}-\d{2}-\d{2}$/.test(miOpen) ? miOpen : "", occupiedUntil, modDate, modOverdue, firstWeek: state === "leasing" && dom != null && dom <= 6, updDate, signedDate: leaseSigned && /^\d{4}-\d{2}-\d{2}$/.test(lsdQ) ? lsdQ : "", warGid: "", warDue: null, warMissing: null,
+            // move out CONFIRMED = a Move Out Completion Date exists (feedback
+            // 1219284214483670): only then is a turnover row "TO In Progress";
+            // a scheduled-but-unconfirmed move out shows as pending on the bench
+            // (a completion date 14+ days before the scheduled move out is a prior
+            // cycle's); null = no move out on record at all (new property), so
+            // the bench keeps its old label rather than claim a pending move out
+            moConfirmed: !/^\d{4}-\d{2}-\d{2}$/.test(moSched) && !/^\d{4}-\d{2}-\d{2}$/.test(moDoneAll) ? null
+              : /^\d{4}-\d{2}-\d{2}$/.test(moDoneAll) && (!/^\d{4}-\d{2}-\d{2}$/.test(moSched) ||
+                Date.parse(moDoneAll + "T12:00:00Z") >= Date.parse(moSched + "T12:00:00Z") - 14 * 86400000),
+            relistPending });
         }
         offQ = j0.next_page?.offset ?? "";
         if (!offQ) break;
@@ -2046,7 +2088,9 @@ app.post("*", async (c) => {
             notesG.push(`Weekly Site Visit assigned, due ${plusDays(1)}`);
           }
         } catch { notesG.push("Weekly Site Visit assign failed."); }
-        await assignSub(/floor plan/i, agentG, plusDays(1), "Floor Plan");
+        // Floor Plan is NOT assigned at go live (Brittany 2026-10-14, feedback
+        // 1219524769406187): floor plans are made on request only, so the
+        // subtask stays unassigned until someone asks for one.
         await assignSub(/weekly activity report/i, agentG, nextTue, "Weekly Activity Report");
         // renamed "Update | Zillow + Redfin links" (Brittany 2026-09-24); match
         // the stable pair, either generation
@@ -2197,6 +2241,37 @@ app.post("*", async (c) => {
         (savedUrls.length ? ` Listing link${savedUrls.length > 1 ? "s" : ""} (${savedUrls.join(", ")}) saved to the task.` : "") +
         (created.length ? " Troubleshoot subtask ready." : "")).catch(() => null);
       return j(headers, 200, { ok: true, created, savedUrls, summary: lines.join(" | ") });
+    }
+
+    // ---------- execMinRent: owner approved a lower Minimum Rent (feedback 1219521325307027 / 1219326547609704) ----------
+    // The Modify step refuses a rent below the plan's Minimum Rent floor. When the
+    // owner has already approved going lower, the agent records the new floor here:
+    // writes Minimum Rent on Listing Settings and logs the approval on the LU, so
+    // the price drop then goes through the bench instead of by hand in Buildium.
+    if (action === "execMinRent") {
+      const luGidM = String(body.taskGid ?? "").replace(/\D/g, "");
+      const uidM = String(body.unitId ?? "").replace(/\D/g, "");
+      let lsGidM = String(body.lsGid ?? "").replace(/\D/g, "");
+      const newMin = Math.round(Number(body.newMin));
+      const oldMin = Number.isFinite(Number(body.oldMin)) ? Math.round(Number(body.oldMin)) : null;
+      if (!luGidM) return j(headers, 400, { error: "missing_task" });
+      if (!Number.isFinite(newMin) || newMin < 100) return j(headers, 400, { error: "bad_min", message: "Enter the new minimum rent the owner approved." });
+      if (!lsGidM && uidM) {
+        try {
+          const hitsM = ((await asana("GET",
+            `/workspaces/${WORKSPACE}/tasks/search?projects.any=1217446710785429&custom_fields.1213183515622826.value=${uidM}&opt_fields=name`)) ?? []) as Array<{ gid: string }>;
+          lsGidM = hitsM[0]?.gid ?? "";
+        } catch { /* fall through */ }
+      }
+      if (!lsGidM) return j(headers, 404, { error: "no_listing_settings", message: "No Listing Settings task for this unit, so the new minimum has nowhere to save." });
+      await asana("PUT", `/tasks/${lsGidM}`, { custom_fields: { "1217446710834881": newMin } });
+      const fmtM = (v: number) => `$${v.toLocaleString("en-US")}`;
+      const lineM = `Owner approved a lower Minimum Rent: ${fmtM(newMin)}` + (oldMin != null ? ` (was ${fmtM(oldMin)})` : "") +
+        `. Recorded on the Execute + Adapt bench (/work-bench); Listing Settings Minimum Rent updated.`;
+      await postStory(luGidM, lineM).catch(() => null);
+      await postStory(lsGidM, lineM).catch(() => null);
+      execCache = null;
+      return j(headers, 200, { ok: true, minRent: newMin, lsGid: lsGidM });
     }
 
     // ---------- execDecision: the team lead's weekly hold-or-adjust record on the LU ----------
@@ -4912,7 +4987,13 @@ app.post("*", async (c) => {
       const ctx = String(body.context ?? "");
       const isPre = ctx === "prelisting";
       const isProposal = ctx === "proposal";
-      const facts = isProposal ? [
+      // turnover: the Agent Note on the Plan bench's Turn Over Plan (feedback
+      // 1219328556082433), shown to the owner on the Leasing Plan page
+      const isTurn = ctx === "turnover";
+      const facts = isTurn ? [
+        `Property: ${String(body.address ?? "").slice(0, 120)}`,
+        arr(body.turnItems).length ? `Turn over work items already listed on the plan: ${arr(body.turnItems).join("; ")}` : "",
+      ].filter(Boolean).join("\n") : isProposal ? [
         `Property: ${String(body.address ?? "").slice(0, 120)}`,
         body.marketRent != null ? `Verified market rent going on the proposal: $${n(body.marketRent)}/mo.` : "",
         body.marketPosition ? `Market position: ${String(body.marketPosition).slice(0, 240)}` : "",
@@ -4931,13 +5012,17 @@ app.post("*", async (c) => {
         arr(body.recommendations).length ? `Recommendations going to the owner: ${arr(body.recommendations).join("; ")}` : "",
       ].filter(Boolean).join("\n");
       const SYSTEM = [
-        isProposal
+        isTurn
+          ? "You polish the AGENT NOTE a Sagareus leasing agent wrote on the Turn Over Plan of an owner's leasing plan page. It sits under the list of make-ready work items and covers special requests or context about the turn over."
+          : isProposal
           ? "You polish the NOTES FROM OUR TEAM a Sagareus biz dev agent wrote for a property management proposal that goes to a PROSPECTIVE owner deciding whether to sign. It sits directly under the rent analysis on the proposal."
           : isPre
           ? "You polish the AGENT COMMENTS a Sagareus leasing agent wrote for a PreListing report that goes to a property owner before their unit is listed."
           : "You polish the AGENT COMMENTS a Sagareus leasing agent wrote for the weekly activity report that goes to a property owner.",
         "The agent's draft is the source of truth: keep every fact, observation, and intention they wrote, and keep their first-person voice. Fix grammar, spelling, and clarity; tighten rambling; make the tone professional, direct, steady.",
-        isProposal
+        isTurn
+          ? "Do not add information the agent did not write. The work items already appear on the plan above the note (given to you as context); never pad the note by reciting them. Never promise costs, dates, or outcomes the agent did not state."
+          : isProposal
           ? "Do not add information the agent did not write. The verified rent, market range, and comparables already appear on the proposal above the note (given to you as context) — never pad the note by reciting them. Only pull a specific from context when the agent's draft clearly alludes to it and needs it to make sense. Never promise outcomes; keep any pricing talk consistent with the verified rent."
           : isPre
           ? "Do not add information the agent did not write. The rent estimate, comps, and strategy already appear in the report above the comments (given to you as context) — never pad the comment by reciting them. Only pull a specific from context when the agent's draft clearly alludes to it and needs it to make sense."
@@ -5887,6 +5972,7 @@ app.post("*", async (c) => {
           regRow,
         ]) },
         { title: "Maintenance", rows: keep([
+          txt("Keys Common Area", gp(/^keys common area$/i)),
           svc("HVAC Service", gd(/^hvac servicing completed$/i)),
           svc("Dryer Vent", gd(/^dryer vent cleaning completed$/i)),
           (() => { const d = gd(/^hot water heater install$/i).slice(0, 10); return d.startsWith("9999") ? null : txt("Water Heater Installed", lkDate(d)); })(),
@@ -5934,7 +6020,6 @@ app.post("*", async (c) => {
         top: [
           { label: "Keybox Code", value: keybox || null, empty: "No Key Box On File" },
           { label: "Keys Storage", value: g(/^keys storage$/i) || null },
-          { label: "Keys Common Area", value: gp(/^keys common area$/i) || null },
         ],
         sections,
       });
