@@ -5335,6 +5335,37 @@ app.post("*", async (c) => {
       return j(headers, 200, { ok: true, teamUsers: await workspaceUsers().catch(() => []) });
     }
 
+    // ---------- workload: open LU + Turn Over task counts per assignee ----------
+    // (Brittany 2026-10-21) Plan bench Assignments card, to balance who gets the
+    // next listing. Read-only. Open = incomplete tasks in Leasing | LU (LU / TP /
+    // PreLease rows) and Leasing | Turn Over ("Turn Over |" rows).
+    if (action === "workload") {
+      const openTasks = async (proj: string) => {
+        const out: Array<{ name: string; assignee?: { gid?: string; name?: string } | null }> = [];
+        let off = "";
+        for (let pg = 0; pg < 15; pg++) {
+          const r = await fetch(`${ASANA}/projects/${proj}/tasks?completed_since=now&limit=100&opt_fields=name,assignee.name${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
+            { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+          const jw = await r.json().catch(() => ({}));
+          out.push(...((jw.data ?? []) as typeof out));
+          off = jw.next_page?.offset ?? "";
+          if (!off) break;
+        }
+        return out;
+      };
+      const [luT, toT] = await Promise.all([openTasks(LEASING_LU_PROJECT), openTasks(TURNOVER_PROJECT)]);
+      const by: Record<string, { gid: string; name: string; lu: number; to: number }> = {};
+      const bump = (t: { assignee?: { gid?: string; name?: string } | null }, k: "lu" | "to") => {
+        const g = String(t.assignee?.gid ?? "") || "none";
+        by[g] = by[g] ?? { gid: g === "none" ? "" : g, name: g === "none" ? "Unassigned" : String(t.assignee?.name ?? ""), lu: 0, to: 0 };
+        by[g][k]++;
+      };
+      luT.filter((t) => /^(LU|TP|PreLease)\s*\|/i.test(String(t.name))).forEach((t) => bump(t, "lu"));
+      toT.filter((t) => /^turn\s*over\s*\|/i.test(String(t.name))).forEach((t) => bump(t, "to"));
+      const rows = Object.values(by).sort((a, b) => (b.lu + b.to) - (a.lu + a.to));
+      return j(headers, 200, { ok: true, rows, asOf: new Date().toISOString() });
+    }
+
     // ---------- execSetLead: assign a team lead from the bench queue ----------
     // (Brittany 2026-09-18): a No Lead row shows a dropdown; the pick writes the
     // Team Lead person onto the Listing Settings task, CREATING the LS task first
