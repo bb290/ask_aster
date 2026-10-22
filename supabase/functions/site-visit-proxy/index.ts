@@ -2799,6 +2799,7 @@ app.post("*", async (c) => {
       // editable Unit Settings panel: field types + real Asana enum options, so the
       // workbench offers the configured choices instead of free text (Brittany 2026-08-17)
       let settingsFields: Array<Record<string, unknown>> = [];
+      let utilFields: Array<Record<string, unknown>> = [];
       try {
         if (settingsGid) {
           const base = cfUnit.length ? cfUnit : cfProp;
@@ -2844,6 +2845,29 @@ app.post("*", async (c) => {
               if (settingsFields.some((x) => x.gid === f.gid)) continue;
               settingsFields.push({ gid: f.gid, name: String(f.name ?? ""), type: String(f.resource_subtype ?? "text"), value: String(f.display_value ?? ""), options: [], selected: null, fromProperty: false, onProperty: true });
             }
+          }
+        }
+      } catch { /* best-effort */ }
+      // Utility billing modes for the Plan bench V3 Utility Setup table (Brittany
+      // 2026-10-21): the seven "Utilities - X" enums with their options, unit task
+      // first, property task as the fallback, so "Who pays" can save back through
+      // setUnitSettings. Read-only here.
+      try {
+        if (settingsGid) {
+          const UKEYS: Array<[string, RegExp]> = [["electricity", /^utilities - electricity$/i], ["gas", /^utilities - gas$/i], ["water", /^utilities - water$/i],
+            ["sewer", /^utilities - sewer/i], ["garbage", /^utilities - garbage$/i], ["oil", /^utilities - oil$/i], ["internet", /^utilities - internet$/i]];
+          const fromU = (cfUnit ?? []) as SettingsCF[];
+          const fromP = (cfProp ?? []) as SettingsCF[];
+          for (const [k, re] of UKEYS) {
+            const fu = fromU.find((f) => re.test(String(f.name ?? "")));
+            const f = fu ?? fromP.find((x) => re.test(String(x.name ?? "")));
+            if (!f || f.resource_subtype !== "enum") continue;
+            utilFields.push({
+              key: k, gid: f.gid, name: String(f.name ?? ""),
+              options: ((f.enum_options ?? []) as Array<Record<string, unknown>>).filter((o) => o.enabled !== false).map((o) => ({ gid: o.gid, name: String(o.name ?? "") })),
+              selected: String(((f.enum_value ?? {}) as Record<string, unknown>).gid ?? ""),
+              onProperty: !fu,
+            });
           }
         }
       } catch { /* best-effort */ }
@@ -3031,6 +3055,7 @@ app.post("*", async (c) => {
         lsPlan,
         openRequests,
         settingsFields,
+        utilFields,
         matchedAddress: fullAddress,
         address: fullAddress,
         beds: bedBathNum(u.UnitBedrooms),
