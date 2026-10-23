@@ -639,6 +639,8 @@ const LOOKUP_PASSWORD = Deno.env.get("LOOKUP_PASSWORD") ?? "";
 const LK_TTL_MS = 12 * 3600 * 1000;
 const LK_KEYBOX_F = "1218512667092355"; // [Onsite] Key Box on the Leasing parent
 const LK_UNIT_ID_F = "1213183515622826";
+const LK_PROP_ID_F = "1213183108704512"; // Property ID (Settings tasks)
+const LK_REPAIR_PROJECT = "1208423849228323"; // Buildium Repair Shop (field corrections)
 const LK_LISTING_PROJECT = "1217446710785429"; // Listing Settings
 const LK_PROVIDERS_F = "1217921018573269";     // Utility Providers on Listing Settings
 const lkEnc = new TextEncoder();
@@ -5935,6 +5937,36 @@ app.post("*", async (c) => {
           + "\n\nSubmitted via the Lookup widget Team Feedback button. Done by Claude on behalf of the submitting team member.",
       });
       return j(headers, 200, { ok: true, gid: sub.gid });
+    }
+
+    // field correction from the pencil on a Lookup row: one task on Buildium Repair
+    // Shop with the address, Unit ID, Property ID, field and what the staff member
+    // typed (Brittany 2026-10-23). Ids come from the Settings task server-side,
+    // never from the page.
+    if (action === "lkEdit") {
+      if (!(await lkTokenOk(String(body.token ?? "")))) return j(headers, 401, { error: "locked", message: "Enter the password." });
+      const text = String(body.text ?? "").trim().slice(0, 2000);
+      const field = String(body.field ?? "").trim().slice(0, 80);
+      const shown = String(body.shown ?? "").trim().slice(0, 300);
+      if (!text || !field) return j(headers, 400, { error: "missing_fields", message: "Type the correction first." });
+      const row = (await lkList()).find((r) => r.gid === String(body.gid ?? ""));
+      if (!row) return j(headers, 404, { error: "not_found", message: "That unit isn't in the list anymore. Search again." });
+      const cfQ = "custom_fields.gid,custom_fields.display_value";
+      const ut = await asana("GET", `/tasks/${row.gid}?opt_fields=parent.gid,${cfQ}`);
+      const val = (cf: LkCf, gid: string) => String(cf.find((x) => x.gid === gid)?.display_value ?? "").trim();
+      let pid = val(ut.custom_fields ?? [], LK_PROP_ID_F);
+      if (!pid && ut.parent?.gid) {
+        try { pid = val((await asana("GET", `/tasks/${ut.parent.gid}?opt_fields=${cfQ}`)).custom_fields ?? [], LK_PROP_ID_F); } catch { /* left blank */ }
+      }
+      const line = "----------------------------------------";
+      const t = await asana("POST", `/tasks`, {
+        projects: [LK_REPAIR_PROJECT],
+        name: `Lookup field correction // ${field} // ${row.address}`,
+        notes: `Lookup Field Correction\n${line}\n\nhttps://app.asana.com/0/0/${row.gid}/f (Settings // ${row.address})\n`
+          + (pid && row.uid ? `https://sagareus.managebuilding.com/manager/app/properties/${pid}/units/${row.uid}/summary\n` : "")
+          + `${line}\n\nAddress: ${row.address}\nUnit ID: ${row.uid || "not on file"}\nProperty ID: ${pid || "not on file"}\nField: ${field}\nLookup shows: ${shown || "Unconfirmed"}\n\n${line}\n\nStaff member says:\n${text}\n\n${line}\n\nSubmitted via the Lookup widget pencil. Done by Claude on behalf of the submitting team member.`,
+      });
+      return j(headers, 200, { ok: true, gid: t.gid });
     }
 
     if (action === "lkList" || action === "lkUnit") {
