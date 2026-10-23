@@ -5066,8 +5066,8 @@ app.post("*", async (c) => {
         "You write the Amenities section of a rental listing for Sagareus Property Management, read by prospective renters.",
         "The input is internal property notes written for the operations team. Rewrite each item for a renter: plain, accurate, specific, short.",
         "Drop details a renter should not see: account numbers, codes, combinations, key locations, vendor or utility company names, internal instructions, staff notes, and 'see lease' style references. Keep the useful fact behind them.",
-        "Never invent features. Use an empty string only when the item says nothing on file, none, n/a, or no, EXCEPT these five, which always get a value so prospects never have to ask: laundry (when there is none or nothing on file: 'No laundry on site.'), parking (when there is none or nothing on file: 'No parking included.'), storage (when there is none or nothing on file: 'No storage.'), ev (when there is none or nothing on file: 'No EV charging.'), and heatingCooling (describe what exists, for example 'Electric wall heaters; no air conditioning.').",
-        "Each value is one short sentence fragment ending with a period, 12 words max, without its label. Plain text, never an em dash. Describe the property, never the people (fair housing).",
+        "Never invent features. Use an empty string only when the item says nothing on file, none, n/a, or no, EXCEPT these five, which always get a value so prospects never have to ask: laundry, parking, and ev (when there is none or nothing on file: exactly 'None'), storage (when there is none or nothing on file: exactly 'In-unit closets only'), and heatingCooling (describe what exists, for example 'Electric wall heaters; no air conditioning').",
+        "Each value is one short fragment, 12 words max, with no trailing period. Never repeat the label or its words in the value (Landscaping: 'Resident responsible', not 'Resident responsible for landscaping'; Laundry: 'In-unit stackable washer and dryer'). Plain text, never an em dash. Describe the property, never the people (fair housing).",
         "Return ONLY a JSON object with exactly these keys: " + KEYS.map((k) => k[0]).join(", ") + ".",
       ].join("\n");
       const USER = `Property: ${String(body.address ?? "").slice(0, 140)}\n\nINTERNAL NOTES:\n${facts}`;
@@ -5086,7 +5086,7 @@ app.post("*", async (c) => {
           try { o = JSON.parse(m[0]); } catch { continue; }
           const out = KEYS.map(([k, label]) => {
             const val = String(o[k] ?? "").replace(/\*\*/g, "").replace(/(\d)\s*[\u2014\u2013]\s*(\d)/g, "$1 to $2").replace(/\s*[\u2014\u2013]\s*/g, ", ").replace(/\s+/g, " ").trim();
-            return val ? `${label}: ${/[.!]$/.test(val) ? val : val + "."}` : "";
+            return val ? `${label}: ${val.replace(/[.\s]+$/, "")}` : "";
           }).filter(Boolean).join("\n");
           if (out) return j(headers, 200, { ok: true, text: out, model });
         } catch { /* next model */ }
