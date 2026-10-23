@@ -3994,6 +3994,10 @@ app.post("*", async (c) => {
       // cc defaults to listings@ (every leasing flow wants the archive copy);
       // pass cc:"" to send with none (bizdev proposal, person to person)
       const ccAddr = body.cc === undefined ? "listings@sagareus.com" : String(body.cc).trim().slice(0, 300);
+      // bcc: only HubSpot's logging address or our own domain (2026-10-23: proposals BCC
+      // HubSpot so API-sent mail still lands on the deal timeline)
+      const bccAddr = String(body.bcc ?? "").trim().toLowerCase().slice(0, 200);
+      if (bccAddr && !/^[^@\s]+@(bcc\.(na\d\.)?hubspot\.com|sagareus\.com)$/.test(bccAddr)) return j(headers, 400, { error: "bad_bcc" });
       if (!/^[^@\s]+@sagareus\.com$/.test(userEmail)) return j(headers, 400, { error: "bad_user" });
       if (fromAddr && !/^[^@\s]+@sagareus\.com$/.test(fromAddr)) return j(headers, 400, { error: "bad_from" });
       if (!subject || !textBody) return j(headers, 400, { error: "missing_fields" });
@@ -4040,6 +4044,7 @@ app.post("*", async (c) => {
           ...(fromAddr ? [`From: ${fromAddr}`] : []),
           `To: ${toAddr}`,
           ...(ccAddr ? [`Cc: ${ccAddr}`] : []),
+          ...(bccAddr ? [`Bcc: ${bccAddr}`] : []),
           `Subject: ${subj}`,
           "MIME-Version: 1.0",
           `Content-Type: multipart/alternative; boundary="${bnd}"`,

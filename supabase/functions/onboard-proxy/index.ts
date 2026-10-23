@@ -1086,25 +1086,35 @@ app.post("/onboard-proxy", async (c) => {
       const hs = (path: string, init?: RequestInit) => fetch("https://api.hubapi.com" + path, {
         ...init, headers: { "Authorization": `Bearer ${HS}`, "Content-Type": "application/json" },
       });
-      const sr = await hs("/crm/v3/objects/deals/search", {
-        method: "POST",
-        body: JSON.stringify({
-          filterGroups: [{ filters: [
-            { propertyName: "pipeline", operator: "EQ", value: "2185322227" },
-            { propertyName: "dealstage", operator: "EQ", value: "3505530581" },
-          ] }],
-          properties: ["dealname", "subject_city", "createdate", "bed__bath__sqft", "units"],
-          sorts: [{ propertyName: "createdate", direction: "ASCENDING" }],
-          limit: 25,
-        }),
-      });
-      const sj = await sr.json().catch(() => ({}));
-      const qdeals = ((sj?.results ?? []) as { id?: unknown; properties?: Record<string, string> }[])
-        .map((d) => ({ id: String(d.id ?? ""), p: d.properties ?? {} })).filter((d) => d.id);
+      // Queue = Free Rental Analysis Request + Proposal Requested (oldest first); Sent =
+      // Analysis Sent + Proposal Sent follow-up stages (most recently touched first).
+      // The bench V3 sidebar groups by these (Brittany 2026-10-23); older clients read
+      // only `queue`.
+      const QUEUE_STAGES = ["3505530579", "3505530581"], SENT_STAGES = ["3505530580", "3505530582"];
+      const search = async (stages: string[], sortProp: string, dir: string, limit: number) => {
+        const sr = await hs("/crm/v3/objects/deals/search", {
+          method: "POST",
+          body: JSON.stringify({
+            filterGroups: [{ filters: [
+              { propertyName: "pipeline", operator: "EQ", value: "2185322227" },
+              { propertyName: "dealstage", operator: "IN", values: stages },
+            ] }],
+            properties: ["dealname", "subject_city", "createdate", "bed__bath__sqft", "units", "dealstage", "hs_lastmodifieddate"],
+            sorts: [{ propertyName: sortProp, direction: dir }],
+            limit,
+          }),
+        });
+        const sj = await sr.json().catch(() => ({}));
+        return ((sj?.results ?? []) as { id?: unknown; properties?: Record<string, string> }[])
+          .map((d) => ({ id: String(d.id ?? ""), p: d.properties ?? {} })).filter((d) => d.id);
+      };
+      const qdeals = await search(QUEUE_STAGES, "createdate", "ASCENDING", 50);
+      const sdeals = body.withSent ? await search(SENT_STAGES, "hs_lastmodifieddate", "DESCENDING", 30) : [];
+      const all = qdeals.concat(sdeals);
       const emails = new Map<string, { email: string; name: string }>();
-      if (qdeals.length) {
+      if (all.length) {
         const ab = await hs("/crm/v4/associations/deals/contacts/batch/read", {
-          method: "POST", body: JSON.stringify({ inputs: qdeals.map((d) => ({ id: d.id })) }),
+          method: "POST", body: JSON.stringify({ inputs: all.map((d) => ({ id: d.id })) }),
         });
         const abj = await ab.json().catch(() => ({}));
         const contactByDeal = new Map<string, string>();
@@ -1127,11 +1137,13 @@ app.post("/onboard-proxy", async (c) => {
           }
         }
       }
-      return j(headers, 200, { ok: true, queue: qdeals.map((d) => ({
+      const row = (d: { id: string; p: Record<string, string> }) => ({
         dealId: d.id, dealName: String(d.p.dealname ?? ""), city: String(d.p.subject_city ?? ""),
-        created: String(d.p.createdate ?? ""), bedBathSqft: String(d.p.bed__bath__sqft ?? ""),
+        created: String(d.p.createdate ?? ""), modified: String(d.p.hs_lastmodifieddate ?? ""), stage: String(d.p.dealstage ?? ""),
+        bedBathSqft: String(d.p.bed__bath__sqft ?? ""),
         email: emails.get(d.id)?.email ?? "", ownerName: emails.get(d.id)?.name ?? "",
-      })) });
+      });
+      return j(headers, 200, { ok: true, queue: qdeals.map(row), sent: sdeals.map(row) });
     }
 
     // ---------- obFeedback (internal, x-sv-key): staff feedback on the wizard -> subtask on its dev task ----------
@@ -1399,6 +1411,7 @@ app.post("/onboard-proxy", async (c) => {
           out.rentometer = String(d0.rentometer_link ?? "");
           out.dealName = String(d0.dealname ?? "");
           out.dealId = dd?.id ?? "";   // Save To Deal opens the deal record in HubSpot
+          out.contactId = String(c0.hs_object_id ?? "");   // bench header Contact link (2026-10-23)
           // one contact, several properties: the workbench renders a deal chooser
           if (allDeals.length > 1) {
             out.deals = allDeals.map((d) => ({ id: d.id, name: String(d.p.dealname ?? ""), stage: String(d.p.dealstage ?? "") }));
