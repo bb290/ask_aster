@@ -6060,6 +6060,9 @@ app.post("*", async (c) => {
         { title: "Unit", rows: keep([
           txt("Mailbox", g(/^mailbox$/i)),
           txt("Parking", parking),
+          // the property's spot id lists (Property Settings, Brittany 2026-10-23)
+          txt("Parking Spots", gp(/^parking spots$/i)),
+          txt("Storage Spots", gp(/^storage spots$/i)),
           txt("Heating", g(/^heating type$/i)),
           txt("Cooling", g(/^cooling$/i)),
           txt("HVAC Filter", g(/^hvac filter$/i)),
