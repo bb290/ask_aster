@@ -131,12 +131,12 @@ function j(headers: Record<string, string>, status: number, body: unknown): Resp
 
 // Amenity Listing Description (Brittany 2026-10-23): found by NAME on the Listing Settings
 // project so the bench works the moment the field is attached; cached per instance
-let AMEN_FIELD_GID = "";
+let AMEN_FIELD_GID = "1219842423539303";   // "Amenities Listing Description" (created by Brittany 2026-10-23)
 async function amenFieldGid(): Promise<string> {
   if (AMEN_FIELD_GID) return AMEN_FIELD_GID;
   try {
     const cs = (await asana("GET", "/projects/1217446710785429/custom_field_settings?opt_fields=custom_field.gid,custom_field.name&limit=100")) as Array<{ custom_field?: { gid?: string; name?: string } }>;
-    const hit = (cs ?? []).find((x) => /^\s*amenity listing description\s*$/i.test(String(x?.custom_field?.name ?? "")));
+    const hit = (cs ?? []).find((x) => /^\s*amenit(y|ies) listing description\s*$/i.test(String(x?.custom_field?.name ?? "")));
     if (hit?.custom_field?.gid) AMEN_FIELD_GID = String(hit.custom_field.gid);
   } catch { /* not attached yet */ }
   return AMEN_FIELD_GID;
