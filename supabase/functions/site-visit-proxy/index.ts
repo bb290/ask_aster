@@ -626,7 +626,7 @@ async function maintVisitTasks(): Promise<Array<{ gid: string; address: string }
 // ---------- Lookup (saga-lookup widget, Brittany 2026-10-20) ----------
 // Read-only unit details for leasing + ops in the field. The whole tool sits
 // behind one shared password (LOOKUP_PASSWORD secret): lkUnlock trades it for a
-// signed 12-hour token, and lkList / lkUnit return nothing without one, so the
+// signed 15-minute token (was 12 hours; Brittany 2026-10-23, in case a phone is lost), and lkList / lkUnit return nothing without one, so the
 // public team key in /field page source never exposes unit data. The keybox code
 // and unit status ride behind the same token. Field source rules come from the
 // Outline "Property Settings" doc: unit task first, property task when the unit
@@ -636,7 +636,7 @@ async function maintVisitTasks(): Promise<Array<{ gid: string; address: string }
 // fields (fees, communication, termination), Owner Preferences, Housing
 // Authority, Pass Through %, or resident names.
 const LOOKUP_PASSWORD = Deno.env.get("LOOKUP_PASSWORD") ?? "";
-const LK_TTL_MS = 12 * 3600 * 1000;
+const LK_TTL_MS = 15 * 60 * 1000;
 const LK_KEYBOX_F = "1218512667092355"; // [Onsite] Key Box on the Leasing parent
 const LK_UNIT_ID_F = "1213183515622826";
 const LK_PROP_ID_F = "1213183108704512"; // Property ID (Settings tasks)
@@ -664,7 +664,8 @@ function lkSame(a: string, b: string): boolean {
 async function lkTokenOk(token: string): Promise<boolean> {
   if (!LOOKUP_PASSWORD) return false;
   const [exp, sig] = String(token ?? "").split(".");
-  if (!/^\d+$/.test(exp ?? "") || Number(exp) < Date.now()) return false;
+  // the upper bound also retires tokens issued under a longer TTL
+  if (!/^\d+$/.test(exp ?? "") || Number(exp) < Date.now() || Number(exp) > Date.now() + LK_TTL_MS + 60000) return false;
   return lkSame(sig ?? "", await lkSig(exp));
 }
 // wrong-password brake per caller: 5 misses = 15 minute lockout, plus a delay
