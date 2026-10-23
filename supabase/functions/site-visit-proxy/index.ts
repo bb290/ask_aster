@@ -129,6 +129,18 @@ function j(headers: Record<string, string>, status: number, body: unknown): Resp
   return new Response(JSON.stringify(body), { status, headers: { ...headers, "Content-Type": "application/json" } });
 }
 
+// Amenity Listing Description (Brittany 2026-10-23): found by NAME on the Listing Settings
+// project so the bench works the moment the field is attached; cached per instance
+let AMEN_FIELD_GID = "";
+async function amenFieldGid(): Promise<string> {
+  if (AMEN_FIELD_GID) return AMEN_FIELD_GID;
+  try {
+    const cs = (await asana("GET", "/projects/1217446710785429/custom_field_settings?opt_fields=custom_field.gid,custom_field.name&limit=100")) as Array<{ custom_field?: { gid?: string; name?: string } }>;
+    const hit = (cs ?? []).find((x) => /^\s*amenity listing description\s*$/i.test(String(x?.custom_field?.name ?? "")));
+    if (hit?.custom_field?.gid) AMEN_FIELD_GID = String(hit.custom_field.gid);
+  } catch { /* not attached yet */ }
+  return AMEN_FIELD_GID;
+}
 async function asana(method: string, path: string, body?: unknown) {
   const res = await fetch(`${ASANA}${path}`, {
     method,
@@ -2921,6 +2933,7 @@ app.post("*", async (c) => {
             minCredit: kvGet(lv(LS_SCREEN_CRIT), "Credit") || lv("1217446728640049"),
             minIncome: kvGet(lv(LS_SCREEN_CRIT), "Income") || lv("1217446770195125"),
             utilDesc: lv("1217515337017428"),
+            amenDesc: lv(await amenFieldGid()),
             ffReport: kvGet(lv(LS_UTIL_REPORTS), "Flat Fee") || lv("1217533821059479"),
             estReport: kvGet(lv(LS_UTIL_REPORTS), "Estimated") || lv("1217533868879515"),
             utilProviders: lv("1217921018573269"),
@@ -3358,6 +3371,10 @@ app.post("*", async (c) => {
       const LRESP_OPT: Record<string, string> = { "Landlord Responsible": "1217741708866531", "Resident Responsible": "1217741708866532" };
       const lresp = String(body.landscaping ?? "").trim();
       if (LRESP_OPT[lresp]) cf["1217741708866530"] = LRESP_OPT[lresp];
+      if (String(body.amenDesc ?? "").trim()) {
+        const ag = await amenFieldGid();
+        if (ag) cf[ag] = String(body.amenDesc).slice(0, 6000);
+      }
       for (const [k, gid] of Object.entries(F)) {
         const v = body[k];
         if (v == null || v === "") continue;
@@ -5027,6 +5044,56 @@ app.post("*", async (c) => {
     }
 
     // ---------- warComments: draft the Agent Comments for a weekly leasing report ----------
+    // ---------- amenDraft: Amenity Listing Description (Brittany 2026-10-23) ----------
+    // Unit / Property Settings are written for ops; this rewrites them for renters as
+    // one short line per amenity. The bench falls back to a plain rule-based draft.
+    if (action === "amenDraft") {
+      if (!TEAM_KEY || c.req.header("x-sv-key") !== TEAM_KEY) return j(headers, 401, { error: "bad_key" });
+      const OR_KEY = Deno.env.get("OPENROUTER_API_KEY") ?? "";
+      if (!OR_KEY) return j(headers, 500, { error: "llm_not_configured" });
+      const it = (body.items && typeof body.items === "object") ? body.items as Record<string, unknown> : {};
+      const v = (k: string) => String(it[k] ?? "").replace(/\s+/g, " ").trim().slice(0, 400);
+      const facts = [
+        ["Laundry", v("laundry")], ["Parking", v("parking") + (v("parkingSpaces") ? ` (spaces: ${v("parkingSpaces")})` : "")],
+        ["Storage", v("storage")], ["Mailbox", v("mailbox")], ["Heating", v("heating")], ["Cooling", v("cooling")],
+        ["EV Charger", v("ev")], ["Security System", v("security")], ["Landscaping", v("landscaping")],
+      ].map(([k, x]) => `${k}: ${x || "(nothing on file)"}`).join("\n");
+      // JSON with a fixed key per item: free-form lines let the model drop items at will
+      // (tests 2026-10-23 stopped after Parking); the labels and order are set here
+      const KEYS: [string, string][] = [["laundry", "Laundry"], ["parking", "Parking"], ["storage", "Storage"], ["mailbox", "Mailbox"],
+        ["heatingCooling", "Heating / Cooling"], ["ev", "EV Charger"], ["security", "Security System"], ["landscaping", "Landscaping"]];
+      const SYSTEM = [
+        "You write the Amenities section of a rental listing for Sagareus Property Management, read by prospective renters.",
+        "The input is internal property notes written for the operations team. Rewrite each item for a renter: plain, accurate, specific, short.",
+        "Drop details a renter should not see: account numbers, codes, combinations, key locations, vendor or utility company names, internal instructions, staff notes, and 'see lease' style references. Keep the useful fact behind them.",
+        "Never invent features. Use an empty string only when the item says nothing on file, none, n/a, or no. Exception: heatingCooling always describes what exists, for example 'Electric wall heaters; no air conditioning.'",
+        "Each value is one short sentence fragment ending with a period, 12 words max, without its label. Plain text, never an em dash. Describe the property, never the people (fair housing).",
+        "Return ONLY a JSON object with exactly these keys: " + KEYS.map((k) => k[0]).join(", ") + ".",
+      ].join("\n");
+      const USER = `Property: ${String(body.address ?? "").slice(0, 140)}\n\nINTERNAL NOTES:\n${facts}`;
+      for (const model of ["anthropic/claude-sonnet-5", "anthropic/claude-sonnet-4.5", "anthropic/claude-3.7-sonnet"]) {
+        try {
+          const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: { "Authorization": `Bearer ${OR_KEY}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ model, max_tokens: 500, messages: [{ role: "system", content: SYSTEM }, { role: "user", content: USER }] }),
+          });
+          const jr = await r.json().catch(() => ({}));
+          const text = String(jr?.choices?.[0]?.message?.content ?? "");
+          const m = text.match(/\{[\s\S]*\}/);
+          if (!r.ok || !m) continue;
+          let o: Record<string, unknown> = {};
+          try { o = JSON.parse(m[0]); } catch { continue; }
+          const out = KEYS.map(([k, label]) => {
+            const val = String(o[k] ?? "").replace(/\*\*/g, "").replace(/(\d)\s*[\u2014\u2013]\s*(\d)/g, "$1 to $2").replace(/\s*[\u2014\u2013]\s*/g, ", ").replace(/\s+/g, " ").trim();
+            return val ? `${label}: ${/[.!]$/.test(val) ? val : val + "."}` : "";
+          }).filter(Boolean).join("\n");
+          if (out) return j(headers, 200, { ok: true, text: out, model });
+        } catch { /* next model */ }
+      }
+      return j(headers, 502, { error: "llm_failed", message: "Drafting is unavailable right now; the bench used the plain draft." });
+    }
+
     if (action === "warComments") {
       const OR_KEY = Deno.env.get("OPENROUTER_API_KEY") ?? "";
       if (!OR_KEY) return j(headers, 500, { error: "llm_not_configured" });
