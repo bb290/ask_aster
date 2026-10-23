@@ -1282,7 +1282,9 @@ app.post("*", async (c) => {
       // Owner report sends stamp lastUpdate into the LU's Price History JSON so the
       // bench queue's UPD pill can show the last-sent date without walking every
       // WAR subtask's comment feed (Brittany 2026-09-11)
-      if (/^OWNER REPORT SENT/i.test(text)) {
+      // OWNER REPORT POSTED = the bench's Post + Don't Send (Brittany 2026-10-23):
+      // the week counts as handled without an email going out
+      if (/^OWNER REPORT (SENT|POSTED)/i.test(text)) {
         try {
           const tU = await asana("GET", `/tasks/${taskGid}?opt_fields=custom_fields.gid,custom_fields.name,custom_fields.display_value`);
           const phU = ((tU.custom_fields ?? []) as Array<{ gid: string; name: string; display_value: string | null }>).find((f) => /price history/i.test(String(f.name)));
@@ -5103,7 +5105,47 @@ app.post("*", async (c) => {
       // Polish mode (Brittany, 2026-07-22): the agent writes their own comment first
       // (widget gates the button on 12+ words); the model revises THEIR words instead
       // of drafting from the report data, which just repeated the report in paragraphs.
-      const draft = String(body.draft ?? "").trim().slice(0, 2000);
+      const draft = String(body.draft ?? "").trim().slice(0, 4000);
+      const ctx0 = String(body.context ?? "");
+      // Execute + Adapt V3 owner update clean up (Brittany 2026-10-23): the agent's
+      // notes and the Turn Over task comments are internal shorthand; this rewrites
+      // them for the owner. Facts only from the source text.
+      if (ctx0 === "ownerActivity" || ctx0 === "ownerTurnover") {
+        if ((draft.match(/\S+/g) ?? []).length < 4) return j(headers, 400, { error: "draft_too_short", message: "Nothing to clean up yet." });
+        const isTurnU = ctx0 === "ownerTurnover";
+        const statusU = String(body.status ?? "").slice(0, 60);
+        const SYS_U = [
+          isTurnU
+            ? "You clean up the TURNOVER UPDATES section of a weekly update email that Sagareus Property Management sends to a property owner. The source is internal comments from the Turn Over task: coordinators, vendors, inspectors."
+            : "You clean up the THIS WEEK'S ACTIVITY section of a weekly update email that Sagareus Property Management sends to a property owner. The source is the leasing agent's internal notes and prospect feedback.",
+          `Unit status this week: ${statusU || "unknown"}. Write for that status; drop notes that only made sense before it (for example prospect showing feedback once the lease is signed).`,
+          "Keep every fact that matters to the owner: work done, dates, what is next. Never add facts, costs, dates, or promises that are not in the source, and no opening or closing framing sentences (no \"we are actively marketing\", no \"we will keep you posted\"): every sentence must come from something in the source.",
+          "Remove internal-only material: @mentions, staff initials and first names, task assignment chatter, internal links, and duplicate or superseded notes. Site visit checklists are reported separately in the email; drop them.",
+          "Voice: we / our team, professional, direct, steady. No investor jargon.",
+          isTurnU
+            ? "Format: one short line per update, oldest to newest, each starting with \"• \" and the date as M/D when the source has one (\"• 10/19: Cleaning completed.\"). Merge updates that say the same thing."
+            : "Format: 1 to 4 short sentences of plain prose, or \"• \" bullet lines if the source is a list.",
+          "Under 150 words. Plain text only: no markdown, no headings, no emojis, never an em dash.",
+          "OUTPUT: the cleaned section text only. No heading, no preamble.",
+        ].join("\n");
+        const USER_U = `PROPERTY: ${String(body.address ?? "").slice(0, 120)}\n\nSOURCE TEXT:\n${draft}`;
+        for (const model of ["anthropic/claude-sonnet-5", "anthropic/claude-sonnet-4.5", "anthropic/claude-3.7-sonnet"]) {
+          try {
+            const r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+              method: "POST",
+              headers: { "Authorization": `Bearer ${OR_KEY}`, "Content-Type": "application/json" },
+              body: JSON.stringify({ model, max_tokens: 600, messages: [{ role: "system", content: SYS_U }, { role: "user", content: USER_U }] }),
+            });
+            const jr = await r.json().catch(() => ({}));
+            const text = jr?.choices?.[0]?.message?.content;
+            if (r.ok && text) {
+              const cNoDash = String(text).replace(/(\d)\s*[\u2014\u2013]\s*(\d)/g, "$1 to $2").replace(/\s*[\u2014\u2013]\s*/g, ", ");
+              return j(headers, 200, { comments: cNoDash.replace(/\*\*/g, "").trim(), model });
+            }
+          } catch { /* try next model */ }
+        }
+        return j(headers, 502, { error: "llm_failed", message: "Clean up is unavailable right now. Edit the text by hand." });
+      }
       if ((draft.match(/\S+/g) ?? []).length < 12) {
         return j(headers, 400, { error: "draft_too_short", message: "Write at least 12 words of your own comment first, then polish." });
       }
