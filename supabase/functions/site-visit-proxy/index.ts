@@ -456,8 +456,8 @@ let execCache: { at: number; payload: unknown } | null = null;
 // Vacancy gate (Brittany 2026-08-27): a unit is on the vacant list only POST move-out,
 // pre move-in. The scheduled move-out date usually lives on the "Leasing |" master,
 // not the LU task, so the queues join against a master index.
-let moIdxCache: { at: number; byUid: Record<string, string>; byAddr: Record<string, string>; uidByAddr: Record<string, string>; doneByUid: Record<string, string>; doneByAddr: Record<string, string>; masterByUid: Record<string, string> } | null = null;
-async function moveOutIndex(): Promise<{ byUid: Record<string, string>; byAddr: Record<string, string>; uidByAddr: Record<string, string>; doneByUid: Record<string, string>; doneByAddr: Record<string, string>; masterByUid: Record<string, string> }> {
+let moIdxCache: { at: number; byUid: Record<string, string>; byAddr: Record<string, string>; uidByAddr: Record<string, string>; doneByUid: Record<string, string>; doneByAddr: Record<string, string>; masterByUid: Record<string, string>; moProjByUid: Record<string, string>; moProjByAddr: Record<string, string> } | null = null;
+async function moveOutIndex(): Promise<{ byUid: Record<string, string>; byAddr: Record<string, string>; uidByAddr: Record<string, string>; doneByUid: Record<string, string>; doneByAddr: Record<string, string>; masterByUid: Record<string, string>; moProjByUid: Record<string, string>; moProjByAddr: Record<string, string> }> {
   if (moIdxCache && Date.now() - moIdxCache.at < 2 * 60 * 1000) return moIdxCache;
   const byUid: Record<string, string> = {};
   const byAddr: Record<string, string> = {};
@@ -469,6 +469,11 @@ async function moveOutIndex(): Promise<{ byUid: Record<string, string>; byAddr: 
   const doneByUid: Record<string, string> = {};
   const doneByAddr: Record<string, string> = {};
   const masterByUid: Record<string, string> = {};
+  const openMaster: Record<string, { uid: string; addr: string }> = {};
+  // 🙌 Move Out Completion Date on the Leasing | Move-Out task is the source of truth
+  // (Brittany 2026-10-24): once it is filled, the unit is officially in Turn Over
+  const moProjByUid: Record<string, string> = {};
+  const moProjByAddr: Record<string, string> = {};
   let off = "";
   for (let pg = 0; pg < 12; pg++) {
     const r0 = await fetch(`${ASANA}/projects/1213171758682884/tasks?completed_since=now&limit=100&opt_fields=name,custom_fields.gid,custom_fields.display_value${off ? `&offset=${encodeURIComponent(off)}` : ""}`,
@@ -483,6 +488,7 @@ async function moveOutIndex(): Promise<{ byUid: Record<string, string>; byAddr: 
       const addr = addressFromTaskName(t.name.replace(/^leasing\s*\|\s*/i, "Leasing | "));
       if (uid && addr) uidByAddr[normAddr(addr)] = uid;
       if (uid) masterByUid[uid] = t.gid;
+      openMaster[t.gid] = { uid, addr };
       if (/^\d{4}-\d{2}-\d{2}$/.test(done)) {
         if (uid) doneByUid[uid] = done;
         if (addr) doneByAddr[normAddr(addr)] = done;
@@ -494,7 +500,29 @@ async function moveOutIndex(): Promise<{ byUid: Record<string, string>; byAddr: 
     off = j0.next_page?.offset ?? "";
     if (!off) break;
   }
-  moIdxCache = { at: Date.now(), byUid, byAddr, uidByAddr, doneByUid, doneByAddr, masterByUid };
+  // Move-Out tasks are subtasks of the open Leasing master (no Unit ID of their own):
+  // join through the parent. Masters already closed are not indexed, so a past
+  // cycle's completion date cannot leak in.
+  try {
+    const since = new Date(Date.now() - 120 * 86400000).toISOString();
+    let offM = "";
+    for (let pg = 0; pg < 12; pg++) {
+      const rM = await fetch(`${ASANA}/projects/1213171760534561/tasks?completed_since=${encodeURIComponent(since)}&limit=100&opt_fields=name,parent.gid,parent.name,custom_fields.gid,custom_fields.display_value${offM ? `&offset=${encodeURIComponent(offM)}` : ""}`,
+        { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+      const jM = await rM.json().catch(() => ({}));
+      for (const t of (jM.data ?? []) as Array<{ gid: string; name: string; parent?: { gid?: string; name?: string } | null; custom_fields?: Array<{ gid: string; display_value: string | null }> }>) {
+        const dM = String((t.custom_fields ?? []).find((f) => f.gid === "1214521745467158")?.display_value ?? "").slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(dM)) continue;
+        const m0 = openMaster[String(t.parent?.gid ?? "")];
+        if (!m0) continue;   // not under an open Leasing master
+        if (m0.uid && (!moProjByUid[m0.uid] || dM > moProjByUid[m0.uid])) moProjByUid[m0.uid] = dM;
+        if (m0.addr) { const a0 = normAddr(m0.addr); if (!moProjByAddr[a0] || dM > moProjByAddr[a0]) moProjByAddr[a0] = dM; }
+      }
+      offM = jM.next_page?.offset ?? "";
+      if (!offM) break;
+    }
+  } catch { /* Move-Out project unreadable: the master / LU completion dates still apply */ }
+  moIdxCache = { at: Date.now(), byUid, byAddr, uidByAddr, doneByUid, doneByAddr, masterByUid, moProjByUid, moProjByAddr };
   return moIdxCache;
 }
 let warqCache: { at: number; payload: unknown } | null = null;
@@ -1332,7 +1360,7 @@ app.post("*", async (c) => {
       const todayQ = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
       const LD_F = "1213182838328964";  // 💁 List Date
       const UID_F = "1213183515622826"; // Unit ID
-      const moIdx = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string>, doneByUid: {} as Record<string, string>, doneByAddr: {} as Record<string, string>, masterByUid: {} as Record<string, string> }));
+      const moIdx = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string>, doneByUid: {} as Record<string, string>, doneByAddr: {} as Record<string, string>, masterByUid: {} as Record<string, string>, moProjByUid: {} as Record<string, string>, moProjByAddr: {} as Record<string, string> }));
       type QRow = { gid: string; url: string; address: string; unitId: string; teamLead: string; agent: string; lsGid: string; listDate: string; state: string; doNotList: string; dom: number | null; moveOut: string | null; moveIn: string; occupiedUntil?: string; modDate: string | null; modOverdue: boolean; firstWeek: boolean; updDate: string | null; signedDate: string; targetListDate?: string; warGid: string; warDue: string | null; warMissing: boolean | null; moConfirmed: boolean | null; relistPending: boolean };
       const rows: QRow[] = [];
       let offQ = "";
@@ -1457,7 +1485,9 @@ app.post("*", async (c) => {
           }
           if (!unitIdQ) unitIdQ = moIdx.uidByAddr[normAddr(address)] ?? "";
           const moSched = /^\d{4}-\d{2}-\d{2}$/.test(moOwn) ? moOwn : (moIdx.byUid[unitIdQ] ?? moIdx.byAddr[normAddr(address)] ?? "");
-          const moDoneAll = /^\d{4}-\d{2}-\d{2}$/.test(moDone) ? moDone : (moIdx.doneByUid[unitIdQ] ?? moIdx.doneByAddr[normAddr(address)] ?? "");
+          // Leasing | Move-Out task first (Brittany 2026-10-24), then the LU, then the master
+          const moProj = moIdx.moProjByUid[unitIdQ] ?? moIdx.moProjByAddr[normAddr(address)] ?? "";
+          const moDoneAll = moProj || (/^\d{4}-\d{2}-\d{2}$/.test(moDone) ? moDone : (moIdx.doneByUid[unitIdQ] ?? moIdx.doneByAddr[normAddr(address)] ?? ""));
           const vacant = /^\d{4}-\d{2}-\d{2}$/.test(moDoneAll) || (/^\d{4}-\d{2}-\d{2}$/.test(moSched) && moSched <= todayQ);
           // Pre-listed occupied units (PreLease: live listing, tenant still in
           // place) join the queue too (Brittany 2026-09-09, unit 447916) - a live
@@ -1523,7 +1553,9 @@ app.post("*", async (c) => {
             // (a completion date 14+ days before the scheduled move out is a prior
             // cycle's); null = no move out on record at all (new property), so
             // the bench keeps its old label rather than claim a pending move out
-            moConfirmed: !/^\d{4}-\d{2}-\d{2}$/.test(moSched) && !/^\d{4}-\d{2}-\d{2}$/.test(moDoneAll) ? null
+            // a filled Move-Out task completion date = officially Turn Over (2026-10-24);
+            // the 14-day sanity window only guards the LU / master fallbacks
+            moConfirmed: moProj ? true : !/^\d{4}-\d{2}-\d{2}$/.test(moSched) && !/^\d{4}-\d{2}-\d{2}$/.test(moDoneAll) ? null
               : /^\d{4}-\d{2}-\d{2}$/.test(moDoneAll) && (!/^\d{4}-\d{2}-\d{2}$/.test(moSched) ||
                 Date.parse(moDoneAll + "T12:00:00Z") >= Date.parse(moSched + "T12:00:00Z") - 14 * 86400000),
             relistPending });
@@ -1790,7 +1822,7 @@ app.post("*", async (c) => {
       if (warqCache && Date.now() - warqCache.at < 2 * 60 * 1000) return warqCache.payload as { ok: boolean; agents: string[]; rows: unknown[] };
       const todayW = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
       const LDW = "1213182838328964";
-      const moIdxW = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string>, doneByUid: {} as Record<string, string>, doneByAddr: {} as Record<string, string>, masterByUid: {} as Record<string, string> }));
+      const moIdxW = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string>, doneByUid: {} as Record<string, string>, doneByAddr: {} as Record<string, string>, masterByUid: {} as Record<string, string>, moProjByUid: {} as Record<string, string>, moProjByAddr: {} as Record<string, string> }));
       type WRow = { gid: string; address: string; agent: string; agentGid: string; state: string; dom: number | null; warDue: string | null; warMissing: boolean | null; noWar?: boolean };
       const rowsW: WRow[] = [];
       let offW = "";
@@ -1821,7 +1853,7 @@ app.post("*", async (c) => {
           const moDoneW = String(cfW.find((f) => f.gid === "1214521745467158")?.display_value ?? "").slice(0, 10);
           const uidW = String(cfW.find((f) => f.gid === "1213183515622826")?.display_value ?? "").trim() || (moIdxW.uidByAddr[normAddr(address)] ?? "");
           const moSchedW = /^\d{4}-\d{2}-\d{2}$/.test(moOwnW) ? moOwnW : (moIdxW.byUid[uidW] ?? moIdxW.byAddr[normAddr(address)] ?? "");
-          const moDoneAllW = /^\d{4}-\d{2}-\d{2}$/.test(moDoneW) ? moDoneW : (moIdxW.doneByUid[uidW] ?? moIdxW.doneByAddr[normAddr(address)] ?? "");
+          const moDoneAllW = (moIdxW.moProjByUid[uidW] ?? moIdxW.moProjByAddr[normAddr(address)] ?? "") || (/^\d{4}-\d{2}-\d{2}$/.test(moDoneW) ? moDoneW : (moIdxW.doneByUid[uidW] ?? moIdxW.doneByAddr[normAddr(address)] ?? ""));
           if (String(cfW.find((f) => f.gid === "1214787859185273")?.display_value ?? "").trim()) continue; // Do Not List: no weekly report owed
           // WARs are owed on ALL LISTED units regardless of occupancy or vacancy
           // (Brittany 2026-09-09 correction). Unlisted vacants (Turn Over) and
@@ -5228,7 +5260,7 @@ app.post("*", async (c) => {
     if (action === "listingQueue") {
       const UNIT_F2 = "1213183515622826";
       // Move Out Date joins each row by Unit ID (team 2026-09-18)
-      const idxQ = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string>, doneByUid: {} as Record<string, string>, doneByAddr: {} as Record<string, string>, masterByUid: {} as Record<string, string> }));
+      const idxQ = await moveOutIndex().catch(() => ({ byUid: {} as Record<string, string>, byAddr: {} as Record<string, string>, uidByAddr: {} as Record<string, string>, doneByUid: {} as Record<string, string>, doneByAddr: {} as Record<string, string>, masterByUid: {} as Record<string, string>, moProjByUid: {} as Record<string, string>, moProjByAddr: {} as Record<string, string> }));
       const ADJ_SECTION = "1217553095980495";
       const uidOf = (cfs: Array<{ gid: string; display_value: string | null }> | undefined) =>
         String((cfs ?? []).find((f) => f.gid === UNIT_F2)?.display_value ?? "").trim();
