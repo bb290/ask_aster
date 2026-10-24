@@ -1999,6 +1999,9 @@ app.post("/onboard-proxy", async (c) => {
             // per-comp data from the bench (Brittany 2026-09-11): shown only when filled
             inq: cc.inq != null && isFinite(Number(cc.inq)) ? Number(cc.inq) : null,
             conc: String(cc.conc ?? "").slice(0, 200) || null,
+            // optional DOM + comment from either leasing bench (Brittany 2026-10-23)
+            daysOnMarket: cc.daysOnMarket != null && cc.daysOnMarket !== "" && isFinite(Number(cc.daysOnMarket)) ? Number(cc.daysOnMarket) : null,
+            note: String(cc.note ?? "").slice(0, 300) || null,
           })) : [];
           return j(headers, 200, { ok: true, comps: {
             rent: dnum(data.rent) ?? dnum(g(/^market rent$/i)),
