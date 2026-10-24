@@ -1904,6 +1904,28 @@ app.post("*", async (c) => {
     // Feeds the owner report's THIS WEEK'S UPDATE for Turnover In Progress units
     // (Brittany 2026-08-27): the two most recent comments, minus pinned plan blocks
     // and tool signatures.
+    // ---------- execLinks: sticky-header extras for the Execute + Adapt V3 bench ----------
+    // (Brittany 2026-10-24) The Leasing master's Special Note plus quick links to its
+    // Move-Out and Turn Over subtasks. Read only. Unit ID first, address second.
+    if (action === "execLinks") {
+      const uidL = String(body.unitId ?? "").replace(/\D/g, "");
+      const addrL = String(body.address ?? "").trim();
+      try {
+        const idxL = await moveOutIndex();
+        const uidL2 = uidL || (addrL ? idxL.uidByAddr[normAddr(addrL)] ?? "" : "");
+        const masterL = uidL2 ? idxL.masterByUid[uidL2] ?? "" : "";
+        if (!masterL) return j(headers, 200, { ok: true, masterGid: "", specialNote: "", moGid: "", toGid: "" });
+        const mt = await asana("GET", `/tasks/${masterL}?opt_fields=custom_fields.gid,custom_fields.display_value`) as { custom_fields?: Array<{ gid: string; display_value: string | null }> };
+        const note = String((mt.custom_fields ?? []).find((f) => f.gid === "1209696172337706")?.display_value ?? "").trim();
+        const subsL = ((await asana("GET", `/tasks/${masterL}/subtasks?limit=100&opt_fields=name,completed,created_at,projects.gid`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean; created_at?: string; projects?: Array<{ gid: string }> }>;
+        // newest open first, then newest closed, in the Move-Out / Turn Over projects
+        const pick = (proj: string) => subsL.filter((x) => (x.projects ?? []).some((p) => p.gid === proj))
+          .sort((a, b) => (Number(!!a.completed) - Number(!!b.completed)) || String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")))[0]?.gid ?? "";
+        return j(headers, 200, { ok: true, masterGid: masterL, specialNote: note.slice(0, 600),
+          moGid: pick("1213171760534561"), toGid: pick("1213171760535170") });
+      } catch { return j(headers, 502, { error: "asana_failed", message: "Could not read the Leasing master." }); }
+    }
+
     if (action === "execTurnComments") {
       const addrT = String(body.address ?? "").trim();
       if (!addrT) return j(headers, 400, { error: "missing_address" });
