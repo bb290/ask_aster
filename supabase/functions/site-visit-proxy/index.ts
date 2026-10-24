@@ -3637,6 +3637,35 @@ app.post("*", async (c) => {
     // ---------- plPhotoFail: photo review failed -> flag the LU photo subtask ----------
     // Prefixes NEED PHOTO onto the photo subtask under the property's Lease Up task,
     // dues it the same day as move out, and assigns Courtney (Brittany 2026-08-13).
+    // ---------- execPhotoOrder: Execute + Adapt V3 "Order New Photos" (Brittany 2026-10-24) ----------
+    // Subtask under the Lease Up task, due the same day, assigned to the unit's team
+    // lead. An open "Order New Photos" subtask is reused rather than duplicated.
+    if (action === "execPhotoOrder") {
+      const luO = String(body.taskGid ?? "").trim();
+      const addrO = String(body.address ?? "").trim();
+      const leadO = String(body.teamLead ?? "").trim().toLowerCase();
+      if (!luO) return j(headers, 400, { error: "missing_fields" });
+      try {
+        const todayO = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+        const subsO = ((await asana("GET", `/tasks/${luO}/subtasks?limit=100&opt_fields=name,completed,assignee.name,due_on`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean; assignee?: { name?: string } | null; due_on?: string | null }>;
+        const openO = subsO.find((x) => !x.completed && /^order new photos/i.test(x.name));
+        if (openO) return j(headers, 200, { ok: true, existing: true, gid: openO.gid, url: `https://app.asana.com/0/0/${openO.gid}`, dueOn: openO.due_on ?? "", assignedTo: openO.assignee?.name ?? "" });
+        let leadGid = "", leadName = "";
+        if (leadO) {
+          const hitO = (await workspaceUsers()).find((u) => u.name.trim().toLowerCase() === leadO);
+          if (hitO) { leadGid = hitO.gid; leadName = hitO.name; }
+        }
+        const sub = await asana("POST", `/tasks/${luO}/subtasks`, {
+          name: `Order New Photos | ${addrO || "listing"}`.slice(0, 250),
+          due_on: todayO,
+          ...(leadGid ? { assignee: leadGid } : {}),
+          notes: "Requested from the Execute + Adapt bench during the weekly listing review: the current listing photos need a refresh. Schedule the reshoot and update the Buildium listing when the new photos are in.",
+        }) as { gid: string };
+        await asana("POST", `/tasks/${luO}/stories`, { text: `New listing photos ordered (Execute + Adapt bench). Subtask due ${todayO}${leadName ? `, assigned to ${leadName}` : ", no team lead on Listing Settings so it is unassigned"}.` }).catch(() => null);
+        return j(headers, 200, { ok: true, existing: false, gid: sub.gid, url: `https://app.asana.com/0/0/${sub.gid}`, dueOn: todayO, assignedTo: leadName });
+      } catch { return j(headers, 502, { error: "asana_failed", message: "Could not create the photo subtask; add it on the LU task by hand." }); }
+    }
+
     if (action === "plPhotoFail") {
       const address = String(body.address ?? "").trim();
       if (!address && !body.unitId) return j(headers, 400, { error: "missing_address" });
