@@ -5052,6 +5052,8 @@ app.post("*", async (c) => {
       const rent = body.rent == null ? null : Number(body.rent);
       const deposit = body.deposit == null ? null : Number(body.deposit);
       const availableDate = body.availableDate == null ? null : String(body.availableDate).trim();
+      // the listing's Lease details in Buildium (exec V3 Lease Terms, Brittany 2026-10-24)
+      const leaseTerms = body.leaseTerms == null ? null : String(body.leaseTerms).trim().slice(0, 500);
       if (rent != null && (!Number.isFinite(rent) || rent < 100 || rent > 50000)) return j(headers, 400, { error: "bad_rent" });
       if (deposit != null && (!Number.isFinite(deposit) || deposit < 0 || deposit > 100000)) return j(headers, 400, { error: "bad_deposit" });
       if (availableDate != null && !/^\d{4}-\d{2}-\d{2}$/.test(availableDate)) return j(headers, 400, { error: "bad_date" });
@@ -5094,12 +5096,12 @@ app.post("*", async (c) => {
         }
         updated.description = true;
       }
-      if (rent != null || availableDate != null || deposit != null) {
+      if (rent != null || availableDate != null || deposit != null || leaseTerms != null) {
         const rl = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}/listing`, { headers: BH });
         if (rl.status === 404) {
-          warnings.push("No active Buildium listing on this unit; rent, deposit, and availability were not changed.");
+          warnings.push("No active Buildium listing on this unit; rent, deposit, availability, and lease terms were not changed.");
         } else if (!rl.ok) {
-          warnings.push("Could not read the current listing; rent, deposit, and availability were not changed.");
+          warnings.push("Could not read the current listing; rent, deposit, availability, and lease terms were not changed.");
         } else {
           const L = await rl.json();
           const putBody: Record<string, unknown> = {
@@ -5108,7 +5110,7 @@ app.post("*", async (c) => {
             // the recomputed deposit alongside the new rent
             Deposit: deposit != null ? deposit : L.Deposit,
             AvailableDate: availEff != null ? availEff : L.AvailableDate,
-            LeaseTerms: L.LeaseTerms,
+            LeaseTerms: leaseTerms != null ? leaseTerms : L.LeaseTerms,
           };
           if (L?.Contact?.Id != null) putBody.ContactId = L.Contact.Id;
           const r2 = await fetch(`https://api.buildium.com/v1/rentals/units/${encodeURIComponent(uid)}/listing`, {
@@ -5123,6 +5125,7 @@ app.post("*", async (c) => {
           if (rent != null) updated.rent = true;
           if (deposit != null) updated.deposit = true;
           if (availableDate != null) updated.availableDate = true;
+          if (leaseTerms != null) updated.leaseTerms = true;
         }
       }
       return j(headers, 200, { ok: true, updated, warnings, availableDateApplied: availEff ?? null });
