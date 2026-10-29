@@ -1675,7 +1675,9 @@ app.post("*", async (c) => {
         await asana("PUT", `/tasks/${luGidD}`, { custom_fields: { [LD_FD]: null } });
         notesD.push(`List Date cleared${oldList ? ` (was ${oldList})` : ""}; Go Live re-stamps it at relist, so DOM restarts.`);
       } catch { notesD.push("Could not clear the List Date; clear it by hand."); }
-      const parkedD = ["repairs", "reset_dom", "selling"].includes(reasonD);
+      // every delist except offloading parks the LU in Temporarily Off Market
+      // (Brittany 2026-10-27: "Other" was leaving it in Active Listings)
+      const parkedD = ["repairs", "reset_dom", "selling", "other"].includes(reasonD);
       if (parkedD) {
         try {
           const secsD = ((await asana("GET", `/projects/${LEASING_LU_PROJECT}/sections?limit=100&opt_fields=name`)) ?? []) as Array<{ gid: string; name: string }>;
@@ -1917,12 +1919,15 @@ app.post("*", async (c) => {
         if (!masterL) return j(headers, 200, { ok: true, masterGid: "", specialNote: "", moGid: "", toGid: "" });
         const mt = await asana("GET", `/tasks/${masterL}?opt_fields=custom_fields.gid,custom_fields.display_value`) as { custom_fields?: Array<{ gid: string; display_value: string | null }> };
         const note = String((mt.custom_fields ?? []).find((f) => f.gid === "1209696172337706")?.display_value ?? "").trim();
-        const subsL = ((await asana("GET", `/tasks/${masterL}/subtasks?limit=100&opt_fields=name,completed,created_at,projects.gid`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean; created_at?: string; projects?: Array<{ gid: string }> }>;
+        const subsL = ((await asana("GET", `/tasks/${masterL}/subtasks?limit=100&opt_fields=name,completed,completed_at,created_at,projects.gid`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean; completed_at?: string | null; created_at?: string; projects?: Array<{ gid: string }> }>;
         // newest open first, then newest closed, in the Move-Out / Turn Over projects
-        const pick = (proj: string) => subsL.filter((x) => (x.projects ?? []).some((p) => p.gid === proj))
-          .sort((a, b) => (Number(!!a.completed) - Number(!!b.completed)) || String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")))[0]?.gid ?? "";
+        const pickT = (proj: string) => subsL.filter((x) => (x.projects ?? []).some((p) => p.gid === proj))
+          .sort((a, b) => (Number(!!a.completed) - Number(!!b.completed)) || String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")))[0];
+        const toT = pickT("1213171760535170");
+        // Turn Over complete? (Brittany 2026-10-21: tells the lead how to set the rent ready date)
         return j(headers, 200, { ok: true, masterGid: masterL, specialNote: note.slice(0, 600),
-          moGid: pick("1213171760534561"), toGid: pick("1213171760535170") });
+          moGid: pickT("1213171760534561")?.gid ?? "", toGid: toT?.gid ?? "",
+          toDone: toT ? !!toT.completed : null, toDoneOn: toT?.completed_at ? String(toT.completed_at).slice(0, 10) : "" });
       } catch { return j(headers, 502, { error: "asana_failed", message: "Could not read the Leasing master." }); }
     }
 
@@ -3637,6 +3642,33 @@ app.post("*", async (c) => {
     // ---------- plPhotoFail: photo review failed -> flag the LU photo subtask ----------
     // Prefixes NEED PHOTO onto the photo subtask under the property's Lease Up task,
     // dues it the same day as move out, and assigns Courtney (Brittany 2026-08-13).
+    // ---------- execFollowUp: "check the owner's email reply" task (Brittany 2026-10-21) ----------
+    // For a price drop that needs owner approval: subtask under the LU, due the next
+    // day, assigned to the unit's team lead. An open one is reused, not duplicated.
+    if (action === "execFollowUp") {
+      const luF = String(body.taskGid ?? "").trim();
+      const addrF = String(body.address ?? "").trim();
+      const leadF = String(body.teamLead ?? "").trim().toLowerCase();
+      const whatF = String(body.what ?? "").trim().slice(0, 300);
+      if (!luF) return j(headers, 400, { error: "missing_fields" });
+      try {
+        const tomorrowF = new Date(Date.now() - 7 * 3600 * 1000 + 86400000).toISOString().slice(0, 10);
+        const subsF = ((await asana("GET", `/tasks/${luF}/subtasks?limit=100&opt_fields=name,completed,assignee.name,due_on`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean; assignee?: { name?: string } | null; due_on?: string | null }>;
+        const openF = subsF.find((x) => !x.completed && /^check owner email response/i.test(x.name));
+        if (openF) return j(headers, 200, { ok: true, existing: true, gid: openF.gid, url: `https://app.asana.com/0/0/${openF.gid}`, dueOn: openF.due_on ?? "", assignedTo: openF.assignee?.name ?? "" });
+        let gidF = "", nameF = "";
+        if (leadF) { const hitF = (await workspaceUsers()).find((u) => u.name.trim().toLowerCase() === leadF); if (hitF) { gidF = hitF.gid; nameF = hitF.name; } }
+        const sub = await asana("POST", `/tasks/${luF}/subtasks`, {
+          name: `Check owner email response // listing adjustment // ${addrF || "listing"}`.slice(0, 250),
+          due_on: tomorrowF,
+          ...(gidF ? { assignee: gidF } : {}),
+          notes: "Owner approval is needed before this listing adjustment goes live (for example a price drop below the minimum rent). Check the owner's email reply; once approved, record it on the Execute + Adapt bench and submit the change." + (whatF ? `\n\nProposed change: ${whatF}` : ""),
+        }) as { gid: string };
+        await asana("POST", `/tasks/${luF}/stories`, { text: `Waiting on the owner's approval for a listing adjustment. Follow up task due ${tomorrowF}${nameF ? `, assigned to ${nameF}` : ""} (Execute + Adapt bench).` }).catch(() => null);
+        return j(headers, 200, { ok: true, existing: false, gid: sub.gid, url: `https://app.asana.com/0/0/${sub.gid}`, dueOn: tomorrowF, assignedTo: nameF });
+      } catch { return j(headers, 502, { error: "asana_failed", message: "Could not create the follow up task; add it on the LU by hand." }); }
+    }
+
     // ---------- execPhotoOrder: Execute + Adapt V3 "Order New Photos" (Brittany 2026-10-24) ----------
     // Subtask under the Lease Up task, due the same day, assigned to the unit's team
     // lead. An open "Order New Photos" subtask is reused rather than duplicated.
@@ -3789,6 +3821,30 @@ app.post("*", async (c) => {
 
     // ---------- moVideoUrl: signed upload for the move-out walkthrough video ----------
     // The widget PUTs the raw file straight to storage (videos are too big for JSON).
+    // ---------- moReportUrl: signed upload for a Move Out report PDF added by hand ----------
+    // (Courtney's dispatch feedback 2026-10-01: the inspection had not synced from
+    // Buildium and there was no way to attach it). Same public inspections bucket
+    // as the synced copies; PDFs only.
+    if (action === "moReportUrl") {
+      const supaUrlR = Deno.env.get("SUPABASE_URL") ?? "";
+      const supaKeyR = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+      if (!supaUrlR || !supaKeyR) return j(headers, 500, { error: "storage_not_configured" });
+      let fnR = String(body.filename ?? "move-out-report.pdf").replace(/[^\w.\-]/g, "_").slice(0, 80);
+      if (!/\.pdf$/i.test(fnR)) fnR += ".pdf";
+      const keyR = `mo-reports/${crypto.randomUUID()}/${fnR}`;
+      const shR = { "Authorization": `Bearer ${supaKeyR}`, "apikey": supaKeyR };
+      await fetch(`${supaUrlR}/storage/v1/bucket`, {
+        method: "POST", headers: { ...shR, "Content-Type": "application/json" },
+        body: JSON.stringify({ id: "inspections", name: "inspections", public: true }),
+      }).catch(() => null);
+      const rR = await fetch(`${supaUrlR}/storage/v1/object/upload/sign/inspections/${keyR}`, {
+        method: "POST", headers: { ...shR, "Content-Type": "application/json" }, body: "{}",
+      });
+      const jR = await rR.json().catch(() => ({}));
+      if (!rR.ok || !jR.url) return j(headers, 502, { error: "sign_failed", message: "Could not prepare the upload. Try again." });
+      return j(headers, 200, { ok: true, uploadUrl: `${supaUrlR}/storage/v1${jR.url}`, publicUrl: `${supaUrlR}/storage/v1/object/public/inspections/${keyR}` });
+    }
+
     if (action === "moVideoUrl") {
       const supaUrl = Deno.env.get("SUPABASE_URL") ?? "";
       const supaKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
@@ -4297,7 +4353,16 @@ app.post("*", async (c) => {
         if (!dateishF(nmF)) return false;
         return streetNoF ? nmF.startsWith(streetNoF) : /^\d/.test(nmF);
       });
-      const pickF = appNamed[0];
+      // kind "premove" (Plan bench Pull From Buildium, Brittany 2026-10-21): the
+      // inspector app names pre-move-out and move-out reports alike, so the
+      // pre-move one is the newest report DATED BEFORE the scheduled move out
+      const premoveF = String(body.kind ?? "") === "premove";
+      const beforeF = String(body.before ?? "").slice(0, 10);
+      const titleDate = (n: string) => (n.match(/(\d{4}-\d{2}-\d{2})/) ?? [])[1] ?? "";
+      const poolF = premoveF && /^\d{4}-\d{2}-\d{2}$/.test(beforeF)
+        ? appNamed.filter((f) => { const td = titleDate(f.name); return !!td && td < beforeF; })
+        : appNamed;
+      const pickF = poolF[0];
       if (!pickF) return j(headers, 200, { ok: false, error: "not_found", fresh: freshF.slice(0, 8).map((f) => f.name + " (up " + f.uploaded.slice(0, 10) + ")") });
       const dlF = await fetch(`https://api.buildium.com/v1/files/${encodeURIComponent(String(pickF.id))}/downloadrequest`, { method: "POST", headers: BHF });
       const djF = await dlF.json().catch(() => ({} as Record<string, unknown>));
@@ -4761,8 +4826,33 @@ app.post("*", async (c) => {
         }
       }
 
+      // the Move Out report rides on the Turn Over task as a real attachment, not only
+      // as a link (Courtney's dispatch feedback 2026-10-07); skipped when a file of
+      // the same name is already there
+      let moAttached = false;
+      if (/^https:\/\//.test(moFileUrl)) {
+        try {
+          const nmA = ((moFileName || "Move Out Report").replace(/[\\/:*?"<>|]+/g, " ").trim().replace(/\.pdf$/i, "") + ".pdf").slice(0, 150);
+          const exA = ((await asana("GET", `/tasks/${tuGid}/attachments?opt_fields=name`)) ?? []) as Array<{ gid: string; name: string }>;
+          if (!exA.some((a) => a.name === nmA)) {
+            const fr = await fetch(moFileUrl);
+            if (fr.ok) {
+              const blob = await fr.blob();
+              if (blob.size > 0 && blob.size < 95 * 1024 * 1024) {
+                const formA = new FormData();
+                formA.append("parent", tuGid);
+                formA.append("file", new Blob([await blob.arrayBuffer()], { type: "application/pdf" }), nmA);
+                const ra = await fetch(`${ASANA}/attachments`, { method: "POST", headers: { "Authorization": `Bearer ${ASANA_PAT}` }, body: formA });
+                moAttached = ra.ok;
+              }
+            }
+          } else moAttached = true;
+        } catch { /* fail-soft: the link is still in the report comment */ }
+      }
+
       return j(headers, 200, {
         ok: true,
+        moAttached,
         luNoted,
         goLiveSet, goLiveLead,
         doNotList: doNotList9,
