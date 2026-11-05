@@ -4541,6 +4541,39 @@ app.post("*", async (c) => {
       }
     }
 
+    // ---------- moReportFollowUp: Move Out report missing at Submit (Brittany 2026-11-05) ----------
+    // The owner notification says "Report failed to upload -- Internal Follow Up task
+    // created", so this files that task: a subtask on the Turn Over task, assigned to
+    // Bryan, due today. An open same-named subtask is reused (resubmits never double it).
+    if (action === "moReportFollowUp") {
+      const tuF = String(body.taskGid ?? "").replace(/\D/g, "");
+      const addressF = String(body.address ?? "").trim().slice(0, 140);
+      if (!tuF || !addressF) return j(headers, 400, { error: "missing_fields" });
+      const BRYAN = { gid: "1211066901816385", name: "Bryan Torres" };
+      // assigneeGid lets a test land on someone else; real runs always go to Bryan
+      const whoF = /^\d{10,20}$/.test(String(body.assigneeGid ?? "")) ? String(body.assigneeGid) : BRYAN.gid;
+      const nameF = `Send Move Out to owner, upload fail | ${addressF}`;
+      const todayF = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+      const subsF = ((await asana("GET", `/tasks/${tuF}/subtasks?limit=100&opt_fields=name,completed,assignee.name`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean; assignee?: { name?: string } | null }>;
+      const hitF = subsF.find((t) => !t.completed && t.name.trim().toLowerCase() === nameF.toLowerCase());
+      if (hitF) return j(headers, 200, { ok: true, gid: hitF.gid, reused: true, assignee: hitF.assignee?.name ?? "" });
+      const ownerF = String(body.ownerEmail ?? "").trim().slice(0, 200);
+      const emailF = String(body.emailStatus ?? "").trim().slice(0, 300);
+      const reporterF = String(body.reporter ?? "").trim().slice(0, 80);
+      const notesF = [
+        `The Move Out report had not synced or been uploaded when ${reporterF || "the inspector"} submitted the Move Out Update for ${addressF}, so the owner notification went out without it ("Report failed to upload -- Internal Follow Up task created").`,
+        "",
+        `Owner: ${ownerF || "no owner email on file"}`,
+        ...(emailF ? [`Owner email: ${emailF}`] : []),
+        "",
+        "To do: get the Move Out inspection report (Buildium files or the inspector app), send it to the owner (cc listings@sagareus.com), and attach it to this Turn Over task.",
+        "",
+        "Created by the Move Out Update widget. Done by Claude on behalf of the submitting team member.",
+      ].join("\n");
+      const tF = await asana("POST", `/tasks/${tuF}/subtasks`, { name: nameF, notes: notesF, assignee: whoF, due_on: todayF });
+      return j(headers, 200, { ok: true, gid: tF.gid, reused: false, assignee: whoF === BRYAN.gid ? BRYAN.name : "" });
+    }
+
     // ---------- moDelay: the Move Out Update "Delayed?" branch (Brittany 2026-11-05) ----------
     // taskGid is the picked Turn Over task; the Move-Out task is its sibling under
     // the Leasing parent. phase "apply": Move-Out due -> the modified move out date
