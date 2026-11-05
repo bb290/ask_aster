@@ -6238,6 +6238,17 @@ app.post("*", async (c) => {
       if (!text || !field) return j(headers, 400, { error: "missing_fields", message: "Type the correction first." });
       const row = (await lkList()).find((r) => r.gid === String(body.gid ?? ""));
       if (!row) return j(headers, 404, { error: "not_found", message: "That unit isn't in the list anymore. Search again." });
+      // the Keybox Code pencil writes straight to the open Leasing parent's [Onsite]
+      // Key Box, the same field the Move Out Update widget saves (Brittany
+      // 2026-11-05). No open Leasing parent = no home for the code, so it falls
+      // through to the normal correction task.
+      if (field === "Keybox Code") {
+        const master = row.uid ? (await moveOutIndex()).masterByUid[row.uid] : "";
+        if (master) {
+          await asana("PUT", `/tasks/${master}`, { custom_fields: { [LK_KEYBOX_F]: text.slice(0, 40) } });
+          return j(headers, 200, { ok: true, keyboxSaved: true });
+        }
+      }
       const cfQ = "custom_fields.gid,custom_fields.display_value";
       const ut = await asana("GET", `/tasks/${row.gid}?opt_fields=parent.gid,${cfQ}`);
       const val = (cf: LkCf, gid: string) => String(cf.find((x) => x.gid === gid)?.display_value ?? "").trim();
