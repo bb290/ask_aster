@@ -4516,6 +4516,109 @@ app.post("*", async (c) => {
       }
     }
 
+    // ---------- moDelay: the Move Out Update "Delayed?" branch (Brittany 2026-11-05) ----------
+    // taskGid is the picked Turn Over task; the Move-Out task is its sibling under
+    // the Leasing parent. phase "apply": Move-Out due -> the modified move out date
+    // (fallback today + 2), Turn Over due -> the day after, and one playbook subtask
+    // per reason under Move-Out (an open same-named subtask is reused, so a resubmit
+    // never doubles them). Returns the owner email for the send. phase "log": the
+    // status comment (built by the widget, owner email result included) on both
+    // tasks. No vendor dispatch, nothing completed.
+    if (action === "moDelay") {
+      const tuD = String(body.taskGid ?? "").replace(/\D/g, "");
+      if (!tuD) return j(headers, 400, { error: "missing_fields" });
+      const pickedD = await asana("GET", `/tasks/${tuD}?opt_fields=parent.gid,assignee.gid,assignee.name`);
+      const parentD = pickedD?.parent?.gid ?? "";
+      const subsD = (parentD ? (await asana("GET", `/tasks/${parentD}/subtasks?limit=100&opt_fields=name`)) ?? [] : []) as Array<{ gid: string; name: string }>;
+      const moD = subsD.find((t) => /^move.?out\s*\|/i.test(t.name))?.gid ?? "";
+      if (body.phase === "log") {
+        const textD = String(body.text ?? "").slice(0, 20000);
+        if (!textD.trim()) return j(headers, 400, { error: "missing_fields" });
+        let postedD = 0;
+        for (const g of [moD, tuD]) {
+          if (!g) continue;
+          try { await postStory(g, textD); postedD++; } catch { /* the other task still gets it */ }
+        }
+        return j(headers, 200, { ok: true, posted: postedD, moGid: moD });
+      }
+      if (!moD) return j(headers, 200, { ok: false, error: "no_move_out", message: "No Move-Out task found under this unit's Leasing task." });
+      const DELAY_SUBTASKS: Record<string, Array<{ name: string; role: "toc" | "lead" | "maint"; tomorrow?: boolean; link: string; notes: string }>> = {
+        keys: [
+          { name: "Dispatch Locksmith | {address}", role: "toc", link: "https://sagareus.getoutline.com/doc/move-out-tenant-forgot-to-leave-keys-how-to-get-access-and-charge-the-tenant-BoCM0tYLif",
+            notes: "Resident confirmed fully vacated but did not leave the keys. Dispatch a locksmith to open and rekey the unit.\nDo not proceed until vacancy is confirmed with the resident. If they cannot be reached, treat the unit as occupied (Tenant Hasn't Left playbook)." },
+          { name: "Locksmith Charge | Keys Not Returned", role: "toc", link: "https://sagareus.getoutline.com/doc/move-out-tenant-forgot-to-leave-keys-how-to-get-access-and-charge-the-tenant-BoCM0tYLif",
+            notes: "Tenant confirmed vacated but did not leave keys. Locksmith required for access. Cost to be deducted from the security deposit.\nAttach the locksmith invoice or cost confirmation to this subtask. Update 1Password with the new lockbox code after the inspection." },
+        ],
+        time: [
+          { name: "Modified Move Out Date", role: "lead", link: "https://sagareus.getoutline.com/doc/move-out-tenant-needs-more-time-or-wants-to-change-their-move-out-date-YRL4juOKMb",
+            notes: "Resident needs more time to move out. Confirm the new move out date with the resident and attach the message thread.\nThe Move Out Update already moved the Move-Out task to {due} and the Turn Over task to {toDue}; update the Parent, Lease Up, and Security Deposit tasks to match.\nKeep this subtask open until the move out inspection is complete (residents often revise the date again). After move out, add prorated rent to the lease ledger: Account RENT, Memo \"Prorated Rent [X days]\"." },
+        ],
+        unsafe: [
+          { name: "Unit Trash Out Needed", role: "maint", link: "https://sagareus.getoutline.com/doc/move-out-what-to-do-when-a-unit-is-trashed-unsafe-or-unsanitary-QgCvmvtanr",
+            notes: "The unit is unsafe or unsanitary; the move out inspection stopped at the entrance. Schedule a third-party trash out vendor (priority) and tag the Operations Manager.\nPhotos are on the Move-Out task. When the trash out is done, tag the inspector so the move out inspection can be completed." },
+        ],
+        notleft: [
+          { name: "Resident Status Follow Up", role: "lead", tomorrow: true, link: "https://sagareus.getoutline.com/doc/move-out-tenant-hasnt-left-45h2awSNex",
+            notes: "The resident has not fully moved out and their status is unclear. Do not enter without 24-hour written notice.\nCall and text the resident: do they need more time, or are they no longer moving out? More time = Modified Move Out Date playbook. No longer moving out = document here and notify the Team Lead." },
+        ],
+        squat: [
+          { name: "Possible Trespass // {address}", role: "toc", link: "https://sagareus.getoutline.com/doc/move-out-property-compromised-suspected-squatter-break-in-XtLFCY5UOJ",
+            notes: "Suspected squatter or break in. Do NOT enter, for personal safety.\nCall police to report the trespass (they enter to confirm the unit is clear), then call a locksmith to replace the locks. Document photos and comments on suspicious activity here." },
+        ],
+      };
+      const reasonsD = (Array.isArray(body.reasons) ? body.reasons : []).map(String).filter((r) => DELAY_SUBTASKS[r]);
+      if (!reasonsD.length) return j(headers, 400, { error: "missing_fields", message: "Pick what caused the delay." });
+      const addressD = String(body.address ?? "").trim().slice(0, 140);
+      const noteD = String(body.note ?? "").trim().slice(0, 4000);
+      const reporterD = String(body.reporter ?? "").trim().slice(0, 80);
+      const todayD = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
+      const plusD = (d: string, n: number) => new Date(Date.parse(d + "T12:00:00Z") + n * 86400000).toISOString().slice(0, 10);
+      const ndD = String(body.newDate ?? "").trim();
+      const dueD = /^\d{4}-\d{2}-\d{2}$/.test(ndD) && ndD >= todayD ? ndD : plusD(todayD, 2);
+      const toDueD = plusD(dueD, 1);
+      await asana("PUT", `/tasks/${moD}`, { due_on: dueD });
+      const toMoved = await asana("PUT", `/tasks/${tuD}`, { due_on: toDueD }).then(() => true).catch(() => false);
+      // people: Turn Over Coordinator = the Turn Over task's assignee; Leasing Team
+      // Lead = the Listing Settings Team Lead (as moManaged reads it), falling back
+      // to the coordinator; trash out goes to the lead maintenance coordinator
+      const tocD = pickedD?.assignee?.gid ? { gid: String(pickedD.assignee.gid), name: String(pickedD.assignee.name ?? "") } : null;
+      let leadD: { gid: string; name: string } | null = null;
+      const uidD = String(body.unitId ?? "").replace(/\D/g, "");
+      if (uidD && reasonsD.some((r) => DELAY_SUBTASKS[r].some((s) => s.role === "lead"))) {
+        try {
+          const shL = ((await asana("GET", `/workspaces/${WORKSPACE}/tasks/search?projects.any=1217446710785429&custom_fields.1213183515622826.value=${uidD}&opt_fields=name`)) ?? []) as Array<{ gid: string }>;
+          if (shL[0]?.gid) {
+            const lsL = await asana("GET", `/tasks/${shL[0].gid}?opt_fields=custom_fields.gid,custom_fields.people_value.gid,custom_fields.people_value.name`);
+            const pL = ((lsL.custom_fields ?? []) as Array<{ gid: string; people_value?: Array<{ gid: string; name: string }> }>).find((f) => f.gid === "1217446711292696")?.people_value?.[0];
+            if (pL?.gid) leadD = { gid: pL.gid, name: pL.name };
+          }
+        } catch { /* falls back to the coordinator */ }
+      }
+      let ownerEmailD = "", ownerNameD = "";
+      const luD = subsD.find((t) => /^(lu|tp|pre.?lease)\s*\|/i.test(t.name));
+      if (luD) {
+        try {
+          const luT = await asana("GET", `/tasks/${luD.gid}?opt_fields=custom_fields.gid,custom_fields.name,custom_fields.display_value`);
+          ({ email: ownerEmailD, name: ownerNameD } = ownerFromCf((luT.custom_fields ?? []) as Array<{ name?: string; display_value?: string | null }>));
+        } catch { /* owner email stays blank -> the widget drafts instead of sending */ }
+      }
+      const existD = ((await asana("GET", `/tasks/${moD}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
+      const madeD: string[] = [], reusedD: string[] = [];
+      for (const r of reasonsD) {
+        for (const s of DELAY_SUBTASKS[r]) {
+          const nameS = s.name.replace("{address}", addressD);
+          if (existD.some((t) => !t.completed && t.name.trim().toLowerCase() === nameS.toLowerCase())) { reusedD.push(nameS); continue; }
+          const who = s.role === "maint" ? DEFAULT_MAINT : s.role === "lead" ? (leadD ?? tocD) : tocD;
+          const notesS = s.notes.replace("{due}", dueD).replace("{toDue}", toDueD) +
+            (noteD ? `\n\nFrom the Move Out Update${reporterD ? " (" + reporterD + ")" : ""}:\n${noteD}` : "") +
+            `\n\nPlaybook: ${s.link}\n\nCreated by the Move Out Update widget (Delayed). Done by Claude on behalf of the submitting team member.`;
+          await asana("POST", `/tasks/${moD}/subtasks`, { name: nameS, notes: notesS, due_on: s.tomorrow ? plusD(todayD, 1) : todayD, ...(who?.gid ? { assignee: who.gid } : {}) });
+          madeD.push(nameS + (who?.name ? " (" + who.name + ")" : ""));
+        }
+      }
+      return j(headers, 200, { ok: true, moGid: moD, due: dueD, toDue: toDueD, toMoved, ownerEmail: ownerEmailD.slice(0, 200), ownerName: ownerNameD, made: madeD, reused: reusedD });
+    }
+
     // ---------- moSubmit: Turn Over Plan (Propose) submission ----------
     // Posts the report + photos + PDF on the picked TURN OVER task (Brittany
     // 2026-08-14: not the Move-Out conduct subtask, which stays incomplete),
