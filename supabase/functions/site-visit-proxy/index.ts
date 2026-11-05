@@ -4198,6 +4198,14 @@ app.post("*", async (c) => {
         };
         const subj = /^[\x20-\x7e]*$/.test(subject) ? subject : `=?UTF-8?B?${b64mime(subject)}?=`;
         const bnd = "sagab" + crypto.randomUUID().replace(/-/g, "").slice(0, 16);
+        // optional jpeg attachments (Move Out Delayed photos, Brittany 2026-11-05):
+        // the text/html alternative nests inside multipart/mixed, max 10, ~20 MB total
+        const attsIn = (Array.isArray(body.attachments) ? body.attachments : []).slice(0, 10) as Array<{ filename?: string; dataB64?: string }>;
+        const atts = attsIn
+          .map((x, i) => ({ name: String(x.filename ?? `photo-${i + 1}.jpg`).replace(/[^\w.\-]/g, "_").slice(0, 100), data: String(x.dataB64 ?? "").replace(/[^A-Za-z0-9+/=]/g, "") }))
+          .filter((x) => x.data);
+        if (atts.reduce((n, x) => n + x.data.length, 0) > 20_000_000) return j(headers, 400, { error: "attachments_too_large" });
+        const mixB = "sagam" + crypto.randomUUID().replace(/-/g, "").slice(0, 16);
         const mime = [
           // From: a send-as alias of the impersonated user (the weekly reports go
           // out as listings@; every agent has the alias configured). Gmail silently
@@ -4208,6 +4216,7 @@ app.post("*", async (c) => {
           ...(bccAddr ? [`Bcc: ${bccAddr}`] : []),
           `Subject: ${subj}`,
           "MIME-Version: 1.0",
+          ...(atts.length ? [`Content-Type: multipart/mixed; boundary="${mixB}"`, "", `--${mixB}`] : []),
           `Content-Type: multipart/alternative; boundary="${bnd}"`,
           "",
           `--${bnd}`,
@@ -4221,19 +4230,35 @@ app.post("*", async (c) => {
           "",
           b64mime(htmlBody || `<pre>${textBody.replace(/&/g, "&amp;").replace(/</g, "&lt;")}</pre>`),
           `--${bnd}--`,
+          ...atts.flatMap((x) => [
+            `--${mixB}`,
+            `Content-Type: image/jpeg; name="${x.name}"`,
+            `Content-Disposition: attachment; filename="${x.name}"`,
+            "Content-Transfer-Encoding: base64",
+            "",
+            x.data.replace(/.{76}/g, "$&\r\n"),
+          ]),
+          ...(atts.length ? [`--${mixB}--`] : []),
           "",
         ].join("\r\n");
         // send:true = send immediately from the inspector (Brittany 2026-09-19: the
         // tool preview IS the human review; staff forget a second button). Same
         // scope covers both. Otherwise a draft is created as before.
         const doSend = body.send === true;
-        const rawMsg = b64u(new TextEncoder().encode(mime));
-        const gRes = await fetch(doSend
-          ? "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
-          : "https://gmail.googleapis.com/gmail/v1/users/me/drafts", {
-          method: "POST", headers: { "Authorization": `Bearer ${tok.access_token}`, "Content-Type": "application/json" },
-          body: JSON.stringify(doSend ? { raw: rawMsg } : { message: { raw: rawMsg } }),
-        });
+        const rawMsg = atts.length ? "" : b64u(new TextEncoder().encode(mime));
+        // with attachments the message goes up as raw RFC 822 on the upload endpoint
+        // (the JSON raw field is size-capped); text-only mail keeps the JSON path
+        const gRes = atts.length
+          ? await fetch(`https://gmail.googleapis.com/upload/gmail/v1/users/me/${doSend ? "messages/send" : "drafts"}?uploadType=media`, {
+            method: "POST", headers: { "Authorization": `Bearer ${tok.access_token}`, "Content-Type": "message/rfc822" },
+            body: mime,
+          })
+          : await fetch(doSend
+            ? "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+            : "https://gmail.googleapis.com/gmail/v1/users/me/drafts", {
+            method: "POST", headers: { "Authorization": `Bearer ${tok.access_token}`, "Content-Type": "application/json" },
+            body: JSON.stringify(doSend ? { raw: rawMsg } : { message: { raw: rawMsg } }),
+          });
         const dj = await gRes.json().catch(() => ({}));
         if (!gRes.ok) return j(headers, 200, { ok: false, error: doSend ? "gmail_send_failed" : "gmail_draft_failed", detail: String(dj?.error?.message ?? gRes.status).slice(0, 200) });
         return j(headers, 200, {
