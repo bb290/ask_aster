@@ -102,6 +102,9 @@ const TURNOVER_PROJECT = "1213171760535170"; // Leasing | Turn Over
 // Lead maintenance coordinator; default assignee for occupied-unit and manual-address
 // tickets until per-property routing exists (Brittany, 2026-07-17).
 const DEFAULT_MAINT = { gid: "1201894870325840", name: "Joylyn De Castro" };
+// Outline Staff Directory roles (Brittany 2026-11-06)
+const TURNOVER_LEAD = { gid: "1206951145836779", name: "Portia Christopher" };
+const OPS_MANAGER = { gid: "706990761463395", name: "Vincent Chen" };
 const ASANA = "https://app.asana.com/api/1.0";
 
 const ALLOWED_ORIGINS = (Deno.env.get("ALLOWED_ORIGINS") ??
@@ -4600,19 +4603,21 @@ app.post("*", async (c) => {
         return j(headers, 200, { ok: true, posted: postedD, moGid: moD });
       }
       if (!moD) return j(headers, 200, { ok: false, error: "no_move_out", message: "No Move-Out task found under this unit's Leasing task." });
-      const DELAY_SUBTASKS: Record<string, Array<{ name: string; role: "toc" | "lead" | "maint"; tomorrow?: boolean; link: string; notes: string }>> = {
+      const DELAY_SUBTASKS: Record<string, Array<{ name: string; role: "toc" | "lead" | "maint" | "tol" | "ops"; tomorrow?: boolean; link: string; notes: string }>> = {
         keys: [
           { name: "Dispatch Locksmith | {address}", role: "toc", link: "https://sagareus.getoutline.com/doc/move-out-tenant-forgot-to-leave-keys-how-to-get-access-and-charge-the-tenant-BoCM0tYLif",
             notes: "Resident confirmed fully vacated but did not leave the keys. Dispatch a locksmith to open and rekey the unit.\nDo not proceed until vacancy is confirmed with the resident. If they cannot be reached, treat the unit as occupied (Tenant Hasn't Left playbook)." },
           { name: "Locksmith Charge | Keys Not Returned", role: "toc", link: "https://sagareus.getoutline.com/doc/move-out-tenant-forgot-to-leave-keys-how-to-get-access-and-charge-the-tenant-BoCM0tYLif",
             notes: "Tenant confirmed vacated but did not leave keys. Locksmith required for access. Cost to be deducted from the security deposit.\nAttach the locksmith invoice or cost confirmation to this subtask. Update 1Password with the new lockbox code after the inspection." },
         ],
+        // extension requests escalate to the Operations Manager (Brittany 2026-11-06);
+        // the prorated rent subtask is gone: Ops decides extension (prorated rent) or eviction
         time: [
-          { name: "Modified Move Out Date", role: "lead", link: "https://sagareus.getoutline.com/doc/move-out-tenant-needs-more-time-or-wants-to-change-their-move-out-date-YRL4juOKMb",
-            notes: "Resident needs more time to move out. Confirm the new move out date with the resident and attach the message thread.\nThe Move Out Update already moved the Move-Out task to {due} and the Turn Over task to {toDue}; update the Parent, Lease Up, and Security Deposit tasks to match.\nKeep this subtask open until the move out inspection is complete (residents often revise the date again). After move out, add prorated rent to the lease ledger: Account RENT, Memo \"Prorated Rent [X days]\"." },
+          { name: "Move Out Extension Request | {address}", role: "ops", link: "https://sagareus.getoutline.com/doc/move-out-tenant-needs-more-time-or-wants-to-change-their-move-out-date-YRL4juOKMb",
+            notes: "The resident has requested to extend their move out date to {due}. Decide the next step today:\n1 - Approve the extension: the resident will be charged prorated rent through their actual move out date.\n2 - Proceed with eviction.\nDocument the decision here and tag the Leasing Team Lead. The Move Out Update already moved the Move-Out task to {due} and the Turn Over task to {toDue}." },
         ],
         unsafe: [
-          { name: "Unit Trash Out Needed", role: "maint", link: "https://sagareus.getoutline.com/doc/move-out-what-to-do-when-a-unit-is-trashed-unsafe-or-unsanitary-QgCvmvtanr",
+          { name: "Unit Trash Out Needed", role: "tol", link: "https://sagareus.getoutline.com/doc/move-out-what-to-do-when-a-unit-is-trashed-unsafe-or-unsanitary-QgCvmvtanr",
             notes: "The unit is unsafe or unsanitary; the move out inspection stopped at the entrance. Schedule a third-party trash out vendor (priority) and tag the Operations Manager.\nPhotos are on the Move-Out task. When the trash out is done, tag the inspector so the move out inspection can be completed." },
         ],
         notleft: [
@@ -4638,7 +4643,8 @@ app.post("*", async (c) => {
       const toMoved = await asana("PUT", `/tasks/${tuD}`, { due_on: toDueD }).then(() => true).catch(() => false);
       // people: Turn Over Coordinator = the Turn Over task's assignee; Leasing Team
       // Lead = the Listing Settings Team Lead (as moManaged reads it), falling back
-      // to the coordinator; trash out goes to the lead maintenance coordinator
+      // to the coordinator; trash out goes to the Turn Over Lead and extension requests to
+      // the Operations Manager (Outline Staff Directory, Brittany 2026-11-06)
       const tocD = pickedD?.assignee?.gid ? { gid: String(pickedD.assignee.gid), name: String(pickedD.assignee.name ?? "") } : null;
       let leadD: { gid: string; name: string } | null = null;
       const uidD = String(body.unitId ?? "").replace(/\D/g, "");
@@ -4662,12 +4668,14 @@ app.post("*", async (c) => {
       }
       const existD = ((await asana("GET", `/tasks/${moD}/subtasks?limit=100&opt_fields=name,completed`)) ?? []) as Array<{ gid: string; name: string; completed?: boolean }>;
       const madeD: string[] = [], reusedD: string[] = [];
+      const testWhoD = /^\d{10,20}$/.test(String(body.assigneeGid ?? "")) ? String(body.assigneeGid) : "";
       for (const r of reasonsD) {
         for (const s of DELAY_SUBTASKS[r]) {
           const nameS = s.name.replace("{address}", addressD);
           if (existD.some((t) => !t.completed && t.name.trim().toLowerCase() === nameS.toLowerCase())) { reusedD.push(nameS); continue; }
-          const who = s.role === "maint" ? DEFAULT_MAINT : s.role === "lead" ? (leadD ?? tocD) : tocD;
-          const notesS = s.notes.replace("{due}", dueD).replace("{toDue}", toDueD) +
+          // assigneeGid lets a test land on someone else (as in moReportFollowUp)
+          const who = testWhoD ? { gid: testWhoD, name: "test assignee" } : s.role === "maint" ? DEFAULT_MAINT : s.role === "tol" ? TURNOVER_LEAD : s.role === "ops" ? OPS_MANAGER : s.role === "lead" ? (leadD ?? tocD) : tocD;
+          const notesS = s.notes.replaceAll("{due}", dueD).replaceAll("{toDue}", toDueD) +
             (noteD ? `\n\nFrom the Move Out Update${reporterD ? " (" + reporterD + ")" : ""}:\n${noteD}` : "") +
             `\n\nPlaybook: ${s.link}\n\nCreated by the Move Out Update widget (Delayed). Done by Claude on behalf of the submitting team member.`;
           await asana("POST", `/tasks/${moD}/subtasks`, { name: nameS, notes: notesS, due_on: s.tomorrow ? plusD(todayD, 1) : todayD, ...(who?.gid ? { assignee: who.gid } : {}) });
