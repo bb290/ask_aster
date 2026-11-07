@@ -1593,7 +1593,7 @@ app.post("/onboard-proxy", async (c) => {
       if (action === "lsView") {
         const t = await asana("GET", `/tasks/${hit.gid}?opt_fields=name,created_at,modified_at,custom_fields.gid,custom_fields.name,custom_fields.display_value,custom_fields.resource_subtype`);
         const scrub = (s: string) => s.replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "").trim();
-        const fields: Array<{ name: string; value: string }> = [];
+        const fields: Array<{ name: string; value: string; gid?: string }> = [];
         const team: Array<{ role: string; name: string; [k: string]: string }> = [];
         let approval = "";
         for (const cf of (t.custom_fields ?? []) as Array<{ gid: string; name: string; display_value: string | null; resource_subtype?: string }>) {
@@ -1606,7 +1606,7 @@ app.post("/onboard-proxy", async (c) => {
           if (/^plan status$/i.test(nm)) continue;                      // returned separately, drives lock state
           if (String(cf.gid) === LS_TURN) continue;                     // rendered as its own approve/defer section
           if (cf.resource_subtype === "people") { team.push({ role: nm, name: scrub(val).slice(0, 120) }); continue; }
-          fields.push({ name: nm, value: scrub(val).slice(0, 6000) });
+          fields.push({ name: nm, value: scrub(val).slice(0, 6000), gid: String(cf.gid) });   // gid: owner page v2 matches by id (2026-11-06)
         }
         // key dates + leasing metrics pull LIVE from the leasing projects, never from Listing Settings
         const dates: Record<string, string> = {};
@@ -1875,8 +1875,12 @@ app.post("/onboard-proxy", async (c) => {
         // kind=recent: newest ANNUAL inspection only (Brittany 2026-08-21).
         // Default: MOVE-IN inspection only, never the newest of any kind (Brittany 2026-08-21)
         const wantRecent = String(body.kind ?? "") === "recent";
-        const mi3 = wantRecent ? cand3.filter((f) => /annual/i.test(f.name)) : cand3.filter((f) => /move.?in/i.test(f.name));
+        // kind=premoveout (owner page v2, 2026-11-06): newest pre-move-out inspection from Buildium
+        const wantPmo = String(body.kind ?? "") === "premoveout";
+        const mi3 = wantPmo ? cand3.filter((f) => /pre.?move.?out/i.test(f.name))
+          : wantRecent ? cand3.filter((f) => /annual/i.test(f.name)) : cand3.filter((f) => /move.?in/i.test(f.name));
         const pick = mi3[0] ?? null;
+        if (!pick && wantPmo) return j(headers, 404, { error: "no_inspection", message: "No pre-move-out inspection report is on file for this unit yet." });
         if (!pick) return j(headers, 404, { error: "no_inspection", message: wantRecent ? "No annual inspection report is on file for this unit yet." : "No move in inspection report is on file for this unit yet." });
         const dl = await fetch(`https://api.buildium.com/v1/files/${encodeURIComponent(String(pick.id))}/downloadrequest`, { method: "POST", headers: BH3 });
         if (!dl.ok) return j(headers, 502, { error: "buildium_failed" });
@@ -1937,6 +1941,15 @@ app.post("/onboard-proxy", async (c) => {
                   // keeps the generic text so a failed lookup never claims $0
                   .find((d: unknown) => typeof d === "number" && d >= 0);
                 out.depositHeld = dep ?? null;
+                // scheduled move out from Buildium (owner page v2, Brittany 2026-11-06: move out
+                // comes from Buildium): the newest lease's latest MoveOutData date, null when none
+                try {
+                  const newest = (Array.isArray(leases) ? leases : [])
+                    .filter((l: { UnitId?: number }) => String(l?.UnitId ?? "") === uid)
+                    .sort((a: { LeaseFromDate?: string }, b: { LeaseFromDate?: string }) => String(b?.LeaseFromDate ?? "").localeCompare(String(a?.LeaseFromDate ?? "")))[0] as { MoveOutData?: Array<{ MoveOutDate?: string }> } | undefined;
+                  const mo = (newest?.MoveOutData ?? []).map((m) => String(m?.MoveOutDate ?? "").slice(0, 10)).filter((d) => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort().pop();
+                  out.moveOut = mo ?? null;
+                } catch { out.moveOut = null; }
               }
             } catch { /* best-effort */ }
           }

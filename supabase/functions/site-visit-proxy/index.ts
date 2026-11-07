@@ -1997,6 +1997,7 @@ app.post("*", async (c) => {
       const cfP = (tP.custom_fields ?? []) as Array<{ gid: string; display_value: string | null; people_value?: Array<{ gid: string; name?: string }> }>;
       const gv = (g0: string) => String(cfP.find((f) => String(f.gid) === g0)?.display_value ?? "").trim();
       const gn = (g0: string) => { const n = Number(String(gv(g0)).replace(/[^0-9.]/g, "")); return Number.isFinite(n) && n > 0 ? n : null; };
+      const gz = (g0: string) => { const r = gv(g0); if (!r) return null; const n = Number(r.replace(/[^0-9.]/g, "")); return Number.isFinite(n) ? n : null; };
       return j(headers, 200, {
         ok: true,
         lsGid: lsGidP,
@@ -2009,6 +2010,10 @@ app.post("*", async (c) => {
         leasingPlanUrl: gv("1217557090620385"),
         teamLead: gv("1217446711292696"),
         securityDeposit: gn("1217515853935577"),
+        // V4 Owner Page step (2026-11-06): turn authorization and deposit held, null when
+        // blank; 0 is a real value here ($0 authorization, no deposit on record)
+        turnAuth: gz("1217611635986386"),
+        depositHeld: gz("1217530249320839"),
         agentGid: String(cfP.find((f) => f.gid === "1217446729380828")?.people_value?.[0]?.gid ?? ""),
         agentName: String(cfP.find((f) => f.gid === "1217446729380828")?.people_value?.[0]?.name ?? ""),
         // the saved comp set (2026-09-12): both leasing benches share it - the Plan
@@ -2492,7 +2497,7 @@ app.post("*", async (c) => {
       // bench picker (Brittany 2026-09-18): the one Team Feedback button serves
       // every bench on /work-bench, so the submitter names the bench and the
       // subtask title leads with it instead of a generic "PreListing"
-      const BENCHES = new Set(["Plan + Propose", "Execute + Adapt", "Screen + Sign", "Owner Page", "Other"]);
+      const BENCHES = new Set(["Plan + Propose", "Execute + Adapt", "Screen + Sign", "Owner Page", "Execute + Adapt V4", "Owner Page v2", "Other"]);
       const bench = BENCHES.has(String(body.bench ?? "")) ? String(body.bench) : "";
       const label = action === "plFeedback" && bench ? bench : cfg.label;
       const todayStr = new Date(Date.now() - 7 * 3600 * 1000).toISOString().slice(0, 10);
