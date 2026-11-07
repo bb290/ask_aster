@@ -1555,7 +1555,7 @@ app.post("/onboard-proxy", async (c) => {
     // ================= LEASING URL (open, per-property listing review at /leasing-plan?p={slug}) =================
     // Listing Settings task = source of truth; the page reads it live on every load.
     // Names only ride the open payload (team roles); emails are scrubbed from values.
-    if (action === "lsView" || action === "lsApprove" || action === "lsModify" || action === "lsTurn" || action === "lsRequest" || action === "lsAccept" || action === "lsComps" || action === "lsDraft" || action === "lsInspect") {
+    if (action === "lsView" || action === "lsApprove" || action === "lsModify" || action === "lsTurn" || action === "lsRequest" || action === "lsAccept" || action === "lsComps" || action === "lsDraft" || action === "lsInspect" || action === "lsReports" || action === "lsTurnEst") {
       const LS_PROJECT = "1217446710785429";
       const LS_APPROVAL = "1217446658980732"; // Owner Approval Date
       const LS_TURN = "1217509139690271";     // Turn Proposal, one work item per line
@@ -1589,6 +1589,118 @@ app.post("/onboard-proxy", async (c) => {
         if (!off) break;
       }
       if (!hit) return j(headers, 404, { error: "not_found", message: "No listing matches this link. Check the URL or contact listings@sagareus.com." });
+
+      // ================= Owner Page v2 (test page /leasing-plan-v2, 2026-11-07) =================
+      // Read-only. lsReports = the weekly owner reports already recorded by the bench
+      // (OWNER REPORT SENT / POSTED comments on the LU's weekly report subtask), with
+      // access codes and emails stripped because this page opens by address slug.
+      // lsTurnEst = the newest estimate the V4 bench posted to the Turn Over task
+      // ([v4-estimate] comment); the owner gets totals + a deposit RANGE, never the
+      // per-line deposit shares.
+      if (action === "lsReports" || action === "lsTurnEst") {
+        const UNIT_FV2 = "1213183515622826";
+        const tV2 = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
+        const uidV2 = String(((tV2.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>).find((f) => String(f.gid) === UNIT_FV2)?.display_value ?? "").trim();
+        type TRow = { gid: string; name: string; completed?: boolean; created_at?: string };
+        const byUidV2 = async (proj: string): Promise<TRow[]> => {
+          if (!/^\d+$/.test(uidV2)) return [];
+          return ((await asana("GET", `/workspaces/${FEED_WS}/tasks/search?projects.any=${proj}&custom_fields.${UNIT_FV2}.value=${uidV2}&opt_fields=name,completed,created_at`)) ?? []) as TRow[];
+        };
+        const pickV2 = (arr: TRow[], re: RegExp) => {
+          const m = arr.filter((x) => re.test(String(x.name))).sort((a, b) => String(b.created_at ?? "").localeCompare(String(a.created_at ?? "")));
+          return m.find((x) => !x.completed) ?? m[0] ?? null;
+        };
+        const commentsV2 = async (gid: string) => {
+          const out: Array<{ text: string; at: string }> = [];
+          let offS = "";
+          for (let pg = 0; pg < 15; pg++) {
+            const r = await fetch(`${ASANA}/tasks/${gid}/stories?limit=100&opt_fields=type,text,created_at${offS ? `&offset=${encodeURIComponent(offS)}` : ""}`, { headers: { "Authorization": `Bearer ${ASANA_PAT}` } });
+            const jj = await r.json().catch(() => ({}));
+            if (!r.ok) break;
+            for (const st of (jj.data ?? []) as Array<{ type: string; text?: string; created_at?: string }>) {
+              if (st.type === "comment") out.push({ text: String(st.text ?? ""), at: String(st.created_at ?? "") });
+            }
+            offS = jj.next_page?.offset ?? "";
+            if (!offS) break;
+          }
+          return out;
+        };
+
+        if (action === "lsReports") {
+          const lu = pickV2(await byUidV2("1213171756304238"), /^(LU|TP|PreLease)\s*\|/i);
+          if (!lu) return j(headers, 200, { ok: true, reports: [] });
+          const kids = ((await asana("GET", `/tasks/${lu.gid}/subtasks?limit=100&opt_fields=name`)) ?? []) as Array<{ gid: string; name: string }>;
+          const wars = kids.filter((k) => /weekly activity report/i.test(String(k.name)));
+          const raw: Array<{ text: string; at: string }> = [];
+          for (const w of wars) raw.push(...(await commentsV2(w.gid)).filter((c) => /^OWNER REPORT (SENT|POSTED)/i.test(c.text.trim())));
+          // access codes never ride the open page (keybox, lockbox, gate, garage, door, alarm, wifi)
+          const CODE_RE = /^(\s*[•*-]?\s*[^\n:]*\b(key\s*box|lock\s*box|lockbox|gate|garage|door|alarm|access|entry|wi-?fi)\b[^\n:]*\b(code|combo|combination|password|pin)\b[^\n:]*:).*$/gim;
+          const clean = (t: string) => t
+            .replace(CODE_RE, "$1 shared separately")
+            .replace(/^\s*To:.*$/gim, "")
+            .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "")
+            .replace(/(?:^|\s)@[A-Z][\w.]*(?: [A-Z][\w.]*)?/g, " ")
+            .replace(/\n{3,}/g, "\n\n").trim();
+          const reports = raw.sort((a, b) => b.at.localeCompare(a.at)).slice(0, 12).map((c) => {
+            const lines = c.text.split(/\r?\n/);
+            lines.shift();                                       // OWNER REPORT SENT / POSTED header
+            const kv: Record<string, string> = {};
+            const sections: Array<{ title: string; body: string }> = [];
+            let cur: { title: string; body: string[] } | null = null;
+            let subject = "";
+            for (let i = 0; i < lines.length; i++) {
+              const ln = lines[i];
+              if (/^Subject:/i.test(ln)) { subject = ln.replace(/^Subject:\s*/i, "").trim(); continue; }
+              // section titles are ALL CAPS over a rule line; quoted work orders inside a
+              // section carry their own rules with mixed-case titles and stay in the body
+              if (/^─{3,}\s*$/.test((lines[i + 1] ?? "").trim()) && /^[A-Z0-9 '’+&/,-]{3,}$/.test(ln.trim())) {
+                if (cur) sections.push({ title: cur.title, body: cur.body.join("\n") });
+                cur = { title: ln.trim(), body: [] }; i++; continue;
+              }
+              if (!cur) { const m = ln.match(/^([A-Za-z][A-Za-z /]{2,40}):\s*(.+)$/); if (m) kv[m[1].trim().toLowerCase()] = m[2].trim(); continue; }
+              if (!/^─{3,}\s*$/.test(ln.trim())) cur.body.push(ln);
+            }
+            if (cur) sections.push({ title: cur.title, body: cur.body.join("\n") });
+            return {
+              at: c.at.slice(0, 10),
+              posted: /^OWNER REPORT POSTED/i.test(c.text.trim()) ? "page" : "email",
+              period: kv["reporting period"] ?? (subject.match(/\|\s*([^|]+?)\s*\|/)?.[1] ?? ""),
+              status: kv["status"] ?? "",
+              sections: sections.map((sc) => ({ title: sc.title.slice(0, 80), body: clean(sc.body).slice(0, 4000) })).filter((sc) => sc.body),
+            };
+          });
+          return j(headers, 200, { ok: true, reports });
+        }
+
+        // lsTurnEst
+        const parV2 = pickV2(await byUidV2("1208297375044026"), /^leasing\s*\|/i);
+        if (!parV2) return j(headers, 200, { ok: true, est: null });
+        const kidsV2 = ((await asana("GET", `/tasks/${parV2.gid}/subtasks?limit=100&opt_fields=name,completed,created_at`)) ?? []) as TRow[];
+        const toV2 = pickV2(kidsV2, /^turn\s*over\s*\|/i);
+        if (!toV2) return j(headers, 200, { ok: true, est: null });
+        const posts = (await commentsV2(toV2.gid)).filter((c) => /^OWNER ESTIMATE/i.test(c.text.trim()) && /\[v4-estimate\]/.test(c.text)).sort((a, b) => b.at.localeCompare(a.at));
+        if (!posts.length) return j(headers, 200, { ok: true, est: null });
+        let e0: Record<string, unknown> = {};
+        try { e0 = JSON.parse(posts[0].text.slice(posts[0].text.indexOf("[v4-estimate]") + 13).trim()); } catch { return j(headers, 200, { ok: true, est: null }); }
+        const nz = (v: unknown) => { const n = Number(String(v ?? "").replace(/[^0-9.]/g, "")); return Number.isFinite(n) ? n : 0; };
+        const lns = (Array.isArray(e0.lines) ? e0.lines : []) as Array<{ name?: string; amt?: unknown; type?: string; dep?: unknown }>;
+        const reqL = lns.filter((l) => l.type !== "o" && String(l.name ?? "").trim());
+        const optL = lns.filter((l) => l.type === "o" && String(l.name ?? "").trim());
+        let req = 0, hi = 0, lo = 0;
+        for (const l of reqL) { const a = nz(l.amt), d = Math.min(100, Math.max(0, nz(l.dep))); req += a; hi += a * d / 100; lo += a * Math.max(0, d - 25) / 100; }
+        const held = nz(e0.held), auth = nz(e0.auth), r10 = (n: number) => Math.round(n / 10) * 10;
+        if (held > 0) { hi = Math.min(hi, held); lo = Math.min(lo, held); }
+        return j(headers, 200, { ok: true, est: {
+          postedAt: posts[0].at.slice(0, 10),
+          vendor: String(e0.vendor ?? "").slice(0, 80),
+          received: String(e0.received ?? "").slice(0, 10),
+          note: String(e0.note ?? "").slice(0, 2000),
+          required: reqL.map((l) => ({ name: String(l.name).slice(0, 160), amt: nz(l.amt) })),
+          optional: optL.map((l) => ({ name: String(l.name).slice(0, 160), amt: nz(l.amt) })),
+          reqTotal: req, auth, over: auth > 0 && req > auth, held,
+          depLo: r10(lo), depHi: r10(hi),
+        } });
+      }
 
       if (action === "lsView") {
         const t = await asana("GET", `/tasks/${hit.gid}?opt_fields=name,created_at,modified_at,custom_fields.gid,custom_fields.name,custom_fields.display_value,custom_fields.resource_subtype`);

@@ -2513,6 +2513,40 @@ app.post("*", async (c) => {
       return j(headers, 200, { ok: true, url: `https://app.asana.com/0/0/${sub.gid}` });
     }
 
+    // ---------- v4EstPost: Execute + Adapt V4 posts the turnover estimate to the Turn Over task ----------
+    // Option A (Brittany 2026-11-06, "probably a"): the estimate lives as a comment on the
+    // Turn Over task: readable for the team, plus a [v4-estimate] JSON trailer the owner
+    // page v2 reads (newest one wins). No custom fields, nothing sent to anyone.
+    if (action === "v4EstPost") {
+      const toGid = String(body.toGid ?? "").trim();
+      if (!/^\d{6,20}$/.test(toGid)) return j(headers, 400, { error: "missing_fields" });
+      const tT = await asana("GET", `/tasks/${toGid}?opt_fields=name`);
+      if (!/^turn\s*over\s*\|/i.test(String(tT.name ?? ""))) return j(headers, 400, { error: "not_turn_over_task" });
+      const e = (body.est ?? {}) as Record<string, unknown>;
+      const nz = (v: unknown) => { const n = Number(String(v ?? "").replace(/[^0-9.]/g, "")); return Number.isFinite(n) ? Math.round(n * 100) / 100 : 0; };
+      const lines = (Array.isArray(e.lines) ? e.lines : []).slice(0, 40)
+        .map((l: Record<string, unknown>) => ({ name: String(l.name ?? "").trim().slice(0, 160), amt: nz(l.amt), type: l.type === "o" ? "o" : "r", dep: [100, 75, 50, 25, 0].includes(Number(l.dep)) ? Number(l.dep) : 0 }))
+        .filter((l: { name: string }) => l.name);
+      if (!lines.length) return j(headers, 400, { error: "no_lines" });
+      const est = { vendor: String(e.vendor ?? "").trim().slice(0, 80), received: String(e.received ?? "").slice(0, 10), note: String(e.note ?? "").trim().slice(0, 2000), auth: nz(e.auth), held: nz(e.held), lines };
+      const usd = (n: number) => "$" + Math.round(n).toLocaleString("en-US");
+      const req = lines.filter((l: { type: string }) => l.type === "r").reduce((a: number, l: { amt: number }) => a + l.amt, 0);
+      const by = String(body.by ?? "").trim().slice(0, 60);
+      const txt = [
+        "OWNER ESTIMATE | Posted to Owner Page v2 (test) from Execute + Adapt V4" + (by ? ` by ${by}` : ""),
+        `Vendor: ${est.vendor || "not given"}${est.received ? ` · Received ${est.received}` : ""}`,
+        `Required work: ${usd(req)}` + (est.auth ? ` vs turn authorization ${usd(est.auth)} (${req > est.auth ? "over by " + usd(req - est.auth) + ", needs owner OK" : "within authorization"})` : " (no turn authorization entered)"),
+        ...lines.filter((l: { type: string }) => l.type === "r").map((l: { name: string; amt: number; dep: number }) => `• ${l.name}: ${usd(l.amt)} (deposit share guess ${l.dep}%)`),
+        ...(lines.some((l: { type: string }) => l.type === "o") ? ["Optional upgrades:", ...lines.filter((l: { type: string }) => l.type === "o").map((l: { name: string; amt: number }) => `• ${l.name}: ${usd(l.amt)}`)] : []),
+        est.note ? `Note to owner: ${est.note}` : "",
+        `Deposit held: ${est.held ? usd(est.held) : "none entered"}`,
+        "Newest OWNER ESTIMATE comment is what the owner page shows. Do not edit the line below.",
+        "[v4-estimate] " + JSON.stringify(est),
+      ].filter(Boolean).join("\n");
+      const st = await postStory(toGid, txt);
+      return j(headers, 200, { ok: true, story: st?.gid ?? null, url: `https://app.asana.com/0/0/${toGid}` });
+    }
+
     // ---------- prelistSubmit: post the PreListing text report to the LU task's PreListing subtask ----------
     if (action === "prelistSubmit") {
       const address = String(body.address ?? "").trim();
