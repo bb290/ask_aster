@@ -1735,9 +1735,10 @@ app.post("/onboard-proxy", async (c) => {
             for (let i = 0; i < lines.length; i++) {
               const ln = lines[i];
               if (/^Subject:/i.test(ln)) { subject = ln.replace(/^Subject:\s*/i, "").trim(); continue; }
-              // section titles are ALL CAPS over a rule line; quoted work orders inside a
+              // section titles are ALL CAPS over a rule line ("SITE VISIT: 2026-11-01" carries a date);
+              // quoted work orders inside a
               // section carry their own rules with mixed-case titles and stay in the body
-              if (/^─{3,}\s*$/.test((lines[i + 1] ?? "").trim()) && /^[A-Z0-9 '’+&/,-]{3,}$/.test(ln.trim())) {
+              if (/^─{3,}\s*$/.test((lines[i + 1] ?? "").trim()) && /^[A-Z0-9 '’+&/,-]{3,}(: ?\d{4}-\d{2}-\d{2})?$/.test(ln.trim())) {
                 if (cur) sections.push({ title: cur.title, body: cur.body.join("\n") });
                 cur = { title: ln.trim(), body: [] }; i++; continue;
               }
