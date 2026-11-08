@@ -611,6 +611,54 @@ async function obLeasingSubByUnitId(uid: string, re: RegExp): Promise<{ gid: str
 }
 // approver check: any owner email on file for the unit (field may hold several,
 // split on ; or ,), or the team address. Never expose the emails to the page.
+// ---- Approval Pin (Owner Page v2 only, Brittany 2026-11-07) ----
+// 6-digit PIN on the Listing Settings task. v2 requests (body.v2 === true) must carry
+// it; v1 requests never do and are handled exactly as before. Wrong guesses are
+// counted per listing in private Storage: 5 misses lock the listing for 15 minutes.
+const LS_PIN_F = "1220325531202380";
+const PIN_MAX_FAILS = 5;
+const PIN_LOCK_MS = 15 * 60 * 1000;
+function pinEq(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let d = 0;
+  for (let i = 0; i < a.length; i++) d |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return d === 0;
+}
+type PinLock = { fails: number; until: number };
+function pinStore() {
+  const url = Deno.env.get("SUPABASE_URL") ?? "";
+  const key = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? "";
+  return { url, h: { "Authorization": `Bearer ${key}`, "apikey": key }, ok: Boolean(url && key) };
+}
+async function pinLockGet(gid: string): Promise<PinLock> {
+  const s = pinStore();
+  if (!s.ok) return { fails: 0, until: 0 };
+  try {
+    const r = await fetch(`${s.url}/storage/v1/object/ls-pin/${gid}.json`, { headers: s.h });
+    if (!r.ok) return { fails: 0, until: 0 };
+    const v = await r.json();
+    return { fails: Number(v.fails) || 0, until: Number(v.until) || 0 };
+  } catch { return { fails: 0, until: 0 }; }
+}
+async function pinLockSet(gid: string, v: PinLock): Promise<void> {
+  const s = pinStore();
+  if (!s.ok) return;
+  const put = () => fetch(`${s.url}/storage/v1/object/ls-pin/${gid}.json`, {
+    method: "POST", headers: { ...s.h, "Content-Type": "application/json", "x-upsert": "true" }, body: JSON.stringify(v),
+  });
+  try {
+    let r = await put();
+    if (!r.ok) {
+      // first use: create the private bucket, then retry once
+      await fetch(`${s.url}/storage/v1/bucket`, {
+        method: "POST", headers: { ...s.h, "Content-Type": "application/json" },
+        body: JSON.stringify({ id: "ls-pin", name: "ls-pin", public: false }),
+      }).catch(() => null);
+      r = await put();
+    }
+  } catch { /* best-effort: a lost counter never unlocks a wrong PIN */ }
+}
+
 async function obValidApprover(email: string, unitId: string): Promise<{ ok: boolean; isTeam: boolean }> {
   const e = String(email ?? "").trim().toLowerCase();
   if (!/^[\w.+-]+@[\w-]+\.[\w.-]+$/.test(e)) return { ok: false, isTeam: false };
@@ -1555,7 +1603,7 @@ app.post("/onboard-proxy", async (c) => {
     // ================= LEASING URL (open, per-property listing review at /leasing-plan?p={slug}) =================
     // Listing Settings task = source of truth; the page reads it live on every load.
     // Names only ride the open payload (team roles); emails are scrubbed from values.
-    if (action === "lsView" || action === "lsApprove" || action === "lsModify" || action === "lsTurn" || action === "lsRequest" || action === "lsAccept" || action === "lsComps" || action === "lsDraft" || action === "lsInspect" || action === "lsReports" || action === "lsTurnEst") {
+    if (action === "lsView" || action === "lsApprove" || action === "lsModify" || action === "lsTurn" || action === "lsRequest" || action === "lsAccept" || action === "lsComps" || action === "lsDraft" || action === "lsInspect" || action === "lsReports" || action === "lsTurnEst" || action === "lsPin") {
       const LS_PROJECT = "1217446710785429";
       const LS_APPROVAL = "1217446658980732"; // Owner Approval Date
       const LS_TURN = "1217509139690271";     // Turn Proposal, one work item per line
@@ -1589,6 +1637,42 @@ app.post("/onboard-proxy", async (c) => {
         if (!off) break;
       }
       if (!hit) return j(headers, 404, { error: "not_found", message: "No listing matches this link. Check the URL or contact listings@sagareus.com." });
+
+      // Approval Pin gate: Owner Page v2 only (body.v2). v1 requests skip this block
+      // entirely, so the live /leasing-plan page behaves exactly as before.
+      const isV2 = body.v2 === true;
+      let pinOk = false;
+      if (isV2) {
+        const tPin = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.gid,custom_fields.display_value`);
+        const pinVal = String(((tPin.custom_fields ?? []) as Array<{ gid: string; display_value: string | null }>)
+          .find((f) => String(f.gid) === LS_PIN_F)?.display_value ?? "").replace(/\D/g, "");
+        if (!pinVal) return j(headers, 403, { error: "pin_not_set", message: "This page needs an Approval Pin, and one has not been set up yet. Contact listings@sagareus.com and we will send it to you." });
+        const lock = await pinLockGet(hit.gid);
+        const now = Date.now();
+        if (lock.until > now) {
+          return j(headers, 429, { error: "pin_locked", retryMinutes: Math.ceil((lock.until - now) / 60000), message: "Too many incorrect tries. Wait a few minutes and try again, or contact listings@sagareus.com." });
+        }
+        const pinIn = String(body.pin ?? "").replace(/\D/g, "").slice(0, 12);
+        if (!pinIn) return j(headers, 401, { error: "pin_required", message: "Enter the Approval Pin from your email." });
+        if (!pinEq(pinIn, pinVal)) {
+          const fails = (lock.until && lock.until <= now ? 0 : lock.fails) + 1;
+          const locked = fails >= PIN_MAX_FAILS;
+          await pinLockSet(hit.gid, locked ? { fails: 0, until: now + PIN_LOCK_MS } : { fails, until: 0 });
+          return j(headers, locked ? 429 : 401, locked
+            ? { error: "pin_locked", retryMinutes: PIN_LOCK_MS / 60000, message: "Too many incorrect tries. Wait 15 minutes and try again, or contact listings@sagareus.com." }
+            : { error: "bad_pin", triesLeft: PIN_MAX_FAILS - fails, message: "That Approval Pin is not correct. Check your email and try again." });
+        }
+        if (lock.fails || lock.until) await pinLockSet(hit.gid, { fails: 0, until: 0 });
+        pinOk = true;
+      }
+      // lsPin: Owner Page v2 verifies the PIN once before loading anything else
+      if (action === "lsPin") return j(headers, isV2 ? 200 : 400, isV2 ? { ok: true } : { error: "v2_only" });
+      // what an approval records about the device behind a PIN-verified request
+      const pinWho = () => {
+        const ip = String(c.req.header("x-forwarded-for") ?? "").split(",")[0].trim().slice(0, 60);
+        const ua = String(c.req.header("user-agent") ?? "").slice(0, 160);
+        return `with the Approval Pin (Owner Page v2${ip ? ", IP " + ip : ""}${ua ? ", " + ua : ""})`;
+      };
 
       // ================= Owner Page v2 (test page /leasing-plan-v2, 2026-11-07) =================
       // Read-only. lsReports = the weekly owner reports already recorded by the bench
@@ -1713,6 +1797,7 @@ app.post("/onboard-proxy", async (c) => {
           const val = String(cf.display_value ?? "").trim();
           if (!val) continue;
           if (/^(\u{1F512}|internal)/iu.test(nm)) continue;             // agent-hidden fields
+          if (String(cf.gid) === LS_PIN_F) continue;                    // Approval Pin never rides any page payload
           if (String(cf.gid) === LS_APPROVAL) { approval = val.slice(0, 10); continue; }
           if (/^unit id$/i.test(nm)) continue;                          // internal reference
           if (/^plan status$/i.test(nm)) continue;                      // returned separately, drives lock state
@@ -2176,13 +2261,14 @@ app.post("/onboard-proxy", async (c) => {
         const cf4 = (t4.custom_fields ?? []) as Array<{ gid: string; display_value?: string | null; people_value?: Array<{ gid: string }> }>;
         const reqUid = String(cf4.find((f) => String(f.gid) === OB_UNIT_F)?.display_value ?? "").trim();
         // validated exactly like approvals: owner email(s) on file or the team address
-        const vr = await obValidApprover(String(body.email ?? ""), reqUid);
+        // v2: the verified PIN is the proof; v1 keeps the email check
+        const vr = pinOk ? { ok: true, isTeam: false } : await obValidApprover(String(body.email ?? ""), reqUid);
         if (!vr.ok) return j(headers, 403, { error: "email_mismatch", message: "That email does not match our records for this property. Use the email we have on file, or contact listings@sagareus.com." });
         const LS_TEAMLEAD3 = "1217446711292696";
         let owner = String(cf4.find((f) => String(f.gid) === LS_TEAMLEAD3)?.people_value?.[0]?.gid ?? "");
         if (!owner) owner = String(cf4.find((f) => String(f.gid) === LS_PRIMARY)?.people_value?.[0]?.gid ?? "");
         const day = obDuePT(0);
-        const reqEmail = String(body.email ?? "").trim().toLowerCase().slice(0, 120);
+        const reqEmail = pinOk ? "the owner " + pinWho() : String(body.email ?? "").trim().toLowerCase().slice(0, 120);
         let subGid = "";
         try {
           const st = await asana("POST", "/tasks", {
@@ -2210,7 +2296,7 @@ app.post("/onboard-proxy", async (c) => {
         const t5 = await asana("GET", `/tasks/${hit.gid}?opt_fields=custom_fields.gid,custom_fields.display_value,custom_fields.people_value.gid`);
         const cf5 = (t5.custom_fields ?? []) as Array<{ gid: string; display_value: string | null; people_value?: Array<{ gid: string }> }>;
         const accUid = String(cf5.find((f) => String(f.gid) === OB_UNIT_F)?.display_value ?? "").trim();
-        const vr2 = await obValidApprover(String(body.email ?? ""), accUid);
+        const vr2 = pinOk ? { ok: true, isTeam: false } : await obValidApprover(String(body.email ?? ""), accUid);
         if (!vr2.ok) return j(headers, 403, { error: "email_mismatch", message: "That email does not match our records for this property. Use the email we have on file, or contact listings@sagareus.com." });
         // Modify blocks Approve until the team makes the change and re-sends
         // (fail-open on an Asana blip; the page lock still guards the main path)
@@ -2220,7 +2306,7 @@ app.post("/onboard-proxy", async (c) => {
             return j(headers, 409, { error: "mods_pending", message: "You have a change request in progress (" + openMods.join(", ") + "). Approvals are paused while we update the plan; we will email you when the updated plan is ready to approve." });
           }
         } catch (e) { console.error("pending-mod check failed (lsAccept):", e); }
-        const accEmail = String(body.email ?? "").trim().toLowerCase().slice(0, 120);
+        const accEmail = pinOk ? "the owner " + pinWho() : String(body.email ?? "").trim().toLowerCase().slice(0, 120);
         const day5 = obDuePT(0);
         const snap = (body.snapshot ?? {}) as Record<string, unknown>;
         const fm = (v: unknown) => { const n = Number(v); return Number.isFinite(n) ? "$" + Math.round(n).toLocaleString("en-US") : "TBD"; };

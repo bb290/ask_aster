@@ -31,6 +31,15 @@ const BUILDIUM_ID = Deno.env.get("BUILDIUM_CLIENT_ID") ?? "";
 const BUILDIUM_SECRET = Deno.env.get("BUILDIUM_CLIENT_SECRET") ?? "";
 const WORKSPACE = "706990140225747";
 const LEASING_LU_PROJECT = "1213171756304238";
+// Approval Pin (Brittany 2026-11-07): 6-digit PIN on Listing Settings that Owner Page v2
+// requires to view and approve. Generated when a listing task is created; staff change
+// it by editing the field. The live v1 page ignores it.
+const LS_PIN_F = "1220325531202380";
+function lsNewPin(): string {
+  const a = new Uint32Array(1);
+  crypto.getRandomValues(a);
+  return String(100000 + (a[0] % 900000));
+}
 // Tier 1 combined key-value fields (Brittany 2026-09-26): each replaces 2-3
 // singles. Format is "Label: value" lines; values may span lines until the
 // next label. Old single fields stay frozen until Brittany deletes them.
@@ -1998,7 +2007,15 @@ app.post("*", async (c) => {
       const gv = (g0: string) => String(cfP.find((f) => String(f.gid) === g0)?.display_value ?? "").trim();
       const gn = (g0: string) => { const n = Number(String(gv(g0)).replace(/[^0-9.]/g, "")); return Number.isFinite(n) && n > 0 ? n : null; };
       const gz = (g0: string) => { const r = gv(g0); if (!r) return null; const n = Number(r.replace(/[^0-9.]/g, "")); return Number.isFinite(n) ? n : null; };
+      // Approval Pin: V4 asks with ensurePin so listings created before the field get
+      // one on first open (V3 never sends it, so live behavior is unchanged)
+      let approvalPin = gv(LS_PIN_F).replace(/\D/g, "");
+      if (!approvalPin && body.ensurePin === true) {
+        const np = lsNewPin();
+        try { await asana("PUT", `/tasks/${lsGidP}`, { custom_fields: { [LS_PIN_F]: np } }); approvalPin = np; } catch { /* field blocked: stays blank */ }
+      }
       return j(headers, 200, {
+        approvalPin,
         ok: true,
         lsGid: lsGidP,
         lsUrl: `https://app.asana.com/0/0/${lsGidP}`,
@@ -3570,6 +3587,7 @@ app.post("*", async (c) => {
           notes: "Source of truth for this property's Leasing URL. Edit fields here; the page updates live.\n\nCreated from the PreListing Workbench. Done by Claude on behalf of the listing agent.",
         });
         taskGid = t.gid;
+        await asana("PUT", `/tasks/${taskGid}`, { custom_fields: { [LS_PIN_F]: lsNewPin() } }).catch(() => null);
         await writeCf(taskGid, cf);
       } else if (Object.keys(cf).length) {
         await writeCf(taskGid, cf);
@@ -4982,7 +5000,7 @@ app.post("*", async (c) => {
               name: `Listing | ${address}`.slice(0, 250),
               projects: [LS_PROJECT],
               notes: "Source of truth for this property's Leasing URL. Edit fields here; the page updates live.\n\nCreated from the Turn Over Proposal inspection. Done by Claude on behalf of the inspector.",
-              custom_fields: uidMR ? { "1217509139690271": proposal, "1213183515622826": uidMR } : { "1217509139690271": proposal },
+              custom_fields: uidMR ? { "1217509139690271": proposal, "1213183515622826": uidMR, [LS_PIN_F]: lsNewPin() } : { "1217509139690271": proposal, [LS_PIN_F]: lsNewPin() },
             });
             lsGid = t?.gid ?? "";
           } else {
@@ -5953,6 +5971,7 @@ app.post("*", async (c) => {
         });
         lsGidL = mk.gid;
         created = true;
+        await asana("PUT", `/tasks/${lsGidL}`, { custom_fields: { [LS_PIN_F]: lsNewPin() } }).catch(() => null);
         if (uidL) await asana("PUT", `/tasks/${lsGidL}`, { custom_fields: { [UIDF]: uidL } }).catch(() => null);
       }
       await asana("PUT", `/tasks/${lsGidL}`, { custom_fields: { [LEADF]: [leadGid] } });
